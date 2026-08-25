@@ -1,0 +1,2 @@
+fecha,modelo,k,frac_val,seed,ndcg_local,ndcg_kaggle,notas
+2026-08-25,popularity,20,0.2,42,0.009960,0.00954,"score bayesiano (C=avg interacciones/libro, m=rating promedio global), fit solo con train"

@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Datos y outputs pesados (ver CLAUDE.md)
+data/raw/data.db
+outputs/

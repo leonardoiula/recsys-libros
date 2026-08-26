@@ -7,33 +7,80 @@ from pathlib import Path
 
 import pandas as pd
 
-from recsys.data import libros_leidos_por_usuario, load_interacciones
+from recsys.data import (
+    libros_leidos_por_usuario,
+    load_interacciones,
+    load_lectores,
+    load_libros,
+)
 from recsys.models.popularity import fit_popularity
+from recsys.models.popularity_segmentada import (
+    fit_popularity_por_franja_nacimiento,
+    fit_popularity_por_genero,
+    franja_nacimiento_por_usuario,
+    genero_preferido_por_usuario,
+    recomendar_por_usuario,
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 EJEMPLO_PATH = ROOT_DIR / "data" / "raw" / "ejemplo.csv"
 SUBMISSIONS_DIR = ROOT_DIR / "outputs" / "submissions"
 
-MODELOS = {"popularity": fit_popularity}
+
+def _recomendaciones_popularity(usuarios: list, k: int) -> dict:
+    """v0: mismo ranking global de popularidad para todos los usuarios."""
+    interacciones = load_interacciones()
+    libros_leidos = libros_leidos_por_usuario(interacciones)
+    ranking_global = fit_popularity(interacciones)["id_libro"].tolist()
+
+    return {
+        id_lector: [
+            libro
+            for libro in ranking_global
+            if libro not in libros_leidos.get(id_lector, set())
+        ][:k]
+        for id_lector in usuarios
+    }
 
 
-def armar_submission(
-    ejemplo_df: pd.DataFrame,
-    ranking_global: list,
-    libros_leidos: dict,
-) -> pd.DataFrame:
-    """Arma el DataFrame de entrega.
+def _recomendaciones_popularity_segmentada(usuarios: list, k: int) -> dict:
+    """v1: ranking por usuario con fallback género -> franja de nacimiento -> global."""
+    interacciones = load_interacciones()
+    lectores = load_lectores()
+    libros = load_libros()
+    libros_leidos = libros_leidos_por_usuario(interacciones)
+
+    return recomendar_por_usuario(
+        usuarios=usuarios,
+        ranking_por_genero=fit_popularity_por_genero(interacciones, libros),
+        genero_por_usuario=genero_preferido_por_usuario(interacciones, libros),
+        ranking_por_franja=fit_popularity_por_franja_nacimiento(interacciones, lectores),
+        franja_por_usuario=franja_nacimiento_por_usuario(lectores),
+        ranking_global=fit_popularity(interacciones)["id_libro"].tolist(),
+        libros_leidos=libros_leidos,
+        k=k,
+    )
+
+
+# Cada modelo mapea a una función (usuarios, k) -> {id_lector: [id_libro, ...]}
+# ya entrenada con todos los datos y con los libros ya leídos filtrados.
+MODELOS = {
+    "popularity": _recomendaciones_popularity,
+    "popularity_segmentada": _recomendaciones_popularity_segmentada,
+}
+
+
+def armar_submission(ejemplo_df: pd.DataFrame, recomendaciones: dict) -> pd.DataFrame:
+    """Arma el DataFrame de entrega a partir de recomendaciones ya armadas por usuario.
 
     Para cada usuario de `ejemplo_df` (en el orden en que aparecen) toma
-    `ranking_global`, filtra los libros que ya leyó y completa tantos
-    candidatos como filas tenga ese usuario en `ejemplo_df` (su k),
-    preservando el orden del ranking.
+    tantas filas de `recomendaciones[id_lector]` como filas tenga ese
+    usuario en `ejemplo_df` (su k), preservando el orden del ranking.
     """
     filas = []
     for id_lector, grupo in ejemplo_df.groupby("id_lector", sort=False):
         k = len(grupo)
-        leidos = libros_leidos.get(id_lector, set())
-        candidatos = [libro for libro in ranking_global if libro not in leidos][:k]
+        candidatos = recomendaciones.get(id_lector, [])[:k]
         filas.extend({"id_lector": id_lector, "id_libro": libro} for libro in candidatos)
 
     return pd.DataFrame(filas, columns=["id_lector", "id_libro"])
@@ -44,12 +91,12 @@ def generar_submission(model: str) -> Path:
     if model not in MODELOS:
         raise ValueError(f"Modelo desconocido: {model!r}. Opciones: {sorted(MODELOS)}")
 
-    interacciones = load_interacciones()
-    libros_leidos = libros_leidos_por_usuario(interacciones)
-    ranking_global = MODELOS[model](interacciones)["id_libro"].tolist()
-
     ejemplo_df = pd.read_csv(EJEMPLO_PATH)
-    submission = armar_submission(ejemplo_df, ranking_global, libros_leidos)
+    usuarios = ejemplo_df["id_lector"].unique().tolist()
+    k = int(ejemplo_df.groupby("id_lector").size().max())
+
+    recomendaciones = MODELOS[model](usuarios, k)
+    submission = armar_submission(ejemplo_df, recomendaciones)
 
     SUBMISSIONS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = SUBMISSIONS_DIR / f"{model}.csv"

@@ -216,18 +216,22 @@ lectores).
 
 Más del doble de NDCG@20 solo con una señal de género bastante simple —
 confirma que había mucho margen para personalización, como sugería la
-cola larga vista en el EDA. Fila correspondiente en
-`experiments/log.csv`. **Todavía no se subió a Kaggle** — queda pendiente
-extender `submit.py` para que soporte un modelo con ranking por usuario
-(hoy asume un único ranking global) antes de poder generar esa
-submission.
+cola larga vista en el EDA. Fila correspondiente en `experiments/log.csv`.
+
+`submit.py` se extendió para soportar modelos con ranking por usuario
+(antes asumía un único ranking global): `MODELOS` ahora mapea cada
+nombre a una función `(usuarios, k) -> {id_lector: [id_libro, ...]}` en
+vez de a un `fit_*` que devuelve un ranking único. `uv run python -m
+src.recsys.submit --model popularity_segmentada` genera
+`outputs/submissions/popularity_segmentada.csv` con la forma esperada
+(16,640 filas = 832 usuarios × 20). **Pendiente subirlo a Kaggle** para
+confirmar que la mejora local se sostiene (con v0 la diferencia local vs
+Kaggle fue de apenas +4.4%).
 
 ### Próximos pasos / ideas descartadas
 
-- **Pendiente inmediato:** extender `submit.py`/`MODELOS` para soportar
-  modelos personalizados y subir esta versión a Kaggle, para confirmar
-  que la mejora local se sostiene igual que pasó con v0 (diferencia de
-  apenas +4.4% entre local y Kaggle).
+- **Pendiente inmediato:** subir `outputs/submissions/popularity_segmentada.csv`
+  a Kaggle y loguear el score real en `experiments/log.csv`.
 - **Se descartó** calcular edad real a partir de `nacimiento`: no hay
   fecha de referencia confiable en los datos, así que se usó década de
   nacimiento como proxy (ver EDA).

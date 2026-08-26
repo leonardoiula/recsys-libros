@@ -54,3 +54,25 @@ def evaluar_ndcg(
     if not scores:
         return 0.0
     return sum(scores) / len(scores)
+
+
+def evaluar_ndcg_personalizado(
+    val_df: pd.DataFrame,
+    recomendaciones: dict,
+    k: int,
+) -> float:
+    """Promedia el NDCG@k sobre los usuarios de `val_df`, usando un ranking
+    ya armado y filtrado por usuario (a diferencia de `evaluar_ndcg`, que
+    aplica el mismo ranking global a todos). Pensada para modelos
+    personalizados como popularidad segmentada por género.
+    """
+    relevantes_por_usuario = val_df.groupby("id_lector")["id_libro"].agg(set)
+
+    scores = []
+    for id_lector, relevantes in relevantes_por_usuario.items():
+        recomendados = recomendaciones.get(id_lector, [])[:k]
+        scores.append(ndcg_at_k(recomendados, relevantes, k))
+
+    if not scores:
+        return 0.0
+    return sum(scores) / len(scores)

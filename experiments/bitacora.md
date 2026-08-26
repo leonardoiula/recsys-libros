@@ -120,3 +120,121 @@ la apuesta con modelos personalizados.
 - **Para más adelante:** combinar señales con un ranker (LightGBM, ya
   está en las dependencias) una vez que haya más de un modelo base para
   generar features.
+
+---
+
+## v1 — Popularidad segmentada (género → franja de nacimiento → global)
+
+### Objetivo / hipótesis
+
+v0 recomienda exactamente lo mismo a todo el mundo — cero personalización.
+La hipótesis es simple: si sabemos qué género literario lee un usuario,
+recomendarle lo más popular *dentro de ese género* debería ganarle a
+recomendarle lo más popular a secas. Antes de armar el modelo se corrió
+un EDA completo (ver `experiments/eda.md` y `scripts/eda.py`) para
+confirmar que la señal de género tiene cobertura suficiente como para
+apoyarse en ella.
+
+### Lógica del enfoque
+
+**Aclaración importante que salió del EDA:** `lectores.genero` (género del
+lector: Hombre/Mujer) y `libros.genero` (género literario: Narrativa,
+Ensayo, etc.) son campos distintos que comparten nombre de columna. Este
+modelo usa exclusivamente el género *literario preferido*, inferido de la
+historia de lecturas del usuario — nunca su género como persona.
+
+**1. Género preferido por usuario** (`genero_preferido_por_usuario`): el
+género literario más leído en su historial de train. El EDA mostró que el
+100% de los usuarios con actividad tiene al menos un libro de género
+conocido, así que esta señal cubre a todo el mundo con interacciones.
+
+**2. Normalización de género** (`_normalizar_genero`): el EDA encontró que
+`libros.genero` tiene 66 valores únicos pero solo 55 tras normalizar
+capitalización/espacios (ej. "Histórica y aventuras" / "HIstórica Y
+Aventuras" / "hist**ó**rica y aventuras" son el mismo género). Sin esto,
+la preferencia de un usuario se fragmentaría entre variantes del mismo
+género y el ranking por género perdería densidad de datos.
+
+**3. Popularidad por género** (`fit_popularity_por_genero`): reusa
+`fit_popularity` de v0 tal cual, pero aplicada a cada subgrupo de género
+por separado — cada género calcula su propio `C` y `m`, así que un género
+con pocas interacciones no queda distorsionado por el promedio de otro
+género con mucho volumen.
+
+**4. Franja de nacimiento como segundo fallback**
+(`franja_nacimiento_por_usuario`, `fit_popularity_por_franja_nacimiento`):
+mismo patrón que género pero agrupando por década de nacimiento en vez de
+edad real — `nacimiento` no tiene una fecha de referencia confiable para
+calcular edad (ver el EDA). Cubre ~70% de los usuarios (30.4% no tiene
+`nacimiento` informado, según el EDA).
+
+**5. Cadena de fallback con backfill** (`recomendar_por_usuario`): para
+cada usuario arma su lista de candidatos probando, en orden, género →
+franja de nacimiento → popularidad global, saltando libros ya leídos y
+sin repetir un libro que ya haya entrado por una fuente anterior. Si el
+género no alcanza para completar los k=20 (por ejemplo el usuario ya leyó
+casi todo lo popular de ese género), se completa con la fuente siguiente
+en vez de devolver una lista corta:
+
+```python
+# src/recsys/models/popularity_segmentada.py
+for fuente in fuentes:  # [genero, franja, global] — según lo que se conozca
+    if len(candidatos) >= k:
+        break
+    for libro in fuente:
+        if len(candidatos) >= k:
+            break
+        if libro in vistos:
+            continue
+        candidatos.append(libro)
+        vistos.add(libro)
+```
+
+**6. Evaluación personalizada** (`evaluar_ndcg_personalizado` en
+`evaluation.py`): a diferencia de v0, acá cada usuario tiene su propio
+ranking en vez de uno global compartido, así que se agregó una variante
+de `evaluar_ndcg` que recibe directamente el dict `{id_lector: ranking}`
+ya armado y filtrado.
+
+### Código destacado
+
+- `src/recsys/models/popularity_segmentada.py` — todo el modelo v1
+- `src/recsys/evaluation.py` — `evaluar_ndcg_personalizado`
+
+### Resultado
+
+Mismo split que v0 (`frac_val=0.2`, `seed=42`). De los 6,770 usuarios en
+val: 100% con género preferido conocido, 71.6% con franja de nacimiento
+conocida (consistente con el 69.6% medido en el EDA sobre todos los
+lectores).
+
+| | NDCG@20 |
+|---|---|
+| v0 — popularidad global | 0.009960 |
+| v1 — popularidad segmentada | **0.022563** |
+| Diferencia | +0.012603 (**+126.5%**) |
+
+Más del doble de NDCG@20 solo con una señal de género bastante simple —
+confirma que había mucho margen para personalización, como sugería la
+cola larga vista en el EDA. Fila correspondiente en
+`experiments/log.csv`. **Todavía no se subió a Kaggle** — queda pendiente
+extender `submit.py` para que soporte un modelo con ranking por usuario
+(hoy asume un único ranking global) antes de poder generar esa
+submission.
+
+### Próximos pasos / ideas descartadas
+
+- **Pendiente inmediato:** extender `submit.py`/`MODELOS` para soportar
+  modelos personalizados y subir esta versión a Kaggle, para confirmar
+  que la mejora local se sostiene igual que pasó con v0 (diferencia de
+  apenas +4.4% entre local y Kaggle).
+- **Se descartó** calcular edad real a partir de `nacimiento`: no hay
+  fecha de referencia confiable en los datos, así que se usó década de
+  nacimiento como proxy (ver EDA).
+- **Próximo candidato:** en vez de un solo género "top", ponderar por los
+  2-3 géneros más leídos del usuario (mezclando sus rankings) en lugar de
+  quedarse solo con el primero — podría ayudar a los usuarios con
+  intereses mixtos.
+- **Otra idea:** franja de nacimiento + género combinados (popularidad
+  dentro de la intersección género × década) para usuarios con suficiente
+  historial, en vez de tratarlos como fallback secuencial excluyente.

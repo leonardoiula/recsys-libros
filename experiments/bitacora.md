@@ -96,14 +96,25 @@ val (sobre 461,408 interacciones totales).
 
 | | NDCG@20 |
 |---|---|
-| Local (val, train-only) | **0.009960** |
-| Kaggle | 0.009540 |
-| Diferencia | +0.000420 (+4.4%) |
+| Local (val, train-only, con filtro de ya leído) | **0.009960** |
+| Kaggle (código actual: score bayesiano + filtro) | 0.010240 |
+| Diferencia | +0.000280 (+2.7%) |
 
-Fila correspondiente en `experiments/log.csv`. La validación local quedó
-muy cerca del score real de Kaggle — buena señal de que el split y la
-métrica están bien armados y no hay data leakage evidente, antes de subir
-la apuesta con modelos personalizados.
+Fila `popularity` en `experiments/log.csv`. La validación local quedó muy
+cerca del score real de Kaggle — buena señal de que el split y la métrica
+están bien armados y no hay data leakage evidente, antes de subir la
+apuesta con modelos personalizados.
+
+**Nota sobre una comparación anterior incorrecta:** en un primer momento
+comparamos el local (0.009960, que ya filtra libros ya leídos porque
+`evaluar_ndcg` lo hace) contra un score de Kaggle de 0.00954 — pero ese
+0.00954 correspondía a una submission *sin* ese filtro, generada antes de
+este repo (no hay código equivalente acá). Filtrar los libros ya leídos
+demostró tener valor propio en el leaderboard, independiente de la
+segmentación por género: **+7.3%** solo por agregar ese filtro
+(0.00954 → 0.01024, fila `popularity_sin_filtro` en `log.csv` como
+referencia histórica). La comparación correcta para v0 es contra 0.01024,
+que es lo que efectivamente genera el código actual.
 
 ### Próximos pasos / ideas descartadas
 
@@ -227,28 +238,30 @@ Subido a Kaggle:
 
 | | NDCG@20 |
 |---|---|
-| v0 — popularidad global (Kaggle) | 0.00954 (logueado) |
+| v0 — popularidad, sin filtro de ya leído (histórico, sin código) | 0.00954 |
+| v0 — popularidad + filtro de ya leído (código actual) | 0.01024 |
 | v1 — popularidad segmentada (local) | 0.022563 |
 | v1 — popularidad segmentada (Kaggle) | **0.01558** |
 
-La mejora se sostiene en el leaderboard (v1 > v0), aunque con un
-descuento más marcado que en v0: local vs Kaggle en v0 difería apenas
-+4.4%, acá v1 local sobreestima bastante más (+44.8% relativo). Puede ser
-señal de que el fallback por género/franja se ajusta más al detalle de
-la muestra de validación local que lo que generaliza al set de Kaggle —
-a seguir de cerca en las próximas versiones.
+La comparación correcta es v1 vs v0-con-filtro (0.01024), que es lo que
+realmente genera el código base sobre el que se construyó v1: **+52.1%**
+en Kaggle (0.01024 → 0.01558) — coincide con el "previous best" que
+reportó Kaggle al confirmar la mejora. La segmentación por género/franja
+aporta una mejora bien real, adicional a la que ya daba el filtro de ya
+leído por sí solo.
 
-**Inconsistencia a revisar:** Kaggle reportó este resultado como mejora
-sobre un "previous best" de 0.01024, que no coincide con el 0.00954
-logueado para v0 en `experiments/log.csv`. Puede deberse a
-public/private leaderboard, algún submit no logueado, o un typo al
-transcribir el score de v0 — pendiente de confirmar cuál es el numero
-correcto antes de tomarlo como referencia para las próximas comparaciones.
+Localmente la mejora de v1 sobre v0 fue de +126.5% (0.009960 →
+0.022563) — bastante más optimista que el +52.1% real en Kaggle. La
+brecha local-vs-Kaggle también creció respecto a v0 (que difería solo
++2.7%): acá el local sobreestima en +44.8%. Es esperable que agregar
+segmentación abra algo de brecha (el fallback por género/franja se ajusta
+más a los usuarios y libros específicos de la muestra de validación local
+que a la población completa de Kaggle), pero vale la pena vigilar esa
+brecha en las próximas versiones para que no sea señal de overfitting al
+split local.
 
 ### Próximos pasos / ideas descartadas
 
-- **Pendiente inmediato:** aclarar la inconsistencia del "previous best"
-  de Kaggle (0.01024 vs 0.00954) antes de seguir comparando contra él.
 - **Se descartó** calcular edad real a partir de `nacimiento`: no hay
   fecha de referencia confiable en los datos, así que se usó década de
   nacimiento como proxy (ver EDA).

@@ -221,17 +221,34 @@ cola larga vista en el EDA. Fila correspondiente en `experiments/log.csv`.
 `submit.py` se extendió para soportar modelos con ranking por usuario
 (antes asumía un único ranking global): `MODELOS` ahora mapea cada
 nombre a una función `(usuarios, k) -> {id_lector: [id_libro, ...]}` en
-vez de a un `fit_*` que devuelve un ranking único. `uv run python -m
-src.recsys.submit --model popularity_segmentada` genera
-`outputs/submissions/popularity_segmentada.csv` con la forma esperada
-(16,640 filas = 832 usuarios × 20). **Pendiente subirlo a Kaggle** para
-confirmar que la mejora local se sostiene (con v0 la diferencia local vs
-Kaggle fue de apenas +4.4%).
+vez de a un `fit_*` que devuelve un ranking único.
+
+Subido a Kaggle:
+
+| | NDCG@20 |
+|---|---|
+| v0 — popularidad global (Kaggle) | 0.00954 (logueado) |
+| v1 — popularidad segmentada (local) | 0.022563 |
+| v1 — popularidad segmentada (Kaggle) | **0.01558** |
+
+La mejora se sostiene en el leaderboard (v1 > v0), aunque con un
+descuento más marcado que en v0: local vs Kaggle en v0 difería apenas
++4.4%, acá v1 local sobreestima bastante más (+44.8% relativo). Puede ser
+señal de que el fallback por género/franja se ajusta más al detalle de
+la muestra de validación local que lo que generaliza al set de Kaggle —
+a seguir de cerca en las próximas versiones.
+
+**Inconsistencia a revisar:** Kaggle reportó este resultado como mejora
+sobre un "previous best" de 0.01024, que no coincide con el 0.00954
+logueado para v0 en `experiments/log.csv`. Puede deberse a
+public/private leaderboard, algún submit no logueado, o un typo al
+transcribir el score de v0 — pendiente de confirmar cuál es el numero
+correcto antes de tomarlo como referencia para las próximas comparaciones.
 
 ### Próximos pasos / ideas descartadas
 
-- **Pendiente inmediato:** subir `outputs/submissions/popularity_segmentada.csv`
-  a Kaggle y loguear el score real en `experiments/log.csv`.
+- **Pendiente inmediato:** aclarar la inconsistencia del "previous best"
+  de Kaggle (0.01024 vs 0.00954) antes de seguir comparando contra él.
 - **Se descartó** calcular edad real a partir de `nacimiento`: no hay
   fecha de referencia confiable en los datos, así que se usó década de
   nacimiento como proxy (ver EDA).

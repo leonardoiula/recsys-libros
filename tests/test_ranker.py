@@ -9,7 +9,13 @@ criterio que con `implicit` en `test_als.py`/`test_bpr.py`.
 import numpy as np
 import pandas as pd
 
-from recsys.models.ranker import FEATURES, armar_dataset_entrenamiento, generar_candidatos_con_features
+from recsys.models.ranker import (
+    FEATURES,
+    SENTINEL_DIAS_DESCONOCIDO,
+    armar_dataset_entrenamiento,
+    calcular_features_auxiliares,
+    generar_candidatos_con_features,
+)
 
 
 class _ModeloALSFalso:
@@ -25,6 +31,19 @@ class _ModeloALSFalso:
 
 def _stats_popularidad(ids: list, scores: list) -> pd.DataFrame:
     return pd.DataFrame({"id_libro": ids, "n": [10] * len(ids), "avg_rating": [7.0] * len(ids), "score": scores})
+
+
+def _features_auxiliares_vacias() -> dict:
+    """Bundle vacío de `calcular_features_auxiliares`, para tests que no
+    ejercitan las features de autor/año/género/recencia."""
+    return {
+        "autor_por_libro": {},
+        "anio_edicion_por_libro": {},
+        "n_libros_autor_leidos_por_usuario": {},
+        "anio_edicion_promedio_por_usuario": {},
+        "n_generos_distintos_por_usuario": {},
+        "dias_desde_ultima_interaccion_por_usuario": {},
+    }
 
 
 def test_candidato_de_una_sola_fuente_tiene_sentinel_en_las_otras():
@@ -43,6 +62,7 @@ def test_candidato_de_una_sola_fuente_tiene_sentinel_en_las_otras():
         genero_por_usuario={},
         libros_leidos={},
         n_interacciones_por_usuario={"u1": 3},
+        features_auxiliares=_features_auxiliares_vacias(),
         n_por_fuente=150,
     )
 
@@ -70,6 +90,7 @@ def test_candidato_de_varias_fuentes_se_une_en_una_sola_fila():
         genero_por_usuario={},
         libros_leidos={},
         n_interacciones_por_usuario={},
+        features_auxiliares=_features_auxiliares_vacias(),
         n_por_fuente=150,
     )
 
@@ -94,11 +115,105 @@ def test_libros_ya_leidos_se_excluyen_de_todas_las_fuentes():
         genero_por_usuario={},
         libros_leidos={"u1": {"a"}},
         n_interacciones_por_usuario={},
+        features_auxiliares=_features_auxiliares_vacias(),
         n_por_fuente=150,
     )
 
     assert "a" not in set(candidatos["id_libro"])
     assert "b" in set(candidatos["id_libro"])
+
+
+def test_calcular_features_auxiliares():
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u1", "u1"],
+            "id_libro": ["a", "b", "c"],
+            "fecha": ["01-01-2020", "01-01-2021", "01-01-2022"],
+            "rating": [8, 8, 8],
+        }
+    )
+    libros = pd.DataFrame(
+        {
+            "id_libro": ["a", "b", "c", "d"],
+            "autor": ["KING, STEPHEN", "KING, STEPHEN", "OTRO", None],
+            "genero": ["Terror", "terror", "Novela negra", "Ensayo"],
+            "anio_edicion": ["2000", "2010", "2020", "1990"],
+        }
+    )
+
+    aux = calcular_features_auxiliares(interacciones, libros)
+
+    # u1 leyo 2 libros de "KING, STEPHEN" (a, b) y 1 de "OTRO" (c)
+    assert aux["n_libros_autor_leidos_por_usuario"]["u1"]["KING, STEPHEN"] == 2
+    assert aux["n_libros_autor_leidos_por_usuario"]["u1"]["OTRO"] == 1
+    # anio promedio de a,b,c = (2000+2010+2020)/3
+    assert aux["anio_edicion_promedio_por_usuario"]["u1"] == 2010.0
+    # generos normalizados: "terror" (a,b, normalizado igual) + "novela negra" (c) = 2 distintos
+    assert aux["n_generos_distintos_por_usuario"]["u1"] == 2
+    # la interaccion mas reciente de todo el dataset es "c" (01-01-2022) -> 0 dias
+    assert aux["dias_desde_ultima_interaccion_por_usuario"]["u1"] == 0
+
+
+def test_generar_candidatos_incluye_features_de_autor_y_recencia():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    aux = {
+        "autor_por_libro": {"a": "KING, STEPHEN"},
+        "anio_edicion_por_libro": {"a": 2015.0},
+        "n_libros_autor_leidos_por_usuario": {"u1": {"KING, STEPHEN": 3}},
+        "anio_edicion_promedio_por_usuario": {"u1": 2000.0},
+        "n_generos_distintos_por_usuario": {"u1": 4},
+        "dias_desde_ultima_interaccion_por_usuario": {"u1": 30},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    fila = candidatos.iloc[0]
+    assert fila["en_autor_leido"] == 1
+    assert fila["n_libros_autor_leidos"] == 3
+    assert fila["anio_edicion_dif"] == 2015.0 - 2000.0
+    assert fila["n_generos_distintos_usuario"] == 4
+    assert fila["dias_desde_ultima_interaccion_usuario"] == 30
+
+
+def test_generar_candidatos_sentinel_cuando_no_hay_dato_de_recencia():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u_sin_fecha"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u_sin_fecha": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=_features_auxiliares_vacias(),
+        n_por_fuente=150,
+    )
+
+    fila = candidatos.iloc[0]
+    assert fila["dias_desde_ultima_interaccion_usuario"] == SENTINEL_DIAS_DESCONOCIDO
+    assert fila["en_autor_leido"] == 0
+    assert fila["anio_edicion_dif"] == 0.0
 
 
 def test_armar_dataset_marca_el_positivo_y_arma_group():

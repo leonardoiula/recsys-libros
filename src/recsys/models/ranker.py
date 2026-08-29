@@ -24,6 +24,13 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from recsys.data import libros_leidos_por_usuario, split_train_val
+from recsys.evaluation import evaluar_ndcg_personalizado
+from recsys.models.als import fit_als
+from recsys.models.als import recomendar_por_usuario as _recomendar_als
+from recsys.models.popularity import fit_popularity
+from recsys.models.popularity_segmentada import _normalizar_genero, fit_popularity_por_genero, genero_preferido_por_usuario
+
 FEATURES = [
     "score_als",
     "rank_als",
@@ -36,7 +43,71 @@ FEATURES = [
     "en_genero",
     "n_interacciones_libro",
     "n_interacciones_usuario",
+    "en_autor_leido",
+    "n_libros_autor_leidos",
+    "anio_edicion_dif",
+    "n_generos_distintos_usuario",
+    "dias_desde_ultima_interaccion_usuario",
 ]
+
+SENTINEL_DIAS_DESCONOCIDO = 99999
+
+
+def calcular_features_auxiliares(interacciones: pd.DataFrame, libros: pd.DataFrame) -> dict:
+    """Precalcula, a partir de `interacciones` (siempre `train_candidatos`,
+    nunca datos que el ranker vea como etiqueta), los lookups que necesita
+    `generar_candidatos_con_features` para las features de autor/año de
+    edición/diversidad de género/recencia:
+
+    - `autor_por_libro` / `anio_edicion_por_libro`: metadata directa de
+      `libros` (`anio_edicion` parseado a numérico, `errors="coerce"`).
+    - `n_libros_autor_leidos_por_usuario`: `{id_lector: {autor: n}}` --
+      cuántos libros de cada autor ya leyó cada usuario.
+    - `anio_edicion_promedio_por_usuario`: antigüedad promedio de lo que
+      lee cada usuario, para comparar contra la del candidato.
+    - `n_generos_distintos_por_usuario`: cuántos géneros distintos
+      (normalizados, mismo criterio que `popularity_segmentada.py`) leyó
+      cada usuario -- generalista vs especializado.
+    - `dias_desde_ultima_interaccion_por_usuario`: recencia general del
+      usuario, relativa a la fecha más reciente de todo `interacciones`.
+    """
+    metadata = libros.set_index("id_libro")
+    autor_por_libro = metadata["autor"].to_dict()
+    anio_edicion_por_libro = pd.to_numeric(metadata["anio_edicion"], errors="coerce").to_dict()
+    genero_por_libro = _normalizar_genero(metadata["genero"]).to_dict()
+
+    con_autor = interacciones.assign(autor=interacciones["id_libro"].map(autor_por_libro))
+    n_libros_autor_leidos_por_usuario: dict = {}
+    for (id_lector, autor), n in con_autor.dropna(subset=["autor"]).groupby(["id_lector", "autor"]).size().items():
+        n_libros_autor_leidos_por_usuario.setdefault(id_lector, {})[autor] = int(n)
+
+    con_anio = interacciones.assign(anio_edicion=interacciones["id_libro"].map(anio_edicion_por_libro))
+    anio_edicion_promedio_por_usuario = (
+        con_anio.dropna(subset=["anio_edicion"]).groupby("id_lector")["anio_edicion"].mean().to_dict()
+    )
+
+    con_genero = interacciones.assign(genero=interacciones["id_libro"].map(genero_por_libro))
+    n_generos_distintos_por_usuario = (
+        con_genero.dropna(subset=["genero"]).groupby("id_lector")["genero"].nunique().to_dict()
+    )
+
+    fechas = pd.to_datetime(interacciones["fecha"], format="%d-%m-%Y", errors="coerce")
+    fecha_referencia = fechas.max()
+    ultima_fecha_por_usuario = (
+        interacciones.assign(_fecha=fechas).dropna(subset=["_fecha"]).groupby("id_lector")["_fecha"].max()
+    )
+    dias_desde_ultima_interaccion_por_usuario = (
+        (fecha_referencia - ultima_fecha_por_usuario).dt.days.to_dict()
+    )
+
+    return {
+        "autor_por_libro": autor_por_libro,
+        "anio_edicion_por_libro": anio_edicion_por_libro,
+        "n_libros_autor_leidos_por_usuario": n_libros_autor_leidos_por_usuario,
+        "anio_edicion_promedio_por_usuario": anio_edicion_promedio_por_usuario,
+        "n_generos_distintos_por_usuario": n_generos_distintos_por_usuario,
+        "dias_desde_ultima_interaccion_por_usuario": dias_desde_ultima_interaccion_por_usuario,
+    }
 
 
 def generar_candidatos_con_features(
@@ -50,6 +121,7 @@ def generar_candidatos_con_features(
     genero_por_usuario: dict,
     libros_leidos: dict,
     n_interacciones_por_usuario: dict,
+    features_auxiliares: dict,
     n_por_fuente: int = 150,
 ) -> pd.DataFrame:
     """Arma, para cada usuario, la unión de candidatos de las tres fuentes
@@ -64,9 +136,22 @@ def generar_candidatos_con_features(
     queda con score 0.0 y rank `n_por_fuente` (sentinel: "justo afuera de
     la ventana de esa fuente").
 
+    `features_auxiliares` es el dict que arma `calcular_features_auxiliares`
+    (autor, año de edición, diversidad de género, recencia). Un candidato
+    sin dato conocido (autor/año de edición ausente, o usuario sin
+    historial suficiente) queda con el sentinel correspondiente (0 para
+    conteos/diferencias, `SENTINEL_DIAS_DESCONOCIDO` para recencia) -- no
+    se imputa a ciegas.
+
     Devuelve un DataFrame largo con columnas `id_lector`, `id_libro` +
     `FEATURES`.
     """
+    autor_por_libro = features_auxiliares["autor_por_libro"]
+    anio_edicion_por_libro = features_auxiliares["anio_edicion_por_libro"]
+    n_libros_autor_leidos_por_usuario = features_auxiliares["n_libros_autor_leidos_por_usuario"]
+    anio_edicion_promedio_por_usuario = features_auxiliares["anio_edicion_promedio_por_usuario"]
+    n_generos_distintos_por_usuario = features_auxiliares["n_generos_distintos_por_usuario"]
+    dias_desde_ultima_interaccion_por_usuario = features_auxiliares["dias_desde_ultima_interaccion_por_usuario"]
     n_por_libro = stats_popularidad.set_index("id_libro")["n"].to_dict()
     score_popularidad_por_libro = stats_popularidad.set_index("id_libro")["score"].to_dict()
     ranking_global_ids = stats_popularidad["id_libro"].tolist()
@@ -129,7 +214,23 @@ def generar_candidatos_con_features(
                 agregados += 1
 
         n_usuario = n_interacciones_por_usuario.get(id_lector, 0)
+        autores_leidos = n_libros_autor_leidos_por_usuario.get(id_lector, {})
+        anio_promedio_usuario = anio_edicion_promedio_por_usuario.get(id_lector)
+        n_generos_distintos = n_generos_distintos_por_usuario.get(id_lector, 0)
+        dias_desde_ultima = dias_desde_ultima_interaccion_por_usuario.get(
+            id_lector, SENTINEL_DIAS_DESCONOCIDO
+        )
+
         for id_libro, f in candidatos.items():
+            autor = autor_por_libro.get(id_libro)
+            n_autor_leidos = autores_leidos.get(autor, 0) if pd.notna(autor) else 0
+
+            anio_candidato = anio_edicion_por_libro.get(id_libro)
+            if pd.notna(anio_candidato) and anio_promedio_usuario is not None:
+                anio_edicion_dif = anio_candidato - anio_promedio_usuario
+            else:
+                anio_edicion_dif = 0.0
+
             filas_resultado.append(
                 {
                     "id_lector": id_lector,
@@ -145,6 +246,11 @@ def generar_candidatos_con_features(
                     "en_genero": f.get("en_genero", 0),
                     "n_interacciones_libro": n_por_libro.get(id_libro, 0),
                     "n_interacciones_usuario": n_usuario,
+                    "en_autor_leido": 1 if n_autor_leidos > 0 else 0,
+                    "n_libros_autor_leidos": n_autor_leidos,
+                    "anio_edicion_dif": anio_edicion_dif,
+                    "n_generos_distintos_usuario": n_generos_distintos,
+                    "dias_desde_ultima_interaccion_usuario": dias_desde_ultima,
                 }
             )
 
@@ -187,6 +293,7 @@ def armar_dataset_entrenamiento(
             fila_faltante["rank_als"] = n_por_fuente
             fila_faltante["rank_popularidad"] = n_por_fuente
             fila_faltante["rank_genero"] = n_por_fuente
+            fila_faltante["dias_desde_ultima_interaccion_usuario"] = SENTINEL_DIAS_DESCONOCIDO
             fila_faltante["id_lector"] = id_lector
             fila_faltante["id_libro"] = libro_objetivo
             grupo = pd.concat([grupo, pd.DataFrame([fila_faltante])], ignore_index=True)
@@ -269,3 +376,93 @@ def recomendar_por_usuario(
         recomendaciones[id_lector] = candidatos[:k]
 
     return recomendaciones
+
+
+def evaluar_pipeline(
+    interacciones: pd.DataFrame,
+    libros: pd.DataFrame,
+    seed: int,
+    n_por_fuente: int = 150,
+    lgbm_params: dict | None = None,
+    k: int = 20,
+) -> dict:
+    """Corre el pipeline completo del ranker de dos etapas para un seed:
+    split de **tres niveles** (`train_candidatos`/`train_ranker`/`test_final`,
+    ver docstring del módulo), fit de las señales solo con
+    `train_candidatos`, entrenamiento del `LGBMRanker` con las etiquetas
+    de `train_ranker`, y evaluación de NDCG@k en `test_final`. También
+    evalúa ALS solo sobre las mismas señales (mismo `train_candidatos`),
+    para una comparación controlada -- aísla el efecto de agregar la capa
+    de ranking, no el de tener más o menos datos de entrenamiento.
+
+    `lgbm_params` se pasa tal cual a `fit_ranker` (`None` -> hiperparámetros
+    conservadores por default). Existe para reusarse tanto desde
+    `scripts/evaluate_ranker.py` (hiperparámetros fijos) como desde
+    `scripts/tune_ranker.py` (búsqueda con optuna) sin duplicar esta
+    lógica en cada script.
+
+    Devuelve `{"ndcg_als": ..., "ndcg_ranker": ...}`.
+    """
+    train_candidatos_full, test_final = split_train_val(interacciones, n_val=1, seed=seed)
+    train_candidatos, train_ranker = split_train_val(train_candidatos_full, n_val=1, seed=seed + 1000)
+
+    libros_leidos_stage1 = libros_leidos_por_usuario(train_candidatos)
+    n_interacciones_por_usuario = train_candidatos.groupby("id_lector").size().to_dict()
+    stats_popularidad = fit_popularity(train_candidatos)
+    ranking_global = stats_popularidad["id_libro"].tolist()
+    stats_por_genero = fit_popularity_por_genero(train_candidatos, libros)
+    genero_por_usuario = genero_preferido_por_usuario(train_candidatos, libros)
+    modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos)
+    features_auxiliares = calcular_features_auxiliares(train_candidatos, libros)
+
+    args_candidatos = dict(
+        modelo_als=modelo_als,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario=fila_por_usuario,
+        libros_por_columna=libros_por_columna,
+        stats_popularidad=stats_popularidad,
+        stats_por_genero=stats_por_genero,
+        genero_por_usuario=genero_por_usuario,
+        n_interacciones_por_usuario=n_interacciones_por_usuario,
+        features_auxiliares=features_auxiliares,
+        n_por_fuente=n_por_fuente,
+    )
+
+    usuarios_ranker = train_ranker["id_lector"].unique().tolist()
+    candidatos_train_ranker = generar_candidatos_con_features(
+        usuarios=usuarios_ranker, libros_leidos=libros_leidos_stage1, **args_candidatos
+    )
+    X, y, group = armar_dataset_entrenamiento(
+        candidatos_train_ranker, train_ranker[["id_lector", "id_libro"]], n_por_fuente=n_por_fuente
+    )
+    modelo_ranker = fit_ranker(X, y, group, **(lgbm_params or {}))
+
+    libros_leidos_hasta_ranker = libros_leidos_por_usuario(train_candidatos_full)
+    usuarios_test = test_final["id_lector"].unique().tolist()
+
+    candidatos_test = generar_candidatos_con_features(
+        usuarios=usuarios_test, libros_leidos=libros_leidos_hasta_ranker, **args_candidatos
+    )
+    recs_ranker = recomendar_por_usuario(
+        usuarios=usuarios_test,
+        modelo_ranker=modelo_ranker,
+        candidatos_df=candidatos_test,
+        ranking_global=ranking_global,
+        libros_leidos=libros_leidos_hasta_ranker,
+        k=k,
+    )
+    ndcg_ranker = evaluar_ndcg_personalizado(test_final, recs_ranker, k)
+
+    recs_als = _recomendar_als(
+        usuarios=usuarios_test,
+        modelo=modelo_als,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario=fila_por_usuario,
+        libros_por_columna=libros_por_columna,
+        ranking_global=ranking_global,
+        libros_leidos=libros_leidos_hasta_ranker,
+        k=k,
+    )
+    ndcg_als = evaluar_ndcg_personalizado(test_final, recs_als, k)
+
+    return {"ndcg_als": ndcg_als, "ndcg_ranker": ndcg_ranker}

@@ -26,7 +26,12 @@ from recsys.models.popularity_segmentada import (
     genero_preferido_por_usuario,
     recomendar_por_usuario,
 )
-from recsys.models.ranker import armar_dataset_entrenamiento, fit_ranker, generar_candidatos_con_features
+from recsys.models.ranker import (
+    armar_dataset_entrenamiento,
+    calcular_features_auxiliares,
+    fit_ranker,
+    generar_candidatos_con_features,
+)
 from recsys.models.ranker import recomendar_por_usuario as recomendar_por_usuario_ranker
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -133,6 +138,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     stats_por_genero = fit_popularity_por_genero(train_candidatos, libros)
     genero_por_usuario = genero_preferido_por_usuario(train_candidatos, libros)
     modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos)
+    features_auxiliares = calcular_features_auxiliares(train_candidatos, libros)
 
     args_candidatos = dict(
         modelo_als=modelo_als,
@@ -143,6 +149,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
         stats_por_genero=stats_por_genero,
         genero_por_usuario=genero_por_usuario,
         n_interacciones_por_usuario=n_interacciones_por_usuario,
+        features_auxiliares=features_auxiliares,
         n_por_fuente=N_POR_FUENTE_RANKER,
     )
 

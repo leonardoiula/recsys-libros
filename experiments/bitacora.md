@@ -1146,3 +1146,93 @@ leerlo:
   limitación del tamaño del test set de Kaggle, no de la metodología
   local. Lo que sí cambia es cuánto peso ponerle a cada submission
   futura.
+
+---
+
+## Se retoma el ranker: features nuevas + tuneo de LightGBM
+
+### Objetivo
+
+Con el criterio recalibrado (confiar en la validación cruzada local para
+decisiones finas, reservar Kaggle para confirmar mejoras grandes), se
+retomaron las dos líneas que habían quedado pendientes: features nuevas
+para el ranker y tuneo de hiperparámetros de `LGBMRanker` -- esta vez con
+CV desde el arranque, nunca contra un solo split.
+
+### Features nuevas (`ranker.py::calcular_features_auxiliares`)
+
+Con buena cobertura entre libros con interacción (autor conocido 99.99%,
+año de edición 100%, verificado antes de implementar):
+- `en_autor_leido` / `n_libros_autor_leidos`: ¿el usuario ya leyó a este
+  autor?, cuántas veces.
+- `anio_edicion_dif`: diferencia entre el año de edición del candidato y
+  el promedio de lo que lee el usuario (clásicos vs. novedades).
+- `n_generos_distintos_usuario`: diversidad de género del historial
+  (generalista vs. especializado).
+- `dias_desde_ultima_interaccion_usuario`: recencia general del usuario,
+  relativa a la fecha más reciente de `train_candidatos`.
+
+Todas calculadas sobre `train_candidatos` únicamente (mismo principio
+que las señales base) para no filtrar información al ranker. Se dejaron
+afuera, a propósito, editorial (señal esperada más débil) y co-lectura
+ítem-ítem (cara de calcular bien, se documenta como idea futura).
+
+### Refactor: `ranker.py::evaluar_pipeline`
+
+La lógica de split de tres niveles + fit + evaluación que antes vivía
+duplicada en `scripts/evaluate_ranker.py` se movió a una función en
+`ranker.py` (`evaluar_pipeline`), reusada tanto por ese script como por
+`scripts/tune_ranker.py` (nuevo) -- evita mantener dos copias del mismo
+pipeline.
+
+### Resultado: features nuevas (grande y consistente)
+
+| | NDCG@20 (CV, 3 seeds) |
+|---|---|
+| ALS solo | 0.094406 ± 0.001359 |
+| Ranker, features viejas (11) | 0.097641 ± 0.001152 |
+| **Ranker, +5 features nuevas (16)** | **0.106815 ± 0.001498** |
+
+**+9.4% sobre el ranker sin estas features, positivo en los 3 seeds
+individualmente** (0.10518 / 0.10713 / 0.10813) -- la mejora más sólida
+de toda la sesión con el ranker, muy por encima del "piso de ruido" que
+identificamos en la sección anterior. Autor/año/diversidad/recencia
+aportan señal real que ALS + popularidad + género no estaban capturando.
+
+### Resultado: tuneo de LightGBM (marginal, no se adopta)
+
+`scripts/tune_ranker.py`: optuna sobre `num_leaves`, `learning_rate`,
+`n_estimators`, `min_child_samples`, `reg_alpha`, `reg_lambda` -- cada
+trial evaluado con 2 seeds (nunca 1), mejor config confirmado con los 3
+seeds completos al final:
+
+| | NDCG@20 (CV, 3 seeds) |
+|---|---|
+| Conservador (`num_leaves=31, learning_rate=0.05, n_estimators=200`) | 0.106815 ± 0.001498 |
+| Tuneado (`num_leaves=23, learning_rate=0.017, n_estimators=391, ...`) | 0.108127 ± 0.001499 |
+
++1.2%, pero la mejora absoluta (0.0013) es **menor que el desvío entre
+seeds (0.0015)** -- aplicando el mismo criterio que aprendimos con
+Kaggle (no confiar en diferencias menores que la variabilidad natural),
+esto es indistinguible de ruido con solo 3 seeds. **Se decide no
+adoptarlo** -- quedan los hiperparámetros conservadores en producción,
+más simples y con básicamente el mismo resultado.
+
+### Decisión
+
+Se wirean las features nuevas (ya estaban en `submit.py` desde que se
+implementaron) y se genera una submission
+(`ranker_20260829-170942_ranker-features-autor-anio-genero-recencia.csv`)
+para confirmar en Kaggle -- a diferencia de las mejoras marginales de
+antes, esta es grande (+13.1% sobre ALS) y consistente en los 3 seeds,
+justo el tipo de cambio que el criterio recalibrado dice que vale la
+pena confirmar con una submission real.
+
+### Próximos pasos
+
+- **Pendiente de confirmar en Kaggle.**
+- Ideas de features que quedaron afuera por ahora: co-lectura ítem-ítem
+  (cara de calcular bien), editorial, metadata de `resumen`/texto.
+- Si el resultado en Kaggle confirma la mejora, reconsiderar si
+  `"ranker"` debería pasar a ser el modelo de referencia del proyecto en
+  vez de `"als"`.

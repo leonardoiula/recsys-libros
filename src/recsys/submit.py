@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import re
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -117,8 +119,34 @@ def armar_submission(ejemplo_df: pd.DataFrame, recomendaciones: dict) -> pd.Data
     return pd.DataFrame(filas, columns=["id_lector", "id_libro"])
 
 
-def generar_submission(model: str) -> Path:
-    """Entrena `model` con todos los datos y guarda el csv de entrega."""
+def _nombre_submission(model: str, tag: str | None) -> str:
+    """Arma un nombre de archivo único con timestamp -- nunca pisa una
+    submission anterior (cada corrida es una versión distinta, y las que
+    ya se subieron a Kaggle no se pueden regenerar del código actual sin
+    volver al commit correspondiente)."""
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    sufijo_tag = ""
+    if tag:
+        tag_limpio = re.sub(r"[^a-zA-Z0-9._-]+", "-", tag).strip("-")
+        if tag_limpio:
+            sufijo_tag = f"_{tag_limpio}"
+
+    base = f"{model}_{timestamp}{sufijo_tag}"
+    nombre = f"{base}.csv"
+    contador = 2
+    while (SUBMISSIONS_DIR / nombre).exists():
+        nombre = f"{base}-{contador}.csv"
+        contador += 1
+    return nombre
+
+
+def generar_submission(model: str, tag: str | None = None) -> Path:
+    """Entrena `model` con todos los datos y guarda el csv de entrega.
+
+    El archivo se guarda como `{model}_{timestamp}[_{tag}].csv` -- nunca
+    con el nombre pelado `{model}.csv`, para no pisar submissions
+    anteriores (en particular, las que ya se subieron a Kaggle).
+    """
     if model not in MODELOS:
         raise ValueError(f"Modelo desconocido: {model!r}. Opciones: {sorted(MODELOS)}")
 
@@ -130,7 +158,7 @@ def generar_submission(model: str) -> Path:
     submission = armar_submission(ejemplo_df, recomendaciones)
 
     SUBMISSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = SUBMISSIONS_DIR / f"{model}.csv"
+    out_path = SUBMISSIONS_DIR / _nombre_submission(model, tag)
     submission.to_csv(out_path, index=False)
     return out_path
 
@@ -138,9 +166,10 @@ def generar_submission(model: str) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Genera un csv de entrega para Kaggle.")
     parser.add_argument("--model", choices=sorted(MODELOS), required=True)
+    parser.add_argument("--tag", default=None, help="Sufijo descriptivo opcional para el nombre del archivo.")
     args = parser.parse_args()
 
-    out_path = generar_submission(args.model)
+    out_path = generar_submission(args.model, tag=args.tag)
     print(f"Submission guardada en {out_path}")
 
 

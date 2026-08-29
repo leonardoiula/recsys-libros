@@ -703,3 +703,77 @@ ampliar la búsqueda primero.
   se subió a Kaggle en este paquete.
 - **Sigue en pie** la idea de dos etapas (ALS + género + popularidad
   como features de un ranker LightGBM) -- no se tocó en este paquete.
+
+---
+
+## Regresión en Kaggle: el ALS tuneado con optuna empeoró el score real
+
+### Lo que pasó
+
+Se subió el `als.csv` generado con los hiperparámetros elegidos por
+optuna (`factors=256, regularization=0.128, alpha=4.718`). Resultado:
+
+| | NDCG@20 local | NDCG@20 Kaggle |
+|---|---|---|
+| ALS anterior (rating crudo, factors=128, regularization=0.1) | 0.100883 | 0.03864 |
+| ALS tuneado (confianza `1+alpha*rating`, factors=256, regularization=0.128, alpha=4.718) | 0.112530 (**+11.5%**) | **0.03341 (-13.5%)** |
+
+**El modelo que mejoró el NDCG local terminó peor en Kaggle.** No es un
+matiz -- es la señal más fuerte hasta ahora de que el NDCG local, tal
+como se calcula hoy (aun con el split corregido), no es un proxy
+confiable para decisiones de *optimización fina* de hiperparámetros,
+aunque sí lo fue para decisiones más gruesas (ALS >> popularidad
+segmentada >> popularidad, confirmado en las tres versiones vía Kaggle
+real).
+
+### Hipótesis de por qué pasó
+
+1. **Sobreajuste al split de validación local por exceso de búsqueda.**
+   30 trials de optuna, todos evaluados contra el mismo split fijo
+   (`n_val=1`, `seed=42`, 8,904 usuarios). Cuantos más configs se prueban
+   contra el mismo conjunto de validación, más probable es terminar
+   eligiendo el que mejor se ajusta al *ruido específico* de ese split
+   en particular, no una mejora real y generalizable -- el clásico
+   problema de "hyperparameter hacking" cuando se hacen muchas
+   iteraciones contra un único held-out set.
+2. **El propio trade-off que ya se había detectado y no se tomó en
+   serio:** el config tuneado bajó el Recall@200 de 0.398 a 0.382 al
+   mismo tiempo que subía el NDCG@20. Eso ya era una señal de que el
+   modelo se estaba volviendo *más afilado* en su propio top-20 (más
+   basado en diferenciar fuerte entre ratings altos y bajos, con
+   `alpha≈4.7`) a costa de cobertura general -- si la tarea real de
+   Kaggle premia más la cobertura de lo que el NDCG@20 local logra
+   capturar, ese trade-off explica directamente la caída.
+3. **La fórmula de confianza en sí (`1+alpha*rating`) puede no
+   transferir igual que el rating crudo**, independientemente del
+   tuneo de `factors`/`regularization` -- no se aisló este efecto (no
+   se subió a Kaggle una versión intermedia con la fórmula nueva pero
+   los hiperparámetros viejos), así que no se puede saber cuánto de la
+   caída es la fórmula y cuánto es el sobreajuste del sweep.
+
+### Decisión pendiente
+
+Dado que el config anterior (rating crudo, factors=128,
+regularization=0.1) tiene mejor score *real* confirmado en Kaggle
+(0.03864 vs 0.03341), lo responsable es no quedarse con el config
+"mejorado" solo porque ganó en local. Se le presentó esto al usuario
+para decidir cómo seguir (revertir a la config anterior, probar una
+config intermedia para aislar la causa, u otra cosa) -- ver la
+continuación de esta sección una vez que se decida.
+
+### Próximos pasos
+
+- **Elevar la prioridad** del ítem ya anotado sobre corregir la
+  metodología de evaluación local -- esta regresión es evidencia directa
+  (no solo teórica) de que optimizar agresivamente contra el NDCG local
+  actual puede empeorar el resultado real.
+- **Para el futuro:** si se vuelve a usar optuna, considerar un esquema
+  de validación menos propenso a sobreajuste (ej. cross-validation con
+  varios splits/seeds en vez de uno solo, o un conjunto de validación
+  separado del usado para elegir el mejor trial) antes de confiar en un
+  solo número de un solo split para elegir hiperparámetros finales.
+- **Presupuesto de submissions:** Kaggle probablemente limita cuántas
+  entregas por día se pueden subir -- vale la pena ser deliberado sobre
+  qué configs se confirman en Kaggle en vez de subir cada iteración
+  local, dado lo que se acaba de confirmar sobre la confiabilidad del
+  proxy local.

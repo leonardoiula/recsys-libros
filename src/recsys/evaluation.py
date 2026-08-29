@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import statistics
+from typing import Callable
 
 import pandas as pd
 
@@ -76,6 +78,28 @@ def evaluar_ndcg_personalizado(
     if not scores:
         return 0.0
     return sum(scores) / len(scores)
+
+
+def evaluar_multisplit(fn_entrenar_y_evaluar: Callable[[int], float], seeds: list) -> dict:
+    """Corre `fn_entrenar_y_evaluar(seed)` (entrena + evalúa un pipeline
+    completo, devuelve un NDCG@k u otra métrica) sobre varios `seeds` y
+    reporta media y desvío en vez de un solo número.
+
+    Nace de un caso real: un sweep de hiperparámetros de ALS sobre un
+    único split (`seed=42`) encontró un config que mejoraba el NDCG local
+    +11.5% pero empeoraba el score real de Kaggle -13.5% -- sobreajuste
+    al ruido específico de ese split. Evaluar sobre varios seeds y mirar
+    el desvío, no solo la media, ayuda a detectar mejoras frágiles que no
+    generalizan antes de confiar en ellas (ver `experiments/bitacora.md`,
+    sección "Regresión en Kaggle").
+
+    Devuelve {"valores": [...], "media": ..., "desvio": ...} (`desvio` es
+    el desvío estándar muestral; 0.0 si hay un solo seed).
+    """
+    valores = [fn_entrenar_y_evaluar(seed) for seed in seeds]
+    media = sum(valores) / len(valores)
+    desvio = statistics.stdev(valores) if len(valores) > 1 else 0.0
+    return {"valores": valores, "media": media, "desvio": desvio}
 
 
 def recall_at_k(recomendados: list, relevantes: set, k: int) -> float:

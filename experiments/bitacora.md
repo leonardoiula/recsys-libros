@@ -779,3 +779,127 @@ nueva submission antes de resolver esto, tenerlo presente.
   qué configs se confirman en Kaggle en vez de subir cada iteración
   local, dado lo que se acaba de confirmar sobre la confiabilidad del
   proxy local.
+
+---
+
+## v3 — Ranker de dos etapas (ALS + género + popularidad → LightGBM)
+
+### Objetivo / hipótesis
+
+Es la idea "próximo candidato" anotada desde la sección v2: en vez de un
+solo modelo base, generar candidatos con varias señales (ALS,
+popularidad por género, popularidad global) y dejar que un modelo
+supervisado (LightGBM) aprenda a combinarlas y reordenarlas mejor de lo
+que cualquiera hace sola.
+
+**Restricción explícita del usuario para este diseño:** no repetir el
+error de optimizar contra un solo split local. Por eso este modelo se
+evalúa desde el arranque con **validación cruzada sobre 3 seeds**, no
+un split fijo -- es el "próximo paso" que había quedado anotado tras el
+episodio de la regresión de ALS en Kaggle.
+
+### Lógica del enfoque
+
+**Split de tres niveles** para evitar leakage de un modelo apilado (un
+ranker que usa el score de otro modelo como *feature* necesita que ese
+score salga de datos que el ranker no vio como etiqueta):
+
+```python
+train_candidatos, test_final = split_train_val(interacciones, n_val=1, seed=S)
+train_candidatos, train_ranker = split_train_val(train_candidatos, n_val=1, seed=S+1000)
+```
+
+- `train_candidatos`: fit de ALS/popularidad/género (las señales).
+- `train_ranker`: etiquetas conocidas (el próximo libro real de cada
+  usuario) para entrenar el `LGBMRanker`, con candidatos/features
+  generados por los modelos fit solo en `train_candidatos`.
+- `test_final`: hold-out final, aislado de todo lo anterior.
+
+Se repite para 3 seeds y se reporta media ± desvío (`evaluation.py::evaluar_multisplit`,
+nueva utilidad genérica pensada para reusarse con cualquier modelo futuro).
+
+**`ranker.py::generar_candidatos_con_features`**: por usuario, une los
+candidatos de las tres fuentes (ALS vía `modelo.recommend(N=150)` con
+sus scores reales, popularidad global top-150, popularidad por género
+top-150 si se conoce el género preferido), excluyendo ya leídos. Cada
+candidato queda con `score_*`/`rank_*` por fuente que lo propuso (rank =
+posición real dentro de esa fuente, no posición entre los candidatos
+finalmente elegidos) y `en_*` (1/0, qué fuentes lo propusieron); un
+candidato que no vino de una fuente queda con score 0.0 y rank 150
+(sentinel "justo afuera de la ventana"). Reusa `fit_popularity`,
+`fit_popularity_por_genero` y `genero_preferido_por_usuario` tal cual --
+no duplica esa lógica.
+
+**`ranker.py::armar_dataset_entrenamiento`**: arma `(X, y, group)` para
+`lightgbm.LGBMRanker.fit`. Si el libro-etiqueta de un usuario no está
+entre sus candidatos generados, se lo inyecta igual con features
+"ausente" -- si no, ese usuario no aporta ningún positivo al
+entrenamiento (práctica estándar en learning-to-rank).
+
+**`ranker.py::fit_ranker`**: `LGBMRanker(objective="lambdarank", ...)`
+con hiperparámetros **conservadores** (`num_leaves=31, learning_rate=0.05,
+n_estimators=200`), sin sweep agresivo tipo optuna en esta primera
+versión -- para no repetir el mismo error con un modelo nuevo.
+
+### Código destacado
+
+- `src/recsys/models/ranker.py` — todo el modelo v3
+- `src/recsys/evaluation.py::evaluar_multisplit` — validación cruzada genérica
+- `scripts/evaluate_ranker.py` — evaluación de 3 seeds, ALS solo vs ranker
+- `src/recsys/submit.py::_recomendaciones_ranker` — wiring a producción
+
+### Resultado
+
+Validación cruzada sobre 3 seeds (42, 7, 123), NDCG@20 en `test_final`:
+
+| seed | ALS solo | Ranker (dos etapas) |
+|---|---|---|
+| 42 | 0.098168 | 0.102442 |
+| 7 | 0.103139 | 0.105693 |
+| 123 | 0.100474 | 0.105327 |
+| **media ± desvío** | **0.100594 ± 0.002488** | **0.104487 ± 0.001780** |
+
+**El ranker le ganó a ALS solo en los 3 seeds**, no solo en promedio
+(+3.9%) -- y con menor desvío entre seeds (0.00178 vs 0.00249), más
+estable. Es una señal bastante más confiable que la mejora frágil que
+tuvo el sweep de ALS con optuna (que perdió justo por no sostenerse
+fuera del split en el que se midió).
+
+**Caveat:** esta comparación usa el ALS actual (`factors=256, alpha=4.718`)
+como una de las señales del ranker -- el mismo config que ya sabemos que
+no generalizó igual en Kaggle que en local. El ranker suma valor por
+*encima* de ese ALS, pero hereda parte de esa incertidumbre sobre la
+señal de base.
+
+**Simplificación de producción**: para la submission real no hay un
+"futuro" que reservar como `test_final` -- se entrena un solo split de
+dos niveles (`train_candidatos`/`train_ranker`, `seed=42`) y los modelos
+de etapa 1 se reusan tal cual (sin refittear con todos los datos) tanto
+para entrenar el ranker como para generar los candidatos finales, para
+evitar el desajuste de aplicar el ranker sobre scores de un modelo
+distinto al que vio durante su entrenamiento. El costo: los candidatos
+finales no aprovechan la interacción más reciente de cada usuario como
+señal (sí se usa para filtrar libros ya leídos).
+
+Wireado a `submit.py` como modelo **nuevo** `"ranker"` -- no reemplaza
+`"als"`, conviven (mismo criterio que `popularity`/`popularity_segmentada`/`als`
+hoy). Submission generada
+(`outputs/submissions/ranker_20260829-150300_ranker-dos-etapas.csv`),
+pendiente de confirmar en Kaggle.
+
+### Próximos pasos / ideas descartadas
+
+- **Pendiente de confirmar en Kaggle** -- es la única forma real de
+  saber si la mejora de +3.9% (consistente en 3 seeds locales) se
+  sostiene, dado el precedente de la regresión de ALS.
+- **Pendiente:** resolver primero la incertidumbre del ALS de base
+  (revisar si conviene volver a `factors=128/alpha=1.0` para la señal
+  del ranker también) antes de invertir en tunear el ranker en sí.
+- **No se hizo (a propósito) un sweep de hiperparámetros del
+  `LGBMRanker`** en esta primera versión -- si se hace en el futuro,
+  usar la misma validación cruzada multi-seed, no un solo split.
+- **Nota técnica:** `scripts/evaluate_ranker.py` imprime resultados con
+  el símbolo "±", que rompe el filtro `grep -v` usado para limpiar el
+  log de progreso de `implicit`/LightGBM (lo trata como binario y
+  descarta la salida) -- si se re-corre el script, mejor sin ese grep,
+  o revisar el archivo de output completo en vez de la salida filtrada.

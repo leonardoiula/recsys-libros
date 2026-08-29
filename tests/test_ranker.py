@@ -1,0 +1,147 @@
+"""Tests para la generación de candidatos/features del ranker y el armado
+del dataset de entrenamiento (group/inyección de positivos faltantes).
+
+No se testea `fit_ranker` en sí (entrenar un `LGBMRanker` real): es
+responsabilidad de `lightgbm`, ya probada por esa librería -- mismo
+criterio que con `implicit` en `test_als.py`/`test_bpr.py`.
+"""
+
+import numpy as np
+import pandas as pd
+
+from recsys.models.ranker import FEATURES, armar_dataset_entrenamiento, generar_candidatos_con_features
+
+
+class _ModeloALSFalso:
+    def __init__(self, columnas_y_scores_por_fila: dict):
+        self._datos = columnas_y_scores_por_fila
+
+    def recommend(self, userids, user_items, N, filter_already_liked_items):
+        assert filter_already_liked_items is True
+        ids_items = np.array([self._datos[uid][0][:N] for uid in userids])
+        scores = np.array([self._datos[uid][1][:N] for uid in userids])
+        return ids_items, scores
+
+
+def _stats_popularidad(ids: list, scores: list) -> pd.DataFrame:
+    return pd.DataFrame({"id_libro": ids, "n": [10] * len(ids), "avg_rating": [7.0] * len(ids), "score": scores})
+
+
+def test_candidato_de_una_sola_fuente_tiene_sentinel_en_las_otras():
+    modelo = _ModeloALSFalso({0: ([0, 1], [0.9, 0.5])})  # columnas -> libros "a","b"
+    matriz = np.zeros((1, 2))
+    stats_pop = _stats_popularidad(["x1"], [5.0])  # no incluye "a"/"b"
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a", "b"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={"u1": 3},
+        n_por_fuente=150,
+    )
+
+    fila_a = candidatos[candidatos["id_libro"] == "a"].iloc[0]
+    assert fila_a["en_als"] == 1
+    assert fila_a["score_als"] == 0.9
+    assert fila_a["en_popularidad"] == 0
+    assert fila_a["rank_popularidad"] == 150  # sentinel = n_por_fuente
+    assert fila_a["n_interacciones_usuario"] == 3
+
+
+def test_candidato_de_varias_fuentes_se_une_en_una_sola_fila():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])  # "a" tambien es columna 0
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        n_por_fuente=150,
+    )
+
+    assert len(candidatos) == 1  # una sola fila para "a", no duplicada
+    fila = candidatos.iloc[0]
+    assert fila["en_als"] == 1 and fila["en_popularidad"] == 1
+
+
+def test_libros_ya_leidos_se_excluyen_de_todas_las_fuentes():
+    modelo = _ModeloALSFalso({0: ([0, 1], [0.9, 0.5])})
+    matriz = np.zeros((1, 2))
+    stats_pop = _stats_popularidad(["a", "b"], [9.0, 5.0])
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a", "b"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={"u1": {"a"}},
+        n_interacciones_por_usuario={},
+        n_por_fuente=150,
+    )
+
+    assert "a" not in set(candidatos["id_libro"])
+    assert "b" in set(candidatos["id_libro"])
+
+
+def test_armar_dataset_marca_el_positivo_y_arma_group():
+    candidatos_df = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u1"],
+            "id_libro": ["a", "b"],
+            **{f: [0, 0] for f in FEATURES},
+        }
+    )
+    etiquetas_df = pd.DataFrame({"id_lector": ["u1"], "id_libro": ["b"]})
+
+    X, y, group = armar_dataset_entrenamiento(candidatos_df, etiquetas_df)
+
+    assert group == [2]
+    assert y.tolist() == [0, 1]
+    assert list(X.columns) == FEATURES
+
+
+def test_armar_dataset_inyecta_positivo_faltante():
+    candidatos_df = pd.DataFrame(
+        {
+            "id_lector": ["u1"],
+            "id_libro": ["a"],
+            **{f: [0] for f in FEATURES},
+        }
+    )
+    # "z" (la etiqueta real) no esta entre los candidatos generados de u1
+    etiquetas_df = pd.DataFrame({"id_lector": ["u1"], "id_libro": ["z"]})
+
+    X, y, group = armar_dataset_entrenamiento(candidatos_df, etiquetas_df, n_por_fuente=150)
+
+    assert group == [2]  # "a" + "z" inyectado
+    assert y.sum() == 1
+    fila_inyectada = X[y == 1].iloc[0]
+    assert fila_inyectada["rank_als"] == 150  # sentinel
+
+
+def test_armar_dataset_usuario_sin_candidatos_igual_aporta_el_positivo():
+    candidatos_df = pd.DataFrame(columns=["id_lector", "id_libro"] + FEATURES)
+    etiquetas_df = pd.DataFrame({"id_lector": ["u_frio"], "id_libro": ["z"]})
+
+    X, y, group = armar_dataset_entrenamiento(candidatos_df, etiquetas_df)
+
+    assert group == [1]
+    assert y.tolist() == [1]

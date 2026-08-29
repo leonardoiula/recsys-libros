@@ -14,6 +14,7 @@ from recsys.data import (
     load_interacciones,
     load_lectores,
     load_libros,
+    split_train_val,
 )
 from recsys.models.als import fit_als
 from recsys.models.als import recomendar_por_usuario as recomendar_por_usuario_als
@@ -25,6 +26,8 @@ from recsys.models.popularity_segmentada import (
     genero_preferido_por_usuario,
     recomendar_por_usuario,
 )
+from recsys.models.ranker import armar_dataset_entrenamiento, fit_ranker, generar_candidatos_con_features
+from recsys.models.ranker import recomendar_por_usuario as recomendar_por_usuario_ranker
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 EJEMPLO_PATH = ROOT_DIR / "data" / "raw" / "ejemplo.csv"
@@ -94,12 +97,87 @@ def _recomendaciones_als(usuarios: list, k: int) -> dict:
     )
 
 
+N_POR_FUENTE_RANKER = 150
+
+
+def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
+    """v3: ranker de dos etapas -- candidatos de ALS + popularidad por
+    género + popularidad global, reordenados por un `LGBMRanker`
+    (LightGBM) entrenado para combinar esas señales.
+
+    Validado con validación cruzada sobre 3 seeds antes de wirear acá:
+    le ganó a ALS solo en los 3 seeds (+3.9% de NDCG@20 en promedio, con
+    menor desvío entre seeds que ALS) -- ver `scripts/evaluate_ranker.py`
+    y `experiments/bitacora.md`.
+
+    Simplificación de producción: no hay un "futuro" para reservar como
+    hold-out final acá (es la entrega real). Se reserva la interacción
+    más reciente de cada usuario (`train_ranker`) como etiqueta para
+    entrenar el ranker, y las señales de etapa 1 (ALS/popularidad/género)
+    se fittean una sola vez sobre lo que queda (`train_candidatos`) y se
+    reusan tal cual tanto para entrenar el ranker como para generar los
+    candidatos finales -- evita el desajuste de entrenar el ranker con
+    scores de un modelo y aplicarlo sobre scores de otro. El costo: los
+    candidatos finales no usan la interacción más reciente de cada
+    usuario como señal (sí se usa para filtrar libros ya leídos, vía
+    `libros_leidos` calculado sobre todos los datos).
+    """
+    interacciones = load_interacciones()
+    libros = load_libros()
+    train_candidatos, train_ranker = split_train_val(interacciones, n_val=1, seed=42)
+
+    libros_leidos_stage1 = libros_leidos_por_usuario(train_candidatos)
+    n_interacciones_por_usuario = train_candidatos.groupby("id_lector").size().to_dict()
+    stats_popularidad = fit_popularity(train_candidatos)
+    ranking_global = stats_popularidad["id_libro"].tolist()
+    stats_por_genero = fit_popularity_por_genero(train_candidatos, libros)
+    genero_por_usuario = genero_preferido_por_usuario(train_candidatos, libros)
+    modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos)
+
+    args_candidatos = dict(
+        modelo_als=modelo_als,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario=fila_por_usuario,
+        libros_por_columna=libros_por_columna,
+        stats_popularidad=stats_popularidad,
+        stats_por_genero=stats_por_genero,
+        genero_por_usuario=genero_por_usuario,
+        n_interacciones_por_usuario=n_interacciones_por_usuario,
+        n_por_fuente=N_POR_FUENTE_RANKER,
+    )
+
+    usuarios_ranker = train_ranker["id_lector"].unique().tolist()
+    candidatos_train_ranker = generar_candidatos_con_features(
+        usuarios=usuarios_ranker, libros_leidos=libros_leidos_stage1, **args_candidatos
+    )
+    X, y, group = armar_dataset_entrenamiento(
+        candidatos_train_ranker,
+        train_ranker[["id_lector", "id_libro"]],
+        n_por_fuente=N_POR_FUENTE_RANKER,
+    )
+    modelo_ranker = fit_ranker(X, y, group)
+
+    libros_leidos_completo = libros_leidos_por_usuario(interacciones)
+    candidatos_finales = generar_candidatos_con_features(
+        usuarios=usuarios, libros_leidos=libros_leidos_completo, **args_candidatos
+    )
+    return recomendar_por_usuario_ranker(
+        usuarios=usuarios,
+        modelo_ranker=modelo_ranker,
+        candidatos_df=candidatos_finales,
+        ranking_global=ranking_global,
+        libros_leidos=libros_leidos_completo,
+        k=k,
+    )
+
+
 # Cada modelo mapea a una función (usuarios, k) -> {id_lector: [id_libro, ...]}
 # ya entrenada con todos los datos y con los libros ya leídos filtrados.
 MODELOS = {
     "popularity": _recomendaciones_popularity,
     "popularity_segmentada": _recomendaciones_popularity_segmentada,
     "als": _recomendaciones_als,
+    "ranker": _recomendaciones_ranker,
 }
 
 

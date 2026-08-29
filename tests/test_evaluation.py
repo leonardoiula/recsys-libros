@@ -1,8 +1,15 @@
 """Tests para las métricas de evaluación (NDCG@k, recall@k)."""
 
 import pandas as pd
+import pytest
 
-from recsys.evaluation import evaluar_ndcg, evaluar_recall_personalizado, ndcg_at_k, recall_at_k
+from recsys.evaluation import (
+    evaluar_multisplit,
+    evaluar_ndcg,
+    evaluar_recall_personalizado,
+    ndcg_at_k,
+    recall_at_k,
+)
 
 
 def test_ndcg_ranking_perfecto():
@@ -77,3 +84,20 @@ def test_evaluar_recall_personalizado_promedia_por_usuario():
 
     # u1: "a" esta en el top-2 -> 1.0; u2: "z" no esta -> 0.0
     assert recall == 0.5
+
+
+def test_evaluar_multisplit_reporta_media_y_desvio():
+    resultados_por_seed = {1: 0.10, 2: 0.20, 3: 0.30}
+
+    resultado = evaluar_multisplit(lambda seed: resultados_por_seed[seed], seeds=[1, 2, 3])
+
+    assert resultado["valores"] == [0.10, 0.20, 0.30]
+    assert resultado["media"] == pytest.approx(0.20)
+    assert resultado["desvio"] > 0.0
+
+
+def test_evaluar_multisplit_un_solo_seed_desvio_cero():
+    resultado = evaluar_multisplit(lambda seed: 0.5, seeds=[1])
+
+    assert resultado["media"] == 0.5
+    assert resultado["desvio"] == 0.0

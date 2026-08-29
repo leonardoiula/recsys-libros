@@ -751,15 +751,17 @@ real).
    los hiperparámetros viejos), así que no se puede saber cuánto de la
    caída es la fórmula y cuánto es el sobreajuste del sweep.
 
-### Decisión pendiente
+### Decisión
 
-Dado que el config anterior (rating crudo, factors=128,
-regularization=0.1) tiene mejor score *real* confirmado en Kaggle
-(0.03864 vs 0.03341), lo responsable es no quedarse con el config
-"mejorado" solo porque ganó en local. Se le presentó esto al usuario
-para decidir cómo seguir (revertir a la config anterior, probar una
-config intermedia para aislar la causa, u otra cosa) -- ver la
-continuación de esta sección una vez que se decida.
+Se le presentó el hallazgo al usuario con tres opciones (revertir al
+config anterior, probar una config intermedia para aislar si la causa es
+la fórmula de confianza o los hiperparámetros, o dejarlo como está). Se
+decidió **dejar el config tuneado (optuna) en `submit.py` por ahora**,
+pese a tener peor score real en Kaggle que el anterior, para seguir
+explorando otras líneas (ej. el ranker de dos etapas) antes de fijar el
+default final de ALS. Queda explícito acá que el estado actual de
+producción **no es el mejor confirmado en Kaggle** -- si se sube una
+nueva submission antes de resolver esto, tenerlo presente.
 
 ### Próximos pasos
 

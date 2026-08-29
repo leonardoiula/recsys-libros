@@ -1,4 +1,4 @@
-"""Métricas de evaluación para el sistema de recomendación (NDCG@k)."""
+"""Métricas de evaluación para el sistema de recomendación (NDCG@k, recall@k)."""
 
 from __future__ import annotations
 
@@ -72,6 +72,45 @@ def evaluar_ndcg_personalizado(
     for id_lector, relevantes in relevantes_por_usuario.items():
         recomendados = recomendaciones.get(id_lector, [])[:k]
         scores.append(ndcg_at_k(recomendados, relevantes, k))
+
+    if not scores:
+        return 0.0
+    return sum(scores) / len(scores)
+
+
+def recall_at_k(recomendados: list, relevantes: set, k: int) -> float:
+    """Recall@k: qué fracción de los `relevantes` aparece en los primeros
+    k `recomendados`.
+
+    Métrica de *diagnóstico*, no de entrega: separa un problema de
+    cobertura (el libro correcto ni siquiera está entre los candidatos
+    del modelo) de uno de ranking (está, pero mal ordenado dentro del
+    top-k real de la entrega). Con un solo libro relevante por usuario
+    (el caso de este proyecto, `n_val=1`), equivale a "el libro correcto
+    apareció en el top-k, sí o no".
+    """
+    if k <= 0 or not relevantes:
+        return 0.0
+    encontrados = len(set(recomendados[:k]) & relevantes)
+    return encontrados / len(relevantes)
+
+
+def evaluar_recall_personalizado(
+    val_df: pd.DataFrame,
+    recomendaciones: dict,
+    k: int,
+) -> float:
+    """Promedia el recall@k sobre los usuarios de `val_df`, usando un
+    ranking ya armado y filtrado por usuario. Mismo patrón que
+    `evaluar_ndcg_personalizado`, útil para medir Recall@200 (o cualquier
+    k mayor al de entrega) como diagnóstico de cobertura del modelo.
+    """
+    relevantes_por_usuario = val_df.groupby("id_lector")["id_libro"].agg(set)
+
+    scores = []
+    for id_lector, relevantes in relevantes_por_usuario.items():
+        recomendados = recomendaciones.get(id_lector, [])[:k]
+        scores.append(recall_at_k(recomendados, relevantes, k))
 
     if not scores:
         return 0.0

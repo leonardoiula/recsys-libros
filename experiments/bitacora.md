@@ -594,3 +594,112 @@ para parecerse más a la población real de `ejemplo.csv`.
   submission subida — los números de Kaggle en la tabla de arriba siguen
   siendo los de la corrida anterior de v0/v1/v2 (el modelo v2 no cambió,
   solo la metodología de evaluación local).
+
+---
+
+## Mejoras a ALS: confianza ponderada, búsqueda sistemática, BPR
+
+### Objetivo / hipótesis
+
+Con el split corregido, el NDCG@20 local de ALS (0.101473) seguía bajo
+en términos absolutos. Se discutieron tres palancas para mejorar el
+*modelo en sí* (no la evaluación): (1) la fórmula de confianza de ALS
+usaba el rating crudo como peso, en vez de la fórmula estándar de
+feedback implícito ponderado; (2) el sweep de hiperparámetros venía
+siendo manual (grid chico, un hiperparámetro por vez); (3) nunca se
+probó una alternativa a ALS como BPR, que optimiza directamente el orden
+relativo entre ítems en vez de reconstruir la matriz de confianza.
+
+También surgió la pregunta de si medir top-200 en vez de top-20 tenía
+sentido: la entrega a Kaggle es exactamente k=20 por usuario (formato
+fijo de `ejemplo.csv`, no negociable), pero un top-200 más amplio sirve
+como diagnóstico -- separa un problema de *cobertura* (el libro correcto
+ni entra entre los candidatos) de uno de *ranking* (entra, pero mal
+ordenado dentro del top-20 real).
+
+### Lógica del enfoque
+
+**1. Confianza ponderada** (`als.py::construir_matriz_usuario_libro`,
+parámetro `alpha`): `confianza = 1 + alpha * rating` (Hu/Koren/Volinsky),
+en vez de usar el rating crudo como peso. `alpha` controla cuánta más
+confianza da cada punto de rating, de forma independiente a la escala
+del rating -- con el rating crudo, esa relación estaba fija en 1:1 sin
+posibilidad de ajustarla.
+
+**2. `recall_at_k` / `evaluar_recall_personalizado`**
+(`evaluation.py`): mismo patrón que `ndcg_at_k`/`evaluar_ndcg_personalizado`,
+pero mide si algún relevante aparece en el top-k, sin importar el orden.
+Con `n_val=1` (un solo relevante por usuario) equivale a "¿el libro
+correcto apareció en el top-k, sí o no?". Se usa con `k=200` como
+diagnóstico, nunca para la entrega real.
+
+**3. `bpr.py`** (nuevo módulo): `BayesianPersonalizedRanking` de
+`implicit`, sobre una matriz *binaria* (interactuó/no, no ponderada por
+rating -- BPR es un ranking pairwise, no una reconstrucción). Se
+confirmó por inspección directa de la librería que expone la misma API
+`.recommend(...)` que `AlternatingLeastSquares`, así que
+`als.py::recomendar_por_usuario` se reusa tal cual, sin duplicar esa
+lógica.
+
+**4. `scripts/tune_als.py`** (nuevo, committeado): dos estudios de
+`optuna` (30 trials cada uno, TPE sampler) maximizando NDCG@20
+personalizado sobre el split corregido:
+- ALS: `factors` (32-256, log), `regularization` (0.001-1.0, log),
+  `alpha` (0.01-10, log). `iterations=20` fijo (rendimiento decreciente
+  ya confirmado en el sweep manual anterior).
+- BPR: `factors` (32-256, log), `regularization` (1e-5-0.1, log),
+  `learning_rate` (0.001-0.1, log), `iterations` (50-300) -- SGD
+  converge distinto a ALS, no se fijó de antemano.
+
+`optuna` se agregó como dependencia de desarrollo (`uv add --dev optuna`,
+no hace falta para correr `submit.py`).
+
+### Código destacado
+
+- `src/recsys/models/als.py` — parámetro `alpha`, nuevos defaults
+- `src/recsys/models/bpr.py` — módulo nuevo
+- `src/recsys/evaluation.py` — `recall_at_k`, `evaluar_recall_personalizado`
+- `scripts/tune_als.py` — búsqueda con optuna
+
+### Resultado
+
+Mismo split que la sección anterior (`n_val=1`, `seed=42`).
+
+| candidato | NDCG@20 | Recall@200 | hiperparámetros |
+|---|---|---|---|
+| ALS actual (sin tunear) | 0.100883 | 0.3976 | factors=128, regularization=0.1, alpha=1.0 |
+| **ALS tuneado (optuna)** | **0.112530** | 0.3817 | factors=256, regularization=0.128, alpha=4.718 |
+| BPR tuneado (optuna) | 0.084991 | 0.3182 | factors=196, regularization=0.0061, learning_rate=0.034, iterations=235 |
+
+**ALS le gana a BPR** en este dataset, con margen claro tanto en NDCG@20
+como en Recall@200 -- la hipótesis de que BPR se ajustaría mejor a una
+métrica de ranking no se confirmó acá. **Tunear `alpha` junto con
+`factors`/`regularization` sí valió la pena**: +11.5% de NDCG@20 sobre
+el config anterior, con `alpha≈4.7` (mucha más separación entre ratings
+altos y bajos que el `alpha=1.0` por defecto de la fórmula) y más
+`factors` (256 vs 128). Hay un trade-off real: Recall@200 bajó de 0.398
+a 0.382 -- el modelo quedó más preciso en el top-20 pero un poco menos
+amplio en cobertura general.
+
+**Nota técnica:** tanto `factors` (256, el techo del rango buscado) como
+`alpha` (varios de los mejores trials entre 3-9) terminaron cerca o en
+el borde superior del espacio de búsqueda -- señal de que una segunda
+pasada con rangos más amplios (`factors` hasta ~512, `alpha` hasta
+~20-30) podría encontrar algo todavía mejor. No se hizo en este paquete.
+
+Se decidió con el usuario **wirear el ALS tuneado a `submit.py`**
+(nuevos defaults de `fit_als`) en vez de dejarlo solo como diagnóstico o
+ampliar la búsqueda primero.
+
+### Próximos pasos / ideas descartadas
+
+- **Se descartó** BPR como modelo de producción -- perdió contra ALS en
+  ambas métricas con este dataset.
+- **Pendiente:** una segunda búsqueda de optuna con rangos más amplios
+  de `factors`/`alpha`, dado que los ganadores actuales quedaron cerca
+  del borde superior del espacio explorado.
+- **Pendiente de confirmar en Kaggle:** se regeneró
+  `outputs/submissions/als.csv` con los hiperparámetros nuevos, pero no
+  se subió a Kaggle en este paquete.
+- **Sigue en pie** la idea de dos etapas (ALS + género + popularidad
+  como features de un ranker LightGBM) -- no se tocó en este paquete.

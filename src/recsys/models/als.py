@@ -5,11 +5,12 @@ usuario-libro.
 implícito (una matriz de "confianza", no de rating explícito). Acá el
 dato real es un rating explícito de 1 a 10 (siempre positivo, ver EDA):
 en vez de binarizar "leyó o no leyó" y perder la señal de intensidad, se
-arma la matriz sparse usuario x libro usando el rating directamente como
-peso/confianza de esa celda — patrón estándar para aplicar ALS de
-feedback implícito sobre datos que en el fondo son explícitos pero muy
-sparse. Las celdas sin interacción quedan en 0, consistente con lo que
-espera `implicit`.
+arma la matriz sparse usuario x libro con `confianza = 1 + alpha * rating`
+— la fórmula estándar de Hu/Koren/Volinsky para feedback implícito
+ponderado, con `alpha` como hiperparámetro que controla cuánta más
+confianza da cada punto de rating (en vez de una relación 1:1 fija con
+el rating crudo). Las celdas sin interacción quedan en 0, consistente
+con lo que espera `implicit`.
 
 Para usuarios sin ninguna fila en la matriz (cold start real, sin
 historial) se cae a `ranking_global` de popularidad, igual que el
@@ -29,14 +30,19 @@ from implicit.als import AlternatingLeastSquares
 from recsys.models.popularity_segmentada import recomendar_por_usuario as _recomendar_genero_global
 
 
-def construir_matriz_usuario_libro(interacciones: pd.DataFrame) -> tuple[sp.csr_matrix, dict, list]:
-    """Arma la matriz sparse usuario x libro pesada por rating.
+def construir_matriz_usuario_libro(interacciones: pd.DataFrame, alpha: float = 1.0) -> tuple[sp.csr_matrix, dict, list]:
+    """Arma la matriz sparse usuario x libro pesada por confianza implícita.
 
-    Devuelve (matriz, fila_por_usuario, libros_por_columna): `matriz` usa
-    el rating como confianza implícita (siempre > 0 en estos datos),
-    `fila_por_usuario` mapea id_lector -> fila de la matriz, y
-    `libros_por_columna` es la lista de id_libro en el orden de las
-    columnas (índice de columna -> id_libro).
+    `confianza = 1 + alpha * rating` (Hu/Koren/Volinsky): `alpha` controla
+    cuánta más confianza da cada punto de rating, independiente de la
+    escala del rating en sí. `alpha=1.0` es el default de la fórmula
+    original; se sweepea junto con `factors`/`regularization` (ver
+    `scripts/tune_als.py`).
+
+    Devuelve (matriz, fila_por_usuario, libros_por_columna): `fila_por_usuario`
+    mapea id_lector -> fila de la matriz, y `libros_por_columna` es la
+    lista de id_libro en el orden de las columnas (índice de columna ->
+    id_libro).
     """
     usuarios = interacciones["id_lector"].unique()
     libros = interacciones["id_libro"].unique()
@@ -46,7 +52,7 @@ def construir_matriz_usuario_libro(interacciones: pd.DataFrame) -> tuple[sp.csr_
 
     filas = interacciones["id_lector"].map(fila_por_usuario).to_numpy()
     columnas = interacciones["id_libro"].map(columna_por_libro).to_numpy()
-    pesos = interacciones["rating"].to_numpy(dtype=np.float32)
+    pesos = (1.0 + alpha * interacciones["rating"]).to_numpy(dtype=np.float32)
 
     matriz = sp.csr_matrix((pesos, (filas, columnas)), shape=(len(usuarios), len(libros)))
     return matriz, fila_por_usuario, list(libros)
@@ -54,20 +60,28 @@ def construir_matriz_usuario_libro(interacciones: pd.DataFrame) -> tuple[sp.csr_
 
 def fit_als(
     interacciones: pd.DataFrame,
-    factors: int = 128,
-    regularization: float = 0.1,
+    factors: int = 256,
+    regularization: float = 0.128,
     iterations: int = 20,
+    alpha: float = 4.718,
     seed: int = 42,
 ) -> tuple[AlternatingLeastSquares, sp.csr_matrix, dict, list]:
-    """Entrena ALS sobre la matriz usuario-libro pesada por rating.
+    """Entrena ALS sobre la matriz usuario-libro pesada por confianza implícita.
 
-    Hiperparámetros elegidos con un sweep local sobre el split temporal
-    corregido (`n_val=1`, `seed=42`) -- ver `experiments/bitacora.md`.
+    Hiperparámetros elegidos con búsqueda sistemática (`optuna`, 30
+    trials) sobre el split temporal corregido (`n_val=1`, `seed=42`) --
+    ver `scripts/tune_als.py` y `experiments/bitacora.md`. Mejoran el
+    NDCG@20 local +11.5% sobre el config anterior (factors=128,
+    regularization=0.1, alpha=1.0), a costa de un Recall@200 levemente
+    menor (0.382 vs 0.398) -- el modelo quedó más preciso en el top-20 y
+    un poco menos amplio en cobertura general. `factors` y `alpha`
+    terminaron cerca del borde superior del rango explorado; una segunda
+    búsqueda con rangos más amplios podría mejorar esto más todavía.
 
     Devuelve el modelo entrenado junto con la matriz usuario-libro y los
     mapeos de índice necesarios para pedir recomendaciones por usuario.
     """
-    matriz, fila_por_usuario, libros_por_columna = construir_matriz_usuario_libro(interacciones)
+    matriz, fila_por_usuario, libros_por_columna = construir_matriz_usuario_libro(interacciones, alpha=alpha)
 
     modelo = AlternatingLeastSquares(
         factors=factors,

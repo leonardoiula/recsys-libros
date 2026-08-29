@@ -1228,11 +1228,41 @@ antes, esta es grande (+13.1% sobre ALS) y consistente en los 3 seeds,
 justo el tipo de cambio que el criterio recalibrado dice que vale la
 pena confirmar con una submission real.
 
+### Resultado real en Kaggle: nuevo récord del proyecto
+
+| Modelo | Kaggle |
+|---|---|
+| v0 — popularidad | 0.01024 |
+| v1 — popularidad segmentada | 0.01558 |
+| ALS tuneado (optuna, descartado) | 0.03341 |
+| Ranker sobre ALS tuneado | 0.03578 |
+| Ranker sobre ALS original (features viejas) | 0.03815 |
+| ALS original solo (récord anterior) | 0.03864 |
+| **Ranker + features nuevas (autor/año/género/recencia)** | **0.04457 — nuevo récord** |
+
+**+15.3% sobre el récord anterior, +16.8% sobre el ranker sin estas
+features.** Es la primera vez en toda esta ronda de experimentos que una
+mejora se confirma limpiamente de punta a punta: grande y consistente en
+validación cruzada local (multi-seed, positiva en cada seed individual)
+*y* grande en Kaggle real -- sin la sorpresa negativa que tuvimos con
+ALS+optuna y con el primer intento del ranker. Confirma la apuesta
+metodológica de esta sección: **priorizar features de dominio (más
+información real para el modelo) por sobre tunear hiperparámetros**
+cuando hay que elegir dónde invertir el esfuerzo.
+
+**`"ranker"` pasa a ser el modelo de referencia del proyecto**, por
+encima de `"als"`.
+
 ### Próximos pasos
 
-- **Pendiente de confirmar en Kaggle.**
-- Ideas de features que quedaron afuera por ahora: co-lectura ítem-ítem
-  (cara de calcular bien), editorial, metadata de `resumen`/texto.
-- Si el resultado en Kaggle confirma la mejora, reconsiderar si
-  `"ranker"` debería pasar a ser el modelo de referencia del proyecto en
-  vez de `"als"`.
+- Ideas de features que quedaron afuera por ahora y podrían seguir
+  empujando en la misma dirección: co-lectura ítem-ítem (cara de
+  calcular bien), editorial, metadata de `resumen`/texto.
+- Con `"ranker"` como nueva referencia, reconsiderar si vale la pena
+  retomar el tuneo de LightGBM ahora que la base de features cambió (se
+  descartó sobre las features viejas, podría comportarse distinto sobre
+  las nuevas) -- siempre con la misma validación cruzada multi-seed.
+- Sigue pendiente, de fondo, investigar si el split local puede
+  acercarse más a la tarea real de Kaggle (más allá de la validación
+  cruzada) -- aunque esta vez la brecha local-Kaggle fue mucho más
+  razonable que en corridas anteriores.

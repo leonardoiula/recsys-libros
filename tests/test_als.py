@@ -41,7 +41,7 @@ def test_construir_matriz_usuario_libro():
         }
     )
 
-    # alpha=1.0 (default) -> confianza = 1 + 1*rating
+    # alpha=None (default) -> confianza = rating crudo
     matriz, fila_por_usuario, libros_por_columna = construir_matriz_usuario_libro(interacciones)
 
     assert matriz.shape == (2, 2)
@@ -50,9 +50,9 @@ def test_construir_matriz_usuario_libro():
 
     columna_a = libros_por_columna.index("a")
     columna_b = libros_por_columna.index("b")
-    assert matriz[fila_por_usuario["u1"], columna_a] == 9
-    assert matriz[fila_por_usuario["u1"], columna_b] == 6
-    assert matriz[fila_por_usuario["u2"], columna_a] == 4
+    assert matriz[fila_por_usuario["u1"], columna_a] == 8
+    assert matriz[fila_por_usuario["u1"], columna_b] == 5
+    assert matriz[fila_por_usuario["u2"], columna_a] == 3
 
 
 def test_construir_matriz_usuario_libro_alpha_configurable():
@@ -68,6 +68,20 @@ def test_construir_matriz_usuario_libro_alpha_configurable():
 
     # confianza = 1 + 0.5*10 = 6
     assert matriz[0, 0] == 6
+
+
+def test_construir_matriz_usuario_libro_alpha_none_es_rating_crudo():
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1"],
+            "id_libro": ["a"],
+            "rating": [7],
+        }
+    )
+
+    matriz, _, _ = construir_matriz_usuario_libro(interacciones, alpha=None)
+
+    assert matriz[0, 0] == 7
 
 
 def test_recomendar_usa_al_modelo_cuando_alcanza():

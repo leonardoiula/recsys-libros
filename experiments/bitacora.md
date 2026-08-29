@@ -938,3 +938,72 @@ el 0.03864. Requiere decidir primero cómo tratar la fórmula de confianza
 `1+alpha*rating` introducido después -- no hay un `alpha` que reproduzca
 exactamente "rating crudo" con la parametrización actual, hay que
 resolver eso antes de re-generar la señal).
+
+---
+
+## Revert de ALS: vuelve el rating crudo como default
+
+### Lo que se hizo
+
+`als.py::construir_matriz_usuario_libro` ahora soporta `alpha=None`
+(confianza = rating crudo, exactamente la fórmula original). `fit_als`
+cambia su default a `factors=128, regularization=0.1, alpha=None` --
+la única config con score *confirmado en Kaggle* (0.03864, el mejor
+histórico). La config tuneada con optuna (`factors=256,
+regularization=0.128, alpha=4.718`) queda documentada en el código como
+probada y descartada (dio 0.03341 en Kaggle real), no se borra el
+conocimiento de por qué se intentó.
+
+Como `submit.py` ya llamaba `fit_als(...)` sin pasar hiperparámetros
+explícitos, tanto `"als"` como `"ranker"` heredan el nuevo default
+automáticamente -- no hizo falta tocar `submit.py`.
+
+### Hallazgo importante al re-validar con la misma metodología
+
+Se re-corrió `scripts/evaluate_ranker.py` (validación cruzada, 3 seeds)
+con el ALS revertido, para comparar apples-to-apples contra la corrida
+anterior (con el ALS tuneado):
+
+| | ALS solo | Ranker |
+|---|---|---|
+| Base tuneada (`factors=256, alpha=4.718`) | 0.100594 ± 0.002488 | 0.104487 ± 0.001780 |
+| Base original (`factors=128, reg=0.1`, rating crudo) | 0.094406 ± 0.001359 | 0.097641 ± 0.001152 |
+
+**La validación cruzada sigue mostrando el número local más alto para
+la base tuneada** (0.1006 vs 0.0944), pese a que en Kaggle real es al
+revés (0.03341 vs 0.03864). Esto es un hallazgo relevante en sí mismo:
+la validación cruzada multi-seed protege contra sobreajustar a *un*
+split específico (por eso el ranker generalizó bien), pero **no corrige
+un sesgo sistemático que comparten todos los splits locales** frente a
+la tarea real de Kaggle -- son dos problemas distintos. El segundo sigue
+sin resolverse (relacionado con la composición de población de usuarios
+que ya se había detectado sin resolver del todo, ver la sección de
+"Corrección de metodología" más arriba).
+
+**Lo que sí parece un patrón confiable**: el *uplift relativo* del
+ranker sobre su propia base de ALS es consistente entre las dos
+configuraciones -- +3.9% local (base tuneada, confirmado +7.1% en
+Kaggle) y +3.4% local (base original). Sobre esa base se construye una
+hipótesis razonada (no una certeza): si el ranker vuelve a amplificar su
+uplift local al pasar a Kaggle real (como pasó la primera vez), la
+versión sobre el ALS original podría rondar 0.040-0.041, superando el
+0.03864 actual.
+
+### Decisión
+
+Se decidió con el usuario generar y subir esta nueva submission
+(`ranker_20260829-152403_ranker-sobre-als-original.csv`) para confirmar
+o refutar la hipótesis con datos reales, en vez de esperar a resolver
+primero el sesgo sistemático del proxy local (que es un problema más
+grande y no bloquea esta prueba puntual).
+
+### Próximos pasos
+
+- **Pendiente de confirmar en Kaggle.**
+- **Pendiente, más de fondo:** investigar el sesgo sistemático que hace
+  que el proxy local favorezca configs que empeoran en Kaggle real,
+  incluso con validación cruzada -- la validación cruzada no es
+  suficiente por sí sola, hace falta revisar si el split local sigue sin
+  representar bien la población real de `ejemplo.csv` (ver la
+  reponderación por actividad que quedó como pendiente en la sección de
+  "Corrección de metodología").

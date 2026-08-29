@@ -444,3 +444,153 @@ próximos pasos.
   franja) en un ranker (LightGBM, ya está en las dependencias) en vez de
   quedarse con un solo modelo base — usar el score de ALS y el de
   popularidad segmentada como features.
+
+---
+
+## Corrección de metodología: split temporal + `n_val` fijo, `C` configurable
+
+### Objetivo / hipótesis
+
+Surgió de una ronda de feedback sobre la documentación (ver
+`experiments/decisiones.md`), con dos hallazgos concretos:
+
+1. `split_train_val` ignoraba `fecha` y retenía a val una fracción
+   (`frac_val=0.2`) de las interacciones de cada usuario elegida al azar.
+   Se probó: sobre el mismo modelo (ALS), pasar de split aleatorio a
+   split *temporal* (últimas interacciones a val) bajó el NDCG@20 local
+   de 0.260068 a 0.122789 sin cambiar nada más — confirma leakage
+   temporal real (el modelo veía información del futuro del usuario).
+   Y el `frac_val` proporcional dejaba a los usuarios con mucho historial
+   con muchos más libros "relevantes" simultáneos en val que a los
+   livianos, inflando su NDCG de forma dispareja.
+2. `fit_popularity` usa `C = stats["n"].mean()` sin haberlo validado
+   nunca contra NDCG, pese a que la distribución de interacciones por
+   libro es fuertemente right-skewed (mediana 2, media ~9.6).
+
+### Lógica del enfoque
+
+**1. Split temporal con `n_val` fijo** (`data.py::split_train_val`,
+firma nueva: `n_val=1` en vez de `frac_val=0.2`). Por usuario, se
+ordenan sus interacciones por `fecha` (parseada con
+`pd.to_datetime(..., format="%d-%m-%Y", errors="coerce")`) y se retienen
+a val las últimas `n_val` — no una fracción proporcional a su actividad.
+Con `n_val=1` es un leave-one-out literal: "predecir la próxima
+lectura", que es mucho más parecido al escenario real que "adivinar un
+20% aleatorio de todo lo que leyó". Fechas no parseables (~0.0002%) se
+tratan como las más antiguas del usuario, nunca se mandan a val "a
+ciegas". Se mantiene el invariante de nunca vaciar el train de un
+usuario (`min(n_val, len(idx) - 1)`).
+
+**2. `C` configurable en `fit_popularity`**, pero el sweep dio un
+resultado que **contradice la sospecha inicial**. Se probaron tres
+candidatos sobre v0 con el split corregido:
+
+| C | valor | NDCG@20 (v0) |
+|---|---|---|
+| media (actual) | 9.52 | **0.006620** |
+| media geométrica | 2.99 | 0.000675 |
+| mediana | 2.00 | 0.000221 |
+
+La media gana por lejos, casi 10x contra las alternativas "menos
+agresivas". La explicación: con leave-one-out estricto (1 solo libro
+relevante por usuario en validación), lo que más importa es que el
+top-20 esté dominado por libros de atractivo *ampliamente* comprobado.
+Un `C` chico deja subir demasiado a libros de nicho con 2-3 interacciones
+y un rating alto por azar, diluyendo el top-20 con "flukes" en vez de
+apuestas seguras — el mismo problema, en el fondo, que motivó usar un
+score bayesiano en primer lugar en vez de un promedio simple (v0). **No
+se cambia el default**, pero ahora es explícito y configurable, y quedó
+validado con datos en vez de asumido.
+
+**3. Re-sweep de hiperparámetros de ALS** bajo el split corregido:
+`factors=128, regularization=0.1, iterations=20` (los mismos de antes)
+siguen siendo un buen punto — probar 192 factors o más iteraciones dio
+mejoras marginales (<5%) a cambio de más tiempo de entrenamiento. Sin
+cambios.
+
+**4. Se probó (y se descartó) un ruteo híbrido para v2**: la hipótesis
+era que el embedding de ALS es poco confiable para usuarios con poca
+actividad (mal condicionado, alta varianza), y que convendría, para esos
+casos, caer a la cadena de popularidad por género de v1 en vez de
+confiar en ALS. Se implementó `als.py::recomendar_hibrido` (rutea por un
+`umbral` de interacciones en train) y se midió el NDCG@20 por bucket de
+actividad, género-solo vs ALS-solo, con el split corregido:
+
+| interacciones en train | usuarios | NDCG género | NDCG ALS |
+|---|---|---|---|
+| 1 | 972 | 0.0162 | **0.0863** |
+| 2 | 710 | 0.0208 | **0.1179** |
+| 3–4 | 894 | 0.0201 | **0.1389** |
+| 5–9 | 1,276 | 0.0172 | **0.1291** |
+| 10–14 | 747 | 0.0121 | **0.1458** |
+| 15–19 | 500 | 0.0143 | **0.1483** |
+| 20–29 | 657 | 0.0160 | **0.1092** |
+| 30–49 | 858 | 0.0064 | **0.1015** |
+| 50–99 | 1,060 | 0.0106 | **0.0718** |
+| 100+ | 1,230 | 0.0068 | **0.0236** |
+
+**ALS le gana a género en absolutamente todos los buckets**, incluso con
+una sola interacción de historial. La hipótesis original no se sostiene
+bajo una evaluación sin leakage: el factorizado colaborativo aprovecha
+la estructura de *todos* los usuarios del sistema incluso para alguien
+con actividad mínima, y le gana por lejos a un heurístico de 55
+categorías de género. `submit.py` sigue usando ALS puro. La función
+`recomendar_hibrido` queda implementada y testeada (`tests/test_als.py`)
+por si el escenario cambia en el futuro, pero **no está en producción**:
+usarla con cualquier `umbral > 0` empeora el resultado con estos datos.
+
+### Código destacado
+
+- `src/recsys/data.py::split_train_val` — reescrita, firma nueva
+- `src/recsys/models/popularity.py::fit_popularity` — parámetro `C`
+- `src/recsys/models/als.py::recomendar_hibrido` — implementada, no usada
+- `tests/test_data.py`, `tests/test_popularity.py` (nuevos), extensión de
+  `tests/test_als.py`
+
+### Resultado
+
+Split corregido (`n_val=1`, `seed=42`): 452,504 filas en train / 8,904 en
+val (un usuario por fila, ya que `n_val=1`).
+
+| | NDCG@20 local (split viejo) | NDCG@20 local (split corregido) | Kaggle real |
+|---|---|---|---|
+| v0 — popularidad | 0.009960 | 0.006620 | 0.01024 |
+| v1 — popularidad segmentada | 0.022563 | 0.013719 | 0.01558 |
+| v2 — ALS | 0.260068 | **0.101473** | 0.03864 |
+
+El split corregido bajó el NDCG local de las tres versiones (esperable:
+ya no hay leakage temporal ni inflación proporcional), y en particular
+achicó muchísimo la sobreestimación de v2 sobre Kaggle: de **+573%**
+(split viejo, 0.260068 vs 0.03864) a **+162.6%** (split corregido,
+0.101473 vs 0.03864). Mejora real, pero todavía sobreestima bastante.
+
+**Pista extra sobre lo que queda de brecha:** los usuarios que Kaggle
+efectivamente califica (`ejemplo.csv`) tienen una actividad muchísimo
+mayor que la población general (mediana 74 interacciones en train contra
+9 en la población general activa — ver `experiments/decisiones.md`). Si
+se reordena el NDCG local ponderando por la distribución de actividad
+real de `ejemplo.csv` en vez de promediar parejo sobre todos los
+usuarios de validación, el estimado baja de 0.101473 a **0.064008**
+(+65.6% sobre Kaggle en vez de +162.6%). No es una corrección que se
+aplicó al código (es un análisis post-hoc, no una feature del split),
+pero confirma que buena parte de la brecha restante es composición de
+población, no un problema nuevo del modelo. Vale la pena, en una futura
+iteración, considerar si local debería muestrear/ponderar la validación
+para parecerse más a la población real de `ejemplo.csv`.
+
+### Próximos pasos / ideas descartadas
+
+- **Se descartó** el ruteo híbrido género/ALS por umbral de actividad
+  (ver arriba) — los datos no lo respaldan con este dataset.
+- **Se descartó** usar `C=mediana` o `C=media geométrica` en
+  `fit_popularity` — empeoran el NDCG real, pese a la intuición inicial
+  de que la media actual "sobre-shrinkeaba" el catálogo.
+- **Pendiente:** el análisis de reponderación por actividad sugiere que
+  local podría acercarse más a Kaggle si se muestrea/pondera la
+  validación para reflejar la composición real de usuarios que califica
+  la competencia, en vez de la población general activa. No implementado
+  todavía.
+- **Pendiente de confirmar en Kaggle:** este paquete no generó una nueva
+  submission subida — los números de Kaggle en la tabla de arriba siguen
+  siendo los de la corrida anterior de v0/v1/v2 (el modelo v2 no cambió,
+  solo la metodología de evaluación local).

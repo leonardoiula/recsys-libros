@@ -65,7 +65,17 @@ def _recomendaciones_popularity_segmentada(usuarios: list, k: int) -> dict:
 
 
 def _recomendaciones_als(usuarios: list, k: int) -> dict:
-    """v2: filtrado colaborativo ALS sobre ratings, fallback a popularidad global."""
+    """v2: filtrado colaborativo ALS sobre ratings, fallback a popularidad global.
+
+    Se evaluó (y se descartó) rutear usuarios livianos hacia la
+    popularidad por género de v1 en vez de ALS, bajo la hipótesis de que
+    el embedding de ALS para poca actividad sería poco confiable. Bajo el
+    split corregido (temporal, n_val=1) los datos no lo respaldan: ALS le
+    gana a género en *todos* los buckets de actividad medidos, incluso
+    con una sola interacción de historial (ver
+    `recsys.models.als.recomendar_hibrido` y `experiments/bitacora.md`
+    para el detalle). Se mantiene ALS puro acá.
+    """
     interacciones = load_interacciones()
     libros_leidos = libros_leidos_por_usuario(interacciones)
     modelo, matriz, fila_por_usuario, libros_por_columna = fit_als(interacciones)

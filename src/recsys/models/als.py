@@ -13,7 +13,10 @@ espera `implicit`.
 
 Para usuarios sin ninguna fila en la matriz (cold start real, sin
 historial) se cae a `ranking_global` de popularidad, igual que el
-fallback final de v1.
+fallback final de v1. Además, `recomendar_hibrido` rutea a los usuarios
+con poca actividad hacia la popularidad por género de v1 en vez de
+confiar en un embedding de ALS mal condicionado por pocos datos (ver su
+docstring).
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from implicit.als import AlternatingLeastSquares
+
+from recsys.models.popularity_segmentada import recomendar_por_usuario as _recomendar_genero_global
 
 
 def construir_matriz_usuario_libro(interacciones: pd.DataFrame) -> tuple[sp.csr_matrix, dict, list]:
@@ -56,8 +61,8 @@ def fit_als(
 ) -> tuple[AlternatingLeastSquares, sp.csr_matrix, dict, list]:
     """Entrena ALS sobre la matriz usuario-libro pesada por rating.
 
-    Hiperparámetros elegidos con un sweep local sobre el split
-    frac_val=0.2/seed=42 (ver experiments/bitacora.md, sección v2).
+    Hiperparámetros elegidos con un sweep local sobre el split temporal
+    corregido (`n_val=1`, `seed=42`) -- ver `experiments/bitacora.md`.
 
     Devuelve el modelo entrenado junto con la matriz usuario-libro y los
     mapeos de índice necesarios para pedir recomendaciones por usuario.
@@ -133,5 +138,83 @@ def recomendar_por_usuario(
             extra = [libro for libro in ranking_global if libro not in vistos]
             candidatos = candidatos + extra[: k - len(candidatos)]
         recomendaciones[id_lector] = candidatos[:k]
+
+    return recomendaciones
+
+
+def recomendar_hibrido(
+    usuarios: list,
+    n_train_por_usuario: dict,
+    umbral: int,
+    modelo: AlternatingLeastSquares,
+    matriz_usuario_libro: sp.csr_matrix,
+    fila_por_usuario: dict,
+    libros_por_columna: list,
+    ranking_por_genero: dict,
+    genero_por_usuario: dict,
+    ranking_global: list,
+    libros_leidos: dict,
+    k: int,
+) -> dict:
+    """Rutea cada usuario a ALS o a popularidad por género según su actividad.
+
+    **No se usa en producción (`submit.py` sigue con ALS puro).** Se
+    construyó para probar la hipótesis de que el embedding de ALS es poco
+    confiable para usuarios con poca actividad (con pocas interacciones
+    queda mal condicionado, alta varianza) y que convendría, para esos
+    casos, caer a la cadena de popularidad por género de v1 en vez de
+    confiar en ALS. Medido bajo el split corregido (temporal, n_val=1):
+    **ALS le gana a género en todos los buckets de actividad probados**,
+    incluidos usuarios con una sola interacción en train (NDCG@20:
+    0.086 ALS vs 0.016 género con n=1; la brecha se mantiene o crece con
+    más actividad). No hay ningún `umbral` donde rutear a género mejore
+    el resultado -- ver `experiments/bitacora.md` para la tabla completa.
+    Se deja esta función implementada y testeada por si el escenario
+    cambia (ej. un dataset con usuarios de mucha menos actividad
+    promedio, donde el argumento original sí podría sostenerse), pero hoy
+    usarla con cualquier `umbral > 0` empeora el modelo.
+
+    Cuando se usa, para usuarios con menos de `umbral` interacciones en
+    train (incluidos los que no tienen ninguna) cae a la cadena de
+    popularidad por género de v1, reusando
+    `popularity_segmentada.recomendar_por_usuario` tal cual pero con
+    `ranking_por_franja={}` y `franja_por_usuario={}` -- se confirmó que
+    franja de nacimiento aporta candidatos a ~0.03% de los usuarios en la
+    práctica (ver `experiments/decisiones.md`), así que no vale la
+    complejidad de llevarla a este ruteo; con esos diccionarios vacíos la
+    cadena colapsa directo a género -> global.
+    """
+    calidos = [u for u in usuarios if n_train_por_usuario.get(u, 0) >= umbral]
+    livianos = [u for u in usuarios if n_train_por_usuario.get(u, 0) < umbral]
+
+    recomendaciones: dict = {}
+
+    if calidos:
+        recomendaciones.update(
+            recomendar_por_usuario(
+                usuarios=calidos,
+                modelo=modelo,
+                matriz_usuario_libro=matriz_usuario_libro,
+                fila_por_usuario=fila_por_usuario,
+                libros_por_columna=libros_por_columna,
+                ranking_global=ranking_global,
+                libros_leidos=libros_leidos,
+                k=k,
+            )
+        )
+
+    if livianos:
+        recomendaciones.update(
+            _recomendar_genero_global(
+                usuarios=livianos,
+                ranking_por_genero=ranking_por_genero,
+                genero_por_usuario=genero_por_usuario,
+                ranking_por_franja={},
+                franja_por_usuario={},
+                ranking_global=ranking_global,
+                libros_leidos=libros_leidos,
+                k=k,
+            )
+        )
 
     return recomendaciones

@@ -12,7 +12,7 @@ librería.
 import numpy as np
 import pandas as pd
 
-from recsys.models.als import construir_matriz_usuario_libro, recomendar_por_usuario
+from recsys.models.als import construir_matriz_usuario_libro, recomendar_hibrido, recomendar_por_usuario
 
 
 class _ModeloALSFalso:
@@ -108,3 +108,71 @@ def test_recomendar_cae_a_global_para_usuario_sin_fila():
     )
 
     assert recomendaciones["u_nuevo"] == ["x1", "x2"]
+
+
+def test_hibrido_rutea_usuario_activo_a_als():
+    modelo = _ModeloALSFalso({0: [0, 1]})
+    matriz = np.zeros((1, 2))
+
+    recomendaciones = recomendar_hibrido(
+        usuarios=["u_activo"],
+        n_train_por_usuario={"u_activo": 50},
+        umbral=10,
+        modelo=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u_activo": 0},
+        libros_por_columna=["als1", "als2"],
+        ranking_por_genero={"terror": pd.DataFrame({"id_libro": ["g1", "g2"]})},
+        genero_por_usuario={"u_activo": "terror"},
+        ranking_global=["x1"],
+        libros_leidos={},
+        k=2,
+    )
+
+    # >= umbral -> ALS, no la cadena de genero
+    assert recomendaciones["u_activo"] == ["als1", "als2"]
+
+
+def test_hibrido_rutea_usuario_liviano_a_genero():
+    modelo = _ModeloALSFalso({0: [0, 1]})
+    matriz = np.zeros((1, 2))
+
+    recomendaciones = recomendar_hibrido(
+        usuarios=["u_liviano"],
+        n_train_por_usuario={"u_liviano": 3},
+        umbral=10,
+        modelo=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u_liviano": 0},
+        libros_por_columna=["als1", "als2"],
+        ranking_por_genero={"terror": pd.DataFrame({"id_libro": ["g1", "g2"]})},
+        genero_por_usuario={"u_liviano": "terror"},
+        ranking_global=["x1"],
+        libros_leidos={},
+        k=2,
+    )
+
+    # < umbral -> cadena de genero (via popularity_segmentada), no ALS
+    assert recomendaciones["u_liviano"] == ["g1", "g2"]
+
+
+def test_hibrido_usuario_sin_actividad_registrada_va_a_genero():
+    modelo = _ModeloALSFalso({})
+    matriz = np.zeros((0, 0))
+
+    recomendaciones = recomendar_hibrido(
+        usuarios=["u_frio"],
+        n_train_por_usuario={},  # no aparece -> se trata como 0 interacciones
+        umbral=10,
+        modelo=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={},
+        libros_por_columna=[],
+        ranking_por_genero={},
+        genero_por_usuario={},
+        ranking_global=["x1", "x2"],
+        libros_leidos={},
+        k=2,
+    )
+
+    assert recomendaciones["u_frio"] == ["x1", "x2"]

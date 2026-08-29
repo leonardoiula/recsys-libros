@@ -903,3 +903,38 @@ pendiente de confirmar en Kaggle.
   log de progreso de `implicit`/LightGBM (lo trata como binario y
   descarta la salida) -- si se re-corre el script, mejor sin ese grep,
   o revisar el archivo de output completo en vez de la salida filtrada.
+
+### Resultado real en Kaggle
+
+| Modelo | Kaggle |
+|---|---|
+| v2 ALS tuneado (optuna, base actual del ranker) | 0.03341 |
+| **v3 ranker (sobre ese mismo ALS tuneado)** | **0.03578 (+7.1%)** |
+| v2 ALS original (factors=128, regularization=0.1, rating crudo) | **0.03864 -- sigue siendo el mejor histórico** |
+
+**Buena noticia, y es la que veníamos buscando confirmar:** a diferencia
+del episodio de ALS+optuna, acá la mejora medida con validación cruzada
+local (+3.9% promedio, ganó en los 3 seeds) **sí se sostuvo en Kaggle
+real** (+7.1% sobre su propia base). Es la primera evidencia directa de
+que evaluar con varios seeds en vez de un split fijo efectivamente
+protege contra el sobreajuste al proxy local que causó la regresión de
+ALS.
+
+**Pero el ranker sigue por debajo del mejor score histórico del
+proyecto** (0.03864, el ALS *original* antes de la fórmula
+`1+alpha*rating`) -- un -7.4% respecto a ese máximo. La explicación más
+directa: el ranker mejora *sobre su propia base* (el ALS tuneado con
+optuna, que ya sabíamos deteriorado), pero esa base sigue siendo peor
+que el ALS original. El ranker no está fallando -- está sumando valor
+real sobre una señal de entrada que no es la mejor disponible.
+
+### Próximo paso natural
+
+Reconstruir el ranker usando el ALS *original* (`factors=128,
+regularization=0.1`, la config con 0.03864 confirmado) como la señal de
+ALS, en vez del ALS tuneado con optuna, y confirmar en Kaggle si supera
+el 0.03864. Requiere decidir primero cómo tratar la fórmula de confianza
+(el ALS original usaba rating crudo, sin el `+1` de
+`1+alpha*rating` introducido después -- no hay un `alpha` que reproduzca
+exactamente "rating crudo" con la parametrización actual, hay que
+resolver eso antes de re-generar la señal).

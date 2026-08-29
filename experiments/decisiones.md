@@ -62,7 +62,7 @@ la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 | Split de tres niveles (`train_candidatos`/`train_ranker`/`test_final`) para entrenar el ranker sin leakage | v3 | ✅ conservar | Necesario porque el ranker usa el score de ALS/popularidad/género como *features* -- si esos scores salieran de datos que el ranker ve como etiqueta, memorizaría en vez de aprender a combinar señales. |
 | Evaluar con validación cruzada (3 seeds), no un solo split | v3 | ✅ conservar — **principio a mantener para todo modelo futuro** | Restricción explícita del usuario tras el episodio de ALS+optuna. El ranker ganó a ALS solo en los 3 seeds (+3.9% promedio, menor desvío: 0.00178 vs 0.00249) -- señal mucho más confiable que una mejora medida en un solo split. |
 | Hiperparámetros conservadores de LightGBM (`num_leaves=31, learning_rate=0.05, n_estimators=200`), sin sweep tipo optuna | v3 | ✅ conservar por ahora | Decisión deliberada para no repetir el sobreajuste al proxy local que tuvo ALS. Si se tunea en el futuro, usar la misma validación cruzada multi-seed. |
-| Wireado como modelo nuevo `"ranker"` en `submit.py` (no reemplaza `"als"`) | v3 | 🔄 **pendiente de confirmar en Kaggle** | Es la única forma real de saber si la mejora cross-validada localmente se sostiene, dado el precedente de la regresión de ALS. |
+| Wireado como modelo nuevo `"ranker"` en `submit.py` (no reemplaza `"als"`) | v3 | ✅ **confirmado en Kaggle, mejora real** | 0.03578, +7.1% sobre su propia base (ALS tuneado, 0.03341) -- a diferencia de ALS+optuna, esta mejora cross-validada SÍ se sostuvo en Kaggle. Sigue -7.4% por debajo del mejor histórico (ALS original, 0.03864) porque hereda esa base deteriorada como señal -- ver `bitacora.md`. |
 
 ---
 

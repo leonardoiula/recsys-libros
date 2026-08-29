@@ -1053,3 +1053,96 @@ es hoy una mejora incondicional sobre ALS.
   ayuda menos cuando ALS ya es fuerte -- por ejemplo, mirando caso por
   caso qué usuarios el ranker reordena peor que ALS solo, en vez de
   seguir agregando features/hiperparámetros a ciegas.
+
+---
+
+## Investigando el "sesgo sistemático": no es sesgo, es tamaño de muestra
+
+### Dos hipótesis probadas y descartadas
+
+**1. ¿Es solo aleatoriedad del entrenamiento de ALS?** Se fiteó ALS 5
+veces con el mismo split fijo (`seed=42`) y distintas semillas internas
+del modelo. Desvío entre esos 5 fits: **0.000559**. Comparado contra el
+desvío entre splits distintos (0.001359, de la validación cruzada
+anterior), la aleatoriedad propia del entrenamiento explica una parte
+menor -- la mayoría de la variación entre splits viene de *qué usuarios*
+caen en cada partición, no de la optimización de ALS en sí. Un ensamble
+de semillas de modelo ayudaría un poco, pero no es la explicación
+principal.
+
+**2. ¿Es que el proxy local no representa la población de Kaggle?** Se
+recalculó el NDCG por bucket de actividad y se reponderó por la
+distribución real de `ejemplo.csv` (usuarios pesados dominan, ver
+sección anterior). Resultado: **el config tuneado le sigue ganando al
+original en casi todos los buckets, incluido el de 100+ interacciones
+que es el 47% de la población de Kaggle** -- reponderar no cambia el
+signo de la comparación (0.0686 tuneado vs 0.0640 original). Esta
+hipótesis tampoco explica la discrepancia.
+
+### La explicación real: las diferencias en Kaggle están dentro del ruido
+
+Se estimó el error estándar esperado de un NDCG@20 agregado sobre los
+**832 usuarios reales** de `ejemplo.csv` (usando la distribución de
+NDCG por usuario que sí podemos medir localmente, ponderada por la
+mezcla de actividad real de Kaggle):
+
+| | valor |
+|---|---|
+| Error estándar estimado (n=832, mezcla real de actividad) | **0.00651** |
+| Intervalo de confianza ~95% de una sola medición | **± 0.01275** |
+
+Comparado contra las diferencias reales que motivaron decisiones en esta
+sesión:
+
+| Comparación | Diferencia observada | ¿Supera 1 error estándar? |
+|---|---|---|
+| ALS original vs tuneado | 0.00523 | No (0.65 SE) |
+| Ranker vs ALS (base original) | -0.00049 | No (0.08 SE) |
+| Ranker vs ALS (base tuneada) | 0.00237 | No (0.36 SE) |
+
+**Ninguna de las tres diferencias que usamos para tomar decisiones esta
+sesión llega siquiera a 1 error estándar**, y mucho menos a los ~2 SE
+que se suelen pedir para hablar de una diferencia "real". Con un test
+set de 832 usuarios y una métrica donde el 81% de los usuarios tiene
+NDCG=0 (todo o nada, muy dispersa), Kaggle **no tiene la resolución
+necesaria para distinguir configs que difieren tan poco** -- no es que
+el proxy local esté sesgado, es que la vara de comparación (una sola
+submission de Kaggle) es demasiado ruidosa para el tamaño de efecto que
+estábamos tratando de medir.
+
+### Implicancia importante (reformula varias conclusiones de esta sesión)
+
+Esto no invalida el trabajo de esta sesión, pero sí cambia cómo hay que
+leerlo:
+- El revert de ALS a `factors=128/regularization=0.1` **puede haber sido
+  una decisión tomada sobre ruido**, no sobre una diferencia real. No se
+  deshace (sigue siendo razonable dado que también hay una explicación
+  causal plausible -- sobreajuste de optuna a un split), pero la
+  confianza en que es *definitivamente* mejor que la tuneada debería
+  bajar.
+- Lo mismo aplica al resultado del ranker: la conclusión "no aporta
+  sobre una base fuerte" está basada en una diferencia (-0.00049) que es
+  ruido puro, prácticamente cero. **No hay evidencia real de que el
+  ranker empeore sobre ALS original** -- tampoco de que mejore. El dato
+  es simplemente inconcluyente.
+- **De acá en adelante, una sola submission de Kaggle no alcanza para
+  decidir entre configs que difieren menos de ~0.01-0.013 en NDCG@20.**
+  Diferencias de esa magnitud (que es la escala de casi todo lo que
+  venimos probando después de v2) necesitan otra fuente de evidencia:
+  confiar más en la validación cruzada local (que tiene un error
+  estándar mucho menor por usar ~10x más usuarios) para decisiones finas,
+  y reservar submissions reales de Kaggle para confirmar cambios de
+  magnitud grande (como v0→v1→v2, donde las diferencias eran 3-10x más
+  grandes que el ruido) en vez de ajustes incrementales.
+
+### Próximos pasos
+
+- **Recalibrar el criterio de decisión**: no tratar una sola submission
+  de Kaggle como verdad definitiva para diferencias chicas. Si hace
+  falta desempatar entre dos configs cercanas, considerar promediar
+  varias submissions (si el límite diario de Kaggle lo permite) antes de
+  concluir cuál es mejor.
+- **No hay una acción de código que "arregle" esto** -- es una
+  limitación del tamaño del test set de Kaggle, no de la metodología
+  local. Lo que sí cambia es cuánto peso ponerle a cada submission
+  futura.

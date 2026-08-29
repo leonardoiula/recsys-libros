@@ -999,7 +999,6 @@ grande y no bloquea esta prueba puntual).
 
 ### Próximos pasos
 
-- **Pendiente de confirmar en Kaggle.**
 - **Pendiente, más de fondo:** investigar el sesgo sistemático que hace
   que el proxy local favorezca configs que empeoran en Kaggle real,
   incluso con validación cruzada -- la validación cruzada no es
@@ -1007,3 +1006,50 @@ grande y no bloquea esta prueba puntual).
   representar bien la población real de `ejemplo.csv` (ver la
   reponderación por actividad que quedó como pendiente en la sección de
   "Corrección de metodología").
+
+---
+
+## Ranker: el uplift no es estable entre bases de ALS
+
+### Resultado real en Kaggle
+
+| Modelo | Kaggle |
+|---|---|
+| **ALS original solo** | **0.03864 -- sigue siendo el mejor histórico** |
+| Ranker sobre ALS original | 0.03815 (**-1.3%** respecto a su propia base) |
+| Ranker sobre ALS tuneado | 0.03578 (+7.1% respecto a su base) |
+| ALS tuneado solo | 0.03341 |
+
+### La hipótesis no se confirmó
+
+Se había extrapolado, a partir de un solo dato point (el ranker sobre
+ALS tuneado mejorando +7.1%), que el uplift relativo del ranker sería
+más o menos estable independiente de la calidad de la base de ALS --
+la señal local (+3.9% sobre base tuneada, +3.4% sobre base original)
+parecía apoyar esa idea. **No se sostuvo**: sobre la base fuerte
+(ALS original), el ranker empeora levemente (-1.3%) en vez de mejorar.
+
+**Lectura más ajustada a los datos**: el ranker parece ayudar cuando la
+señal de ALS de base es débil (compensa con género/popularidad lo que
+ALS no está capturando bien) pero no aporta -- e incluso puede diluir
+levemente -- cuando ALS ya es una señal fuerte por sí sola. Con
+hiperparámetros de LightGBM conservadores y solo 11 features, el modelo
+puede no estar encontrando una combinación que supere a una señal de
+ALS ya casi óptima.
+
+**Consecuencia práctica**: `als` (sola, config original) sigue siendo la
+mejor entrega confirmada del proyecto. El ranker no se descarta -- ya
+demostró que puede sumar valor real en al menos un escenario -- pero no
+es hoy una mejora incondicional sobre ALS.
+
+### Próximos pasos
+
+- **No conviene seguir invirtiendo en tunear LightGBM o agregar features
+  al ranker todavía** -- sin resolver primero el sesgo sistemático del
+  proxy local (arriba), cualquier mejora que se vea localmente corre el
+  mismo riesgo de no sostenerse en Kaggle, como ya pasó dos veces.
+  Prioridad: investigar ese sesgo antes de invertir más en el ranker.
+- Si se retoma el ranker, valdría la pena entender primero *por qué*
+  ayuda menos cuando ALS ya es fuerte -- por ejemplo, mirando caso por
+  caso qué usuarios el ranker reordena peor que ALS solo, en vez de
+  seguir agregando features/hiperparámetros a ciegas.

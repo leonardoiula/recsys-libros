@@ -13,6 +13,8 @@ from recsys.data import (
     load_lectores,
     load_libros,
 )
+from recsys.models.als import fit_als
+from recsys.models.als import recomendar_por_usuario as recomendar_por_usuario_als
 from recsys.models.popularity import fit_popularity
 from recsys.models.popularity_segmentada import (
     fit_popularity_por_franja_nacimiento,
@@ -62,11 +64,30 @@ def _recomendaciones_popularity_segmentada(usuarios: list, k: int) -> dict:
     )
 
 
+def _recomendaciones_als(usuarios: list, k: int) -> dict:
+    """v2: filtrado colaborativo ALS sobre ratings, fallback a popularidad global."""
+    interacciones = load_interacciones()
+    libros_leidos = libros_leidos_por_usuario(interacciones)
+    modelo, matriz, fila_por_usuario, libros_por_columna = fit_als(interacciones)
+
+    return recomendar_por_usuario_als(
+        usuarios=usuarios,
+        modelo=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario=fila_por_usuario,
+        libros_por_columna=libros_por_columna,
+        ranking_global=fit_popularity(interacciones)["id_libro"].tolist(),
+        libros_leidos=libros_leidos,
+        k=k,
+    )
+
+
 # Cada modelo mapea a una función (usuarios, k) -> {id_lector: [id_libro, ...]}
 # ya entrenada con todos los datos y con los libros ya leídos filtrados.
 MODELOS = {
     "popularity": _recomendaciones_popularity,
     "popularity_segmentada": _recomendaciones_popularity_segmentada,
+    "als": _recomendaciones_als,
 }
 
 

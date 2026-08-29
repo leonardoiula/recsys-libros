@@ -272,3 +272,175 @@ split local.
 - **Otra idea:** franja de nacimiento + género combinados (popularidad
   dentro de la intersección género × década) para usuarios con suficiente
   historial, en vez de tratarlos como fallback secuencial excluyente.
+
+---
+
+## v2 — Filtrado colaborativo (ALS)
+
+### Objetivo / hipótesis
+
+v0 y v1 son heurísticas de popularidad (global o segmentada por
+género/franja) — ninguna de las dos usa una señal real usuario-item.
+Ya lo señalaba la sección de "próximos pasos" de v0: filtrado
+colaborativo vía ALS (`implicit`, ya en las dependencias) debería
+superarlas, porque puede capturar afinidades específicas
+usuario-libro que ninguna heurística de segmentación captura.
+
+### Lógica del enfoque
+
+**Rating explícito como confianza implícita.** `implicit.als.AlternatingLeastSquares`
+está pensado para feedback implícito (una matriz de "confianza", no de
+rating). Acá el dato real es un rating explícito de 1 a 10, siempre
+positivo (EDA). En vez de binarizar "leyó o no leyó" y tirar la señal de
+intensidad, se arma la matriz sparse usuario×libro usando el rating
+directamente como peso/confianza de esa celda — patrón estándar para
+aplicar ALS implícito sobre datos que en el fondo son explícitos pero
+muy sparse (99.91% sparsity, EDA).
+
+**`construir_matriz_usuario_libro`** arma la matriz y dos mapeos de
+índice (`fila_por_usuario`, `libros_por_columna`) para poder traducir
+filas/columnas del modelo de vuelta a `id_lector`/`id_libro` reales.
+
+**`fit_als`** entrena `AlternatingLeastSquares` sobre esa matriz.
+Hiperparámetros elegidos con un sweep local chico (no committeado, mismo
+patrón que v0/v1) sobre el split `frac_val=0.2`/`seed=42`:
+
+| factors | regularization | iterations | NDCG@20 local |
+|---|---|---|---|
+| 32  | 0.05 | 15 | 0.226281 |
+| 64  | 0.10 | 20 | 0.245332 |
+| 64  | 0.01 | 20 | 0.245427 |
+| 128 | 0.10 | 20 | **0.260068** |
+| 128 | 0.01 | 20 | 0.259924 |
+| 192 | 0.10 | 20 | 0.264488 |
+| 128 | 0.10 | 30 | 0.260638 |
+
+Rendimientos decrecientes claros después de `factors=128`: subir a 192
+factors o 30 iteraciones apenas mueve la aguja a cambio de más tiempo de
+entrenamiento. Se eligió `factors=128, regularization=0.1, iterations=20`
+como default de `fit_als` — buen balance entre NDCG y costo.
+
+**`recomendar_por_usuario`** arma el top-k por usuario con
+`modelo.recommend(..., filter_already_liked_items=True)`, con dos
+salvedades encontradas al validar el código contra la librería instalada
+(`implicit==0.7.3`) directamente, sin pasar por el pipeline completo:
+
+1. Cuando no alcanzan k libros no vistos para un usuario (no pasa con
+   este dataset — cada usuario activo tiene miles de libros sin leer),
+   `implicit.recommend` **no** rellena los huecos con índice `-1` como se
+   asumió en un primer borrador, sino repitiendo ids de libros ya vistos
+   con un score inválido (sentinela). Por eso la protección real contra
+   ese caso es el filtro explícito contra `libros_leidos` (que de todos
+   modos ya se hacía por consistencia con el resto del proyecto), no un
+   chequeo de índice — se sacó ese chequeo del código por ser un supuesto
+   incorrecto sobre la librería.
+2. Usuarios sin ninguna fila en la matriz (sin datos de entrenamiento)
+   caen enteramente a `ranking_global` (popularidad, ya filtrada) — no
+   pasó ningún caso así en el split local (todo usuario con actividad en
+   train tiene fila), pero cubre el caso general.
+
+### Código destacado
+
+- `src/recsys/models/als.py` — todo el modelo v2
+- `src/recsys/submit.py` — `_recomendaciones_als`, registrado como
+  `"als"` en `MODELOS`
+- `tests/test_als.py` — construcción de la matriz + lógica de
+  `recomendar_por_usuario` contra un modelo ALS *stub* (no se testea con
+  un `AlternatingLeastSquares` real: lo que hay que verificar es la
+  lógica propia del proyecto, no el comportamiento interno de `implicit`)
+
+### Resultado
+
+Mismo split que v0/v1 (`frac_val=0.2`, `seed=42`): 373,174 filas en
+train / 88,234 en val, 6,770 usuarios en val (los 6,770 tuvieron fila en
+la matriz de ALS — ninguno cayó al fallback global).
+
+| | NDCG@20 |
+|---|---|
+| v0 — popularidad global | 0.009960 |
+| v1 — popularidad segmentada | 0.022563 |
+| v2 — ALS | **0.260068** |
+
+Salto grande — más de 10x sobre v1. Se investigó específicamente para
+descartar un bug de leakage antes de loguearlo (matriz fit solo con
+train, `libros_leidos` calculado solo con train, filas de val mapeadas
+por `id_lector` sin depender de orden). El salto se explica principalmente
+porque el split de este proyecto separa un **20% de las interacciones de
+cada usuario** para validación (no literalmente "una" interacción, pese a
+como se lo suele llamar) — para un lector con muchas interacciones eso
+son decenas de libros relevantes en val, y ahí un modelo con señal
+usuario-item real (ALS) tiene muchísimo más para acertar que una
+heurística de segmentación. Desagregando por actividad en train:
+
+| interacciones en train | usuarios en val | NDCG@20 medio |
+|---|---|---|
+| 3–5 | 799 | 0.1448 |
+| 6–10 | 1,261 | 0.1908 |
+| 11–20 | 1,275 | 0.2237 |
+| 21+ | 3,435 | 0.2968 |
+
+Los usuarios con más historial (que también tienen los sets de
+validación más grandes) empujan el promedio hacia arriba, pero incluso
+los usuarios con poco historial (3-5 interacciones en train) ya superan
+holgadamente el 0.0226 de v1.
+
+Subido a Kaggle:
+
+| | NDCG@20 |
+|---|---|
+| v0 — popularidad + filtro de ya leído (Kaggle) | 0.01024 |
+| v1 — popularidad segmentada (Kaggle) | 0.01558 |
+| v2 — ALS (Kaggle) | **0.03864** |
+
+ALS sigue siendo una mejora real en Kaggle: **+148.0%** sobre v1
+(0.01558 → 0.03864) y **+277.3%** sobre v0. La señal usuario-item real sí
+aporta, incluso descontando la sobreestimación del local.
+
+Pero la sobreestimación del local fue mucho más grande de lo que se
+esperaba al escribir la sección anterior de esta bitácora:
+
+| | NDCG@20 |
+|---|---|
+| v2 — ALS (local) | 0.260068 |
+| v2 — ALS (Kaggle) | 0.03864 |
+| Diferencia | -0.221428 (local **6.7x** el valor de Kaggle, **+573%**) |
+
+La brecha local-vs-Kaggle venía creciendo con cada versión más
+personalizada (v0: +2.7%, v1: +44.8%), como era esperable, pero el salto
+a +573% en v2 es demasiado grande para explicarlo solo por "más
+personalización = más brecha". La hipótesis más probable, coherente con
+el análisis de arriba (el NDCG local sube fuerte con la actividad del
+usuario en train): el split local separa **20% de las interacciones de
+cada usuario** para validación, así que un usuario con mucho historial
+termina con decenas de libros "relevantes" simultáneos en val — una
+tarea mucho más fácil de acertar para un modelo con señal usuario-item
+real que la tarea que efectivamente evalúa Kaggle (que probablemente se
+parece más a predecir un puñado de próximas lecturas por usuario, no una
+fracción proporcional a todo su historial). v0/v1 no dependían tanto de
+señal usuario-item específica, así que esa diferencia de tarea los
+afectaba mucho menos.
+
+**Esto pone en duda la metodología de validación local para modelos
+personalizados** (no el modelo en sí, que sí mejora en Kaggle) — ver
+próximos pasos.
+
+### Próximos pasos / ideas descartadas
+
+- **Se descartó** binarizar el rating (leyó/no leyó) para usar el modelo
+  implícito "puro": se prefirió usar el rating como confianza para no
+  tirar la señal de intensidad, dado que el EDA mostró que el rating
+  tiene variación real (no todo 10).
+- **Prioridad alta para la próxima versión:** revisar el split de
+  validación local. `frac_val=0.2` por usuario infla artificialmente el
+  NDCG de usuarios con mucho historial (más "relevantes" simultáneos en
+  val de lo que un ranking de k=20 puede reflejar realistamente) y por
+  eso dejó de ser un buen proxy de Kaggle apenas el modelo empezó a usar
+  señal usuario-item real. Vale la pena probar un split más parecido a
+  "leave-one-out" literal (un solo libro por usuario en val, no un %) o
+  un tope fijo de libros en val por usuario, para que la tarea local se
+  parezca más a la de Kaggle antes de confiar en comparaciones de NDCG
+  local entre versiones.
+- **Próximo candidato:** combinar ALS con las señales de v1 (género,
+  franja) en un ranker (LightGBM, ya está en las dependencias) en vez de
+  quedarse con un solo modelo base — usar el score de ALS y el de
+  popularidad segmentada como features.

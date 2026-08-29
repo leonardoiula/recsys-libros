@@ -10,6 +10,28 @@ está.
 Columna **Estado**: es una sugerción de lectura, no un veredicto —
 la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 
+## Para retomar: próximos pasos pendientes (al 2026-08-29)
+
+Estado actual: `"ranker"` (v3, dos etapas ALS+género+popularidad → LightGBM)
+es el modelo de referencia del proyecto, con **0.04457 confirmado en
+Kaggle** (récord actual). Ideas concretas para la próxima sesión, en
+orden sugerido:
+
+1. **Más features en la misma línea que ya funcionó** (autor/año/género/recencia
+   dieron +15.3% real): co-lectura ítem-ítem (cara de calcular bien, ver
+   `ranker.py`), editorial, metadata de `resumen`/texto.
+2. **Retomar el tuneo de LightGBM sobre la base de features nueva** — se
+   descartó (`scripts/tune_ranker.py`) sobre las features viejas porque
+   la mejora encontrada era menor que el ruido entre seeds; con 5
+   features más el óptimo podría ser distinto. Repetir con la misma
+   validación cruzada multi-seed, nunca contra un solo split.
+3. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
+   resolverse del todo (ver sección de split y validación local, más
+   abajo), aunque esta última mejora se confirmó sin sorpresas.
+
+Ver `experiments/bitacora.md`, sección "Se retoma el ranker", para el
+detalle completo de por qué se priorizaron features sobre hiperparámetros.
+
 ## 1. Split y validación local
 
 | Decisión | Versión | Sigue vigente en | Estado sugerido | Detalle |

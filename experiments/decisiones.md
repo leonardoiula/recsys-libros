@@ -22,24 +22,29 @@ orden sugerido:
 1. **Reconsiderar el criterio de decisión en sí** — dos veces seguidas
    (género macro, tamaño de editorial) un resultado "positivo en los 3
    seeds pero sin superar el desvío" se confirmó como mejora real en
-   Kaggle. Evaluar si "positivo en los 3 seeds individualmente" alcanza
-   como filtro para gastar una submission, reservando la regla del
-   desvío para decisiones que no impliquen Kaggle (ej. hiperparámetros).
-2. **Probar la combinación de 22 features SIN editorial contra Kaggle**
-   — se confirmó la versión *con* editorial (`en_editorial_leida`/
-   `n_libros_editorial_leidos`, pese a ser de las señales más débiles en
-   `feature_importances_`), pero nunca se probó esa combinación
-   específica sin ella.
-3. **Retomar el tuneo de LightGBM sobre la base de features nueva** — se
+   Kaggle, y una tercera vez (sacar `en_editorial_leida`/
+   `n_libros_editorial_leidos`) el patrón mixto/negativo correctamente
+   anticipó que no valía la pena una submission. Evaluar si "positivo en
+   los 3 seeds individualmente" alcanza como filtro para gastar una
+   submission, reservando la regla del desvío para decisiones que no
+   impliquen Kaggle (ej. hiperparámetros).
+2. **Retomar el tuneo de LightGBM sobre la base de features nueva** — se
    descartó dos veces (`scripts/tune_ranker.py`) sobre bases de
    features distintas porque la mejora encontrada era menor que el
    ruido entre seeds; con la base actual (23 features) el óptimo podría
    ser distinto. Repetir con la misma validación cruzada multi-seed,
    nunca contra un solo split.
-4. **Evaluar con más de 3 seeds en casos límite** — ver punto 1.
-5. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
+3. **Evaluar con más de 3 seeds en casos límite** — ver punto 1.
+4. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
    abajo).
+
+**Resuelto:** probar 23 features sin `en_editorial_leida`/
+`n_libros_editorial_leidos` contra Kaggle -- el ablation dio negativo en
+2 de 3 seeds (a diferencia de los casos límite anteriores), así que no
+se gastó una submission. Se mantienen las 23 features. Ver sección 8 y
+`bitacora.md`, sección "¿Sacar editorial? Ablation resuelve la pregunta
+pendiente".
 
 Ver `experiments/bitacora.md`, sección "Se retoma el ranker", para el
 detalle de por qué se priorizaron features sobre hiperparámetros, y
@@ -138,6 +143,7 @@ catálogo de editorial" para las dos rondas más recientes.
 |---|---|---|
 | No aplicar una macro-taxonomía categórica a `editorial` (a diferencia de género) | ✅ **resuelto -- se descarta explícitamente** | 2.762 editoriales entre libros con interacción (vs. 52 de género), cola mucho más larga (91% con <20 libros, 51% con exactamente 1) y sin agrupación temática natural -- "Anagrama" y "Alfaguara" no comparten un "dominio" como sí lo hacen las categorías de género. Forzar 6-10 "familias de editoriales" habría sido artificial. |
 | `n_libros_editorial_catalogo` (tamaño del catálogo de la editorial, no del historial del usuario) como feature numérica simple | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | CV 3 seeds: 0.109735±0.003719, mismo patrón límite que la fila de género macro (positivo en los 3 seeds, no supera el desvío). `feature_importances_` la ubica por delante de `en_editorial_leida`/`n_libros_editorial_leidos` en los 3 seeds. Confirmado con el usuario vía submission real: **0.04831 en Kaggle, +3.7% sobre el récord anterior** (0.04658). Ver `bitacora.md`, sección "Tamaño de catálogo de editorial". |
+| Sacar `en_editorial_leida`/`n_libros_editorial_leidos` (las más débiles individualmente) ahora que está `n_libros_editorial_catalogo` | ✅ **resuelto -- no conviene, no se sube a Kaggle** | Ablation (23 → 21 features): CV 3 seeds 0.109287±0.003276, negativo en 2 de 3 seeds -- a diferencia de los casos límite anteriores (siempre positivos), acá la señal local apunta claramente en contra. Aunque son las features más débiles individualmente, no son ruido puro: aportan algo real en conjunto. Se mantienen las 23 features. Ver `bitacora.md`, sección "¿Sacar editorial? Ablation resuelve la pregunta pendiente". |
 
 ---
 

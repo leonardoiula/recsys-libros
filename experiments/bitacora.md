@@ -1471,3 +1471,29 @@ proyecto, con récord actualizado.
   (como elegir hiperparámetros).
 - Sigue sin probarse la combinación de 22 features sin editorial contra
   Kaggle (ver "Próximos pasos" de la sección anterior).
+
+---
+
+## ¿Sacar editorial? Ablation resuelve la pregunta pendiente: no conviene
+
+Se probó la pregunta que había quedado pendiente: las 23 features
+actuales, pero sin `en_editorial_leida`/`n_libros_editorial_leidos` (la
+señal de editorial basada en historial, la más débil según
+`feature_importances_` en todas las rondas anteriores) -- manteniendo
+`n_libros_editorial_catalogo` (tamaño, recién confirmada).
+
+| | CV 3 seeds (media ± desvío) |
+|---|---|
+| 23 features (confirmado en Kaggle: 0.04831) | 0.109735 ± 0.003719 |
+| 21 features (sin `en_editorial_leida`/`n_libros_editorial_leidos`) | 0.109287 ± 0.003276 |
+
+A diferencia de los dos casos límite anteriores (siempre positivos en
+los 3 seeds), esta vez el resultado es **negativo en 2 de 3 seeds**
+(seed=7: -0.00081, seed=123: -0.00067, seed=42: +0.00013) -- media
+-0.41% peor. Conclusión: aunque `en_editorial_leida`/
+`n_libros_editorial_leidos` son las features individualmente más débiles
+del set, **no son ruido puro** -- sacarlas empeora el conjunto. No se
+gastó una submission en esto: a diferencia de los casos límite
+anteriores (todos positivos en los 3 seeds, lo que justificó confirmar
+con Kaggle), acá la señal local ya apunta claramente en contra. Se
+mantienen las 23 features tal cual.

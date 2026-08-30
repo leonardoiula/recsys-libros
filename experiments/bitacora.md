@@ -1266,3 +1266,129 @@ encima de `"als"`.
   acercarse más a la tarea real de Kaggle (más allá de la validación
   cruzada) -- aunque esta vez la brecha local-Kaggle fue mucho más
   razonable que en corridas anteriores.
+
+---
+
+## Co-lectura, editorial, resumen y género macro: confirmado pese a no superar el desvío local
+
+### Objetivo
+
+Se retomaron las tres ideas de features que habían quedado pendientes
+(co-lectura ítem-ítem, editorial, metadata de `resumen`) y, a pedido del
+usuario, se sumó una cuarta línea propia: una observación sobre
+`libros.genero` (muchas categorías únicas, la gran mayoría
+subrepresentadas) que derivó en co-diseñar con el usuario una
+macro-taxonomía de género y dos features numéricas nuevas a partir de
+ella.
+
+### Co-lectura, editorial y resumen (`ranker.py`)
+
+- **`score_coleido`**: la razón por la que esta feature se había dejado
+  afuera ("cara de calcular bien") no aplica calculándola como un solo
+  matmul disperso: `cooc = X.T @ X` (matriz ítem×ítem, reusando la
+  matriz binaria de `fit_als`) se construye en ~3s para 48k libros/461k
+  interacciones. Por usuario, el score contra sus candidatos se obtiene
+  acotado al batch de usuarios consultados (nunca un cruce contra los
+  ~10.7k usuarios completos) -- ver `_calcular_cooccurrencia`.
+- **`en_editorial_leida`/`n_libros_editorial_leidos`**: calco exacto del
+  patrón ya usado para autor.
+- **`sim_resumen_historial`**: `TfidfVectorizer` (scikit-learn, ya en
+  `pyproject.toml`, sin nueva dependencia) sobre `resumen` de todo el
+  catálogo (metadata estática del libro, no depende del split -- igual
+  que autor/año de edición) + perfil de texto por usuario calculado
+  **solo** con `train_candidatos` (eso sí es interacción-derivado). La
+  trampa evitada: nunca se calculó un producto usuario×catálogo
+  completo (eso sí explota en memoria) -- la similitud se computa solo
+  para los pares (usuario, candidato) que ya existen en `candidatos_df`.
+  Ver `_calcular_perfil_texto`.
+
+Evaluado con la misma validación cruzada de 3 seeds de siempre
+(`scripts/evaluate_ranker.py`): **mixto**. Empeora en seed=42 (-0.00024)
+respecto al baseline de 16 features, y la mejora promedio (+1.15%) es
+menor que el desvío entre seeds -- no se confirma (ver `log.csv`,
+2026-08-30). Un ablation sacando editorial (la señal más débil según
+`feature_importances_`) mejora un poco el panorama (ya no empeora en
+ningún seed) pero tampoco alcanza a superar el desvío por sí solo.
+
+### Género macro: co-diseño con el usuario
+
+El usuario notó que `libros.genero` tenía muchas categorías
+subrepresentadas y pidió co-construir una limpieza + una categoría
+macro + features numéricas a partir de eso, en vez de que se implementara
+unilateralmente. Con los datos reales:
+
+- `_normalizar_genero` (`popularity_segmentada.py`) hacía solo
+  `strip().lower()`, dejando 54 categorías -- pero 2 pares eran el mismo
+  género real duplicado por una tilde inconsistente en el dato crudo
+  (`"clásicos de la literatura"` 754 vs `"clasicos de la literatura"` 2;
+  `"biografías, memorias"` 2087 vs `"biografiás, memorias"` 2). Ignorar
+  acentos (NFKD) las une sin mapa de alias a mano -- **52 categorías
+  reales**.
+- Con esas 52, se acordó con el usuario una taxonomía de **10
+  macro-géneros de dominio** (`MACRO_GENERO_POR_GENERO`), confirmada por
+  el usuario con la distribución real de libros por familia (de 14.746
+  en "narrativa y clásicos" a 1.799 repartidos en un catch-all
+  "práctico y misceláneo" de 27 categorías minúsculas). Ver
+  `experiments/decisiones.md` para la tabla completa.
+- Dos features nuevas confirmadas por el usuario (las dos juntas, no una
+  sola): `popularidad_genero_macro_candidato` (score bayesiano tipo
+  `fit_popularity`, pero pooleado a las 10 familias en vez de las 52
+  categorías granulares -- muchas de esas categorías tienen muy pocas
+  interacciones para un score confiable) y `frecuencia_genero_macro_usuario`
+  (proporción 0-1 del historial del usuario en el macro-género del
+  candidato -- señal graduada, más rica que la diversidad
+  binaria/conteo que ya existía).
+
+### Resultado: positivo en los 3 seeds, pero no supera el desvío
+
+| Variante | CV 3 seeds (media ± desvío) | vs. baseline (16 features) |
+|---|---|---|
+| Baseline (16 features, autor/año/género/recencia) | 0.106815 ± 0.001498 | -- |
+| +co-lectura/editorial/resumen (20) | 0.108039 ± 0.003079 | mixto, empeora en seed=42 |
+| +co-lectura/resumen sin editorial (18) | 0.107802 ± 0.002443 | +0.92%, no supera el desvío |
+| **+género macro también (22, con editorial)** | **0.108740 ± 0.002955** | **positivo en los 3 seeds** |
+
+La versión de 22 features fue la primera de toda esta ronda con mejora
+**positiva en los 3 seeds individualmente** (+0.00038 / +0.00214 /
++0.00326 -- creciente, no errático como el ruido de rondas anteriores).
+Pero aplicando la regla mecánica de siempre (mejora promedio > desvío
+entre seeds): +1.80% (0.00193) sigue siendo *menor* que el desvío
+observado (0.00296) -- la regla estricta diría "no confirmado".
+
+### Decisión: confirmar con Kaggle en vez de seguir analizando el número local
+
+Caso límite genuino: la regla estricta no lo confirma, pero el patrón
+(siempre positivo, no errático) es distinto a los episodios anteriores
+de puro ruido (ALS+optuna, tuneo de LightGBM). Es exactamente el tipo de
+situación que la sección "Recalibrar el criterio de decisión" (más
+arriba) ya anticipó: cuando el local no alcanza a desempatar solo, usar
+una submission real. Se decidió con el usuario confirmar con Kaggle en
+vez de seguir puliendo el análisis local.
+
+**Resultado real: 0.04658 -- nuevo récord del proyecto, +4.5% sobre el
+récord anterior** (ranker con autor/año/género/recencia + ALS original,
+0.04457). Primera vez que un resultado que *no* superaba la regla
+estricta local se confirma igual en Kaggle -- refuerza la idea de que la
+regla (mejora > desvío) es un buen filtro para *no* gastar submissions
+en ruido evidente, pero no es infalible en los casos límite: ahí,
+confirmar con una submission real sigue siendo el criterio final, como
+ya se había concluido antes.
+
+`"ranker"` (ahora con 22 features: ALS + popularidad + género +
+autor/año/diversidad/recencia + co-lectura + editorial + resumen +
+popularidad/frecuencia de macro-género) sigue siendo el modelo de
+referencia del proyecto, con récord actualizado.
+
+### Próximos pasos
+
+- Con editorial dentro del set confirmado pese a ser la señal más débil
+  en `feature_importances_`, sigue sin estar claro si sacarla mejoraría
+  el resultado aún más -- no se probó esa combinación específica (22
+  features sin editorial) contra Kaggle.
+- Retomar el tuneo de LightGBM (descartado dos veces sobre bases de
+  features distintas) ahora que la base cambió de nuevo -- siempre con
+  la misma validación cruzada multi-seed.
+- La brecha entre "regla estricta" y "confirmado en Kaggle" de esta
+  ronda sugiere que, con solo 3 seeds, la regla puede ser demasiado
+  conservadora para mejoras reales pero chicas -- posible línea futura:
+  evaluar con más seeds antes de descartar un caso límite como este.

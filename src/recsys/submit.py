@@ -138,7 +138,9 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     stats_por_genero = fit_popularity_por_genero(train_candidatos, libros)
     genero_por_usuario = genero_preferido_por_usuario(train_candidatos, libros)
     modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos)
-    features_auxiliares = calcular_features_auxiliares(train_candidatos, libros)
+    features_auxiliares = calcular_features_auxiliares(
+        train_candidatos, libros, matriz, fila_por_usuario, libros_por_columna
+    )
 
     args_candidatos = dict(
         modelo_als=modelo_als,

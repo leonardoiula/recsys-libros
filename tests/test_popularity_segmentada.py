@@ -4,8 +4,12 @@ cadena de fallback (género -> franja de nacimiento -> global)."""
 import pandas as pd
 
 from recsys.models.popularity_segmentada import (
+    MACRO_GENERO_DEFAULT,
+    fit_popularidad_por_genero_macro,
     franja_nacimiento_por_usuario,
+    genero_macro,
     genero_preferido_por_usuario,
+    normalizar_genero_macro,
     recomendar_por_usuario,
 )
 
@@ -30,7 +34,77 @@ def test_genero_preferido_ignora_capitalizacion():
 
     preferido = genero_preferido_por_usuario(interacciones, libros)
 
-    assert preferido["u1"] == "fantástica"
+    # sin tilde: _normalizar_genero ahora también ignora acentos (ver
+    # test_normalizar_genero_ignora_acentos), no solo capitalización.
+    assert preferido["u1"] == "fantastica"
+
+
+def test_normalizar_genero_ignora_acentos():
+    # "clásicos"/"clasicos" son el mismo género real, separado en el dato
+    # crudo por una tilde inconsistente (ver bitacora) -- deberían unirse
+    # en una sola categoría, no quedar como géneros distintos.
+    libros = pd.DataFrame(
+        {
+            "id_libro": ["a", "b", "c"],
+            "genero": ["Clásicos de la literatura", "clasicos de la literatura", "Clasicos De La Literatura"],
+        }
+    )
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u1", "u1"],
+            "id_libro": ["a", "b", "c"],
+            "rating": [8, 8, 8],
+        }
+    )
+
+    preferido = genero_preferido_por_usuario(interacciones, libros)
+
+    assert preferido["u1"] == "clasicos de la literatura"
+
+
+def test_genero_macro_mapea_categoria_conocida():
+    assert genero_macro("narrativa") == "narrativa y clasicos"
+    assert genero_macro("novela negra, intriga, terror") == "novela negra y suspenso"
+
+
+def test_genero_macro_usa_catchall_para_categoria_desconocida():
+    assert genero_macro("cocina") == MACRO_GENERO_DEFAULT
+
+
+def test_genero_macro_preserva_none():
+    assert genero_macro(None) is None
+    assert genero_macro(pd.NA) is None
+
+
+def test_normalizar_genero_macro_de_extremo_a_extremo():
+    generos = pd.Series(["Narrativa", "Cocina", None])
+    macro = normalizar_genero_macro(generos)
+
+    assert macro.tolist()[0] == "narrativa y clasicos"
+    assert macro.tolist()[1] == MACRO_GENERO_DEFAULT
+    assert pd.isna(macro.tolist()[2])
+
+
+def test_fit_popularidad_por_genero_macro_agrupa_por_macro_no_por_categoria_granular():
+    libros = pd.DataFrame(
+        {
+            "id_libro": ["a", "b", "c"],
+            "genero": ["Narrativa", "Novela", "Cocina"],  # narrativa/novela -> mismo macro; cocina -> otro
+        }
+    )
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2", "u3"],
+            "id_libro": ["a", "b", "c"],
+            "rating": [8, 9, 7],
+        }
+    )
+
+    stats = fit_popularidad_por_genero_macro(interacciones, libros)
+
+    assert set(stats) == {"narrativa y clasicos", MACRO_GENERO_DEFAULT}
+    # "a" y "b" (narrativa/novela) caen juntos en la misma tabla de popularidad
+    assert set(stats["narrativa y clasicos"]["id_libro"]) == {"a", "b"}
 
 
 def test_genero_preferido_usuario_sin_generos_conocidos_no_aparece():

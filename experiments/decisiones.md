@@ -10,27 +10,37 @@ está.
 Columna **Estado**: es una sugerción de lectura, no un veredicto —
 la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 
-## Para retomar: próximos pasos pendientes (al 2026-08-29)
+## Para retomar: próximos pasos pendientes (al 2026-08-30)
 
-Estado actual: `"ranker"` (v3, dos etapas ALS+género+popularidad → LightGBM)
-es el modelo de referencia del proyecto, con **0.04457 confirmado en
-Kaggle** (récord actual). Ideas concretas para la próxima sesión, en
-orden sugerido:
+Estado actual: `"ranker"` (v3, ALS+género+popularidad+autor/año/diversidad/
+recencia+co-lectura+editorial+resumen+popularidad/frecuencia de
+macro-género → LightGBM) es el modelo de referencia del proyecto, con
+**0.04658 confirmado en Kaggle** (récord actual). Ideas concretas para
+la próxima sesión, en orden sugerido:
 
-1. **Más features en la misma línea que ya funcionó** (autor/año/género/recencia
-   dieron +15.3% real): co-lectura ítem-ítem (cara de calcular bien, ver
-   `ranker.py`), editorial, metadata de `resumen`/texto.
+1. **Probar la combinación de 22 features SIN editorial contra Kaggle**
+   — se confirmó la versión *con* editorial (pese a ser la señal más
+   débil en `feature_importances_`), pero nunca se probó esa
+   combinación específica sin ella; podría dar un resultado aún mejor o
+   igual, no se sabe.
 2. **Retomar el tuneo de LightGBM sobre la base de features nueva** — se
-   descartó (`scripts/tune_ranker.py`) sobre las features viejas porque
-   la mejora encontrada era menor que el ruido entre seeds; con 5
-   features más el óptimo podría ser distinto. Repetir con la misma
-   validación cruzada multi-seed, nunca contra un solo split.
-3. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
+   descartó dos veces (`scripts/tune_ranker.py`) sobre bases de
+   features distintas porque la mejora encontrada era menor que el
+   ruido entre seeds; con la base actual (22 features) el óptimo podría
+   ser distinto. Repetir con la misma validación cruzada multi-seed,
+   nunca contra un solo split.
+3. **Evaluar con más de 3 seeds en casos límite** — la ronda de
+   género macro dio positivo en los 3 seeds pero no superó el desvío
+   local, y aun así se confirmó en Kaggle; con solo 3 seeds la regla
+   puede ser demasiado conservadora para mejoras reales pero chicas.
+4. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
-   abajo), aunque esta última mejora se confirmó sin sorpresas.
+   abajo).
 
 Ver `experiments/bitacora.md`, sección "Se retoma el ranker", para el
-detalle completo de por qué se priorizaron features sobre hiperparámetros.
+detalle de por qué se priorizaron features sobre hiperparámetros, y
+sección "Co-lectura, editorial, resumen y género macro" para la ronda
+más reciente.
 
 ## 1. Split y validación local
 
@@ -91,6 +101,33 @@ detalle completo de por qué se priorizaron features sobre hiperparámetros.
 | Agregar features de autor/año de edición/diversidad de género/recencia al ranker | v3 | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | +9.4% de NDCG local (positivo en los 3 seeds) se tradujo en +15.3% real en Kaggle (0.03864 -> 0.04457). Primera mejora de esta ronda que se confirma limpiamente de punta a punta, sin sorpresas. `"ranker"` pasa a ser el modelo de referencia del proyecto. Ver `bitacora.md`. |
 | Tunear hiperparámetros de `LGBMRanker` con optuna (validación cruzada, 2 seeds/trial) | v3 | ❌ **no se adopta -- mejora menor que el ruido** | +1.2% sobre los hiperparámetros conservadores, pero la mejora absoluta (0.0013) es menor que el desvío entre los 3 seeds (0.0015) -- mismo criterio aprendido con Kaggle aplicado localmente: no confiar en diferencias menores que la variabilidad natural. Quedan los hiperparámetros conservadores en producción. |
 
+## 7. Co-lectura, editorial, resumen y género macro (ronda 2026-08-30)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| `score_coleido` (co-lectura ítem-ítem, matriz dispersa `cooc = X.T @ X` sobre la matriz binaria de ALS) | ✅ conservar | Deja de ser "cara de calcular bien": ~3s para 48k libros/461k interacciones. `feature_importances_` la ubica consistentemente en el grupo de mayor peso (por delante de `score_genero`/`score_popularidad`). |
+| `en_editorial_leida`/`n_libros_editorial_leidos` | 🔄 **confirmado en conjunto, pero es la señal más débil** | Solo en Kaggle *junto con* las otras 5 features nuevas (no se probó la combinación sin ella). `feature_importances_` la ubica sistemáticamente al final -- ver "Próximos pasos" arriba. |
+| `sim_resumen_historial` (TF-IDF + coseno contra el perfil de lectura del usuario) | ✅ conservar | Igual que co-lectura, entra en el grupo de mayor peso en `feature_importances_` en los 3 seeds. |
+| `_normalizar_genero` ignora acentos además de capitalización | ✅ **resuelto** | 54 categorías → 52 reales: 2 pares eran typos de tilde de la misma categoría (`"clásicos"`/`"clasicos"`, `"biografías"`/`"biografiás"`), no géneros distintos. Sin mapa de alias a mano. |
+| Macro-taxonomía de género (10 familias de dominio, co-diseñada con el usuario) | ✅ conservar | Ver tabla abajo. Implementada como mapa explícito de 25 categorías (las 9 familias con identidad propia); todo lo demás cae a un catch-all por default. |
+| `popularidad_genero_macro_candidato` / `frecuencia_genero_macro_usuario` | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | Ver fila de abajo. |
+| Ranker con las 6 features de esta ronda (co-lectura + editorial + resumen + macro-género, 22 en total) | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | CV 3 seeds: 0.108740±0.002955, positivo en los 3 seeds individualmente pero *sin* superar el desvío entre seeds (regla estricta habría dicho "no confirmado"). Se decidió confirmar con una submission real en vez de seguir analizando el número local. **0.04658 en Kaggle, +4.5% sobre el récord anterior** (0.04457). Ver `bitacora.md`, sección "Co-lectura, editorial, resumen y género macro". |
+
+### Macro-géneros (taxonomía de dominio)
+
+| Macro-género | Libros | Categorías granulares que agrupa |
+|---|---|---|
+| Narrativa y clásicos | 14.746 | narrativa, ficción literaria, literatura contemporánea, clásicos de la literatura, novela |
+| Ensayo, biografía y no ficción | 7.752 | ensayo, biografías/memorias, no ficción, historia, historia militar, historia del cine, filosofía contemporánea, feminismo y mujer, naturaleza y ciencia |
+| Novela negra y suspenso | 6.878 | novela negra/intriga/terror, novela negra |
+| Infantil y juvenil | 6.053 | infantil y juvenil, juvenil, lecturas complementarias |
+| Histórica y aventuras | 3.905 | histórica y aventuras |
+| Fantástico y ciencia ficción | 3.000 | fantástica, ciencia ficción |
+| Romántica y erótica | 2.957 | romántica, erótica |
+| Cómic y novela gráfica | 2.197 | cómics, novela gráfica |
+| Poesía y teatro | 1.234 | poesía/teatro, poesía |
+| Práctico y misceláneo (catch-all) | 1.799 | ~27 categorías restantes (humor, autoayuda, cocina, economía, música, deportes, medicina, derecho, idiomas, ...), todas con menos de 460 libros |
+
 ---
 
 ## EDA: qué se usó y qué no (para tu feedback)
@@ -116,10 +153,21 @@ lo preguntaste aparte:
   bayesiano por género no iba a distorsionarse raro entre géneros
   distintos.
 
+**Usados (actualización 2026-08-30):**
+- `autor`/`editorial` de libros: no se implementó el modelo content-based
+  separado que sugería el EDA, pero ambos terminaron como *features* del
+  ranker v3 (`en_autor_leido`/`n_libros_autor_leidos`,
+  `en_editorial_leida`/`n_libros_editorial_leidos`) -- una realización
+  más liviana de la misma idea (reordenar candidatos con esa señal, en
+  vez de generarlos con ella).
+- `anio_edicion` (antigüedad de la edición): sí se usa, vía
+  `anio_edicion_dif` en el ranker (diferencia contra el promedio de lo
+  que lee el usuario).
+- `resumen` (texto): TF-IDF + similitud coseno contra el perfil de
+  lectura del usuario (`sim_resumen_historial`) -- primera vez que se
+  usa una señal de texto en el proyecto.
+
 **No usados todavía (siguen sobre la mesa):**
-- La idea de EDA/bitácora de un **modelo content-based** con `autor` y
-  `editorial` de libros para cold-start (usuarios con pocas
-  interacciones, donde ALS tiene poca señal) — nunca se implementó.
 - El 60.76% del catálogo sin metadata — se concluyó que "no afecta al
   modelo" porque son libros sin interacciones, pero no se revisó de
   nuevo con ALS (que sí podría, en teoría, recomendar libros de esa cola
@@ -127,9 +175,10 @@ lo preguntaste aparte:
   está pasando).
 - `vive_en` (ubicación del lector) — nunca se usó como señal en ningún
   modelo, ni se investigó en el EDA más allá de la calidad de datos.
-- `anio_edicion` de los libros (antigüedad de la edición) — tampoco se
-  exploró como señal, ni en el EDA ni en ningún modelo.
-- El género v1 (`libros.genero`) y la franja de nacimiento **no llegan a
-  v2** (ver punto 3 de la tabla de arriba) — es la brecha más directa
-  entre "lo que dijo el EDA que servía" y "lo que efectivamente usa el
-  modelo más nuevo".
+- El género v1 (`libros.genero`) granular y la franja de nacimiento
+  **siguen sin llegar a v2** (ALS, ver punto 3 de la tabla de arriba).
+  El género sí llega a v3 (ranker) por dos caminos: el existente
+  (`score_genero`/`rank_genero`, género preferido del usuario) y el
+  nuevo macro-género (`popularidad_genero_macro_candidato`/
+  `frecuencia_genero_macro_usuario`, ver sección 7) -- pero franja de
+  nacimiento sigue sin usarse fuera de v1.

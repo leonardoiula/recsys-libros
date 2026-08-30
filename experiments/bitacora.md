@@ -1392,3 +1392,82 @@ referencia del proyecto, con récord actualizado.
   ronda sugiere que, con solo 3 seeds, la regla puede ser demasiado
   conservadora para mejoras reales pero chicas -- posible línea futura:
   evaluar con más seeds antes de descartar un caso límite como este.
+
+---
+
+## Tamaño de catálogo de editorial: segundo caso límite confirmado en Kaggle
+
+### Objetivo
+
+El usuario preguntó, después de confirmar la ronda de género macro, si
+tendría sentido hacer algo similar con `editorial` ("imagino que también
+hay editoriales grandes y muchas chicas con pocos libros"). Antes de
+implementar nada, se investigaron los datos reales.
+
+### Por qué editorial es un caso distinto de género
+
+- **2.762 editoriales distintas** entre libros con interacción (vs. 52
+  categorías de género) -- una cola muchísimo más larga: 91% tiene menos
+  de 20 libros, **51% tiene exactamente 1 libro**. Se necesitan 152
+  editoriales para cubrir el 80% del catálogo.
+- A diferencia de género, **no hay una agrupación temática natural**
+  entre editoriales -- "Anagrama" y "Alfaguara" no comparten ningún
+  "dominio" más que ser editoriales grandes. Forzar una macro-taxonomía
+  categórica (6-10 "familias de editoriales") habría sido artificial, a
+  diferencia de la de género, que sí tenía una semántica de dominio
+  clara detrás.
+- Conclusión co-diseñada con el usuario: en vez de una taxonomía
+  categórica, una **feature numérica simple de tamaño de catálogo**
+  (`n_libros_editorial_catalogo` -- cuántos libros tiene esa editorial en
+  *todo* `libros`, no solo los leídos) captura la intuición real
+  ("hay grandes y muchas chicas") sin inventar cortes de bucket
+  arbitrarios. Se descartaron explícitamente dos alternativas más
+  complejas (score bayesiano pooleado por editorial, buckets
+  grande/mediana/chica) por no tener una justificación tan directa como
+  con género.
+
+### Resultado: mismo patrón límite que la ronda anterior
+
+| | CV 3 seeds (media ± desvío) | vs. la versión anterior (22 features) |
+|---|---|---|
+| 22 features (confirmado en Kaggle: 0.04658) | 0.108740 ± 0.002955 | -- |
+| **+ `n_libros_editorial_catalogo` (23)** | **0.109735 ± 0.003719** | **positivo en los 3 seeds** |
+
+Otra vez positivo en los 3 seeds (+0.00012 / +0.00127 / +0.00159), y otra
+vez la mejora promedio (+0.92%) no supera el desvío entre seeds (que
+además creció más que la mejora esta vez) -- la regla estricta volvería
+a decir "no confirmado". `feature_importances_` ubica
+`n_libros_editorial_catalogo` en la mitad de la tabla, consistentemente
+por delante de `en_editorial_leida`/`n_libros_editorial_leidos` en los 3
+seeds -- confirma que el tamaño global de la editorial es una señal más
+útil que si el usuario ya leyó de ahí.
+
+### Decisión: confirmar con Kaggle de nuevo
+
+Se decidió con el usuario repetir el mismo criterio que la ronda
+anterior (confirmar con una submission real en vez de seguir analizando
+el número local), justo porque la vez pasada un caso límite idéntico
+resultó ser una mejora real.
+
+**Resultado real: 0.04831 -- nuevo récord del proyecto, +3.7% sobre el
+récord anterior** (0.04658). Es la **segunda vez seguida** que un
+resultado que no superaba la regla estricta local (positivo en los 3
+seeds, pero mejora menor que el desvío) se confirma como mejora real en
+Kaggle -- refuerza la idea de la sección anterior: con solo 3 seeds, la
+regla puede ser demasiado conservadora para mejoras reales pero chicas,
+y "positivo en los 3 seeds sin ser errático" parece ser, en la práctica,
+una señal más confiable que la comparación mecánica contra el desvío.
+
+`"ranker"` (ahora 23 features) sigue siendo el modelo de referencia del
+proyecto, con récord actualizado.
+
+### Próximos pasos
+
+- Con dos casos límite seguidos confirmados como mejoras reales, vale la
+  pena reconsiderar el criterio de decisión en sí: quizás "positivo en
+  los 3 seeds individualmente" (sin importar si supera el desvío) sea un
+  filtro suficiente para justificar una submission, reservando la regla
+  del desvío para decisiones que *no* involucran gastar una submission
+  (como elegir hiperparámetros).
+- Sigue sin probarse la combinación de 22 features sin editorial contra
+  Kaggle (ver "Próximos pasos" de la sección anterior).

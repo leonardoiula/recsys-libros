@@ -65,6 +65,7 @@ FEATURES = [
     "sim_resumen_historial",
     "popularidad_genero_macro_candidato",
     "frecuencia_genero_macro_usuario",
+    "n_libros_editorial_catalogo",
 ]
 
 N_MAX_FEATURES_TFIDF = 20000
@@ -196,6 +197,9 @@ def calcular_features_auxiliares(
       frecuencia del macro-género en el historial del usuario -- ver
       `popularity_segmentada.normalizar_genero_macro`/
       `fit_popularidad_por_genero_macro`.
+    - `n_libros_por_editorial`: tamaño del catálogo de la editorial del
+      candidato (cuántos libros tiene en total `libros`, no solo los
+      leídos) -- señal de volumen, no de historial del usuario.
 
     `matriz_usuario_libro`, `fila_por_usuario` y `libros_por_columna` son
     los que ya devuelve `fit_als` sobre el mismo `train_candidatos` --
@@ -218,6 +222,19 @@ def calcular_features_auxiliares(
         con_editorial.dropna(subset=["editorial"]).groupby(["id_lector", "editorial"]).size().items()
     ):
         n_libros_editorial_leidos_por_usuario.setdefault(id_lector, {})[editorial] = int(n)
+
+    # Tamaño de la editorial (cuántos libros tiene en TODO el catálogo,
+    # no solo los leídos por algún usuario) -- a diferencia de
+    # `n_libros_editorial_leidos_por_usuario` (depende del historial de
+    # cada usuario), esto es una propiedad del libro en sí: 2.762
+    # editoriales distintas entre libros con interacción, con una cola
+    # muy larga (91% tiene menos de 20 libros, 51% tiene exactamente 1)
+    # y sin una agrupación temática natural como la de género -- no tiene
+    # sentido una "macro-editorial" categórica, pero sí una señal
+    # numérica simple de volumen. Se calcula sobre `libros` completo
+    # (metadata estática, no depende del split, mismo criterio que
+    # autor/año de edición/resumen).
+    n_libros_por_editorial = metadata["editorial"].value_counts().to_dict()
 
     con_anio = interacciones.assign(anio_edicion=interacciones["id_libro"].map(anio_edicion_por_libro))
     anio_edicion_promedio_por_usuario = (
@@ -270,6 +287,7 @@ def calcular_features_auxiliares(
         "n_libros_autor_leidos_por_usuario": n_libros_autor_leidos_por_usuario,
         "editorial_por_libro": editorial_por_libro,
         "n_libros_editorial_leidos_por_usuario": n_libros_editorial_leidos_por_usuario,
+        "n_libros_por_editorial": n_libros_por_editorial,
         "anio_edicion_promedio_por_usuario": anio_edicion_promedio_por_usuario,
         "n_generos_distintos_por_usuario": n_generos_distintos_por_usuario,
         "dias_desde_ultima_interaccion_por_usuario": dias_desde_ultima_interaccion_por_usuario,
@@ -323,6 +341,7 @@ def generar_candidatos_con_features(
     n_libros_autor_leidos_por_usuario = features_auxiliares["n_libros_autor_leidos_por_usuario"]
     editorial_por_libro = features_auxiliares.get("editorial_por_libro", {})
     n_libros_editorial_leidos_por_usuario = features_auxiliares.get("n_libros_editorial_leidos_por_usuario", {})
+    n_libros_por_editorial = features_auxiliares.get("n_libros_por_editorial", {})
     anio_edicion_promedio_por_usuario = features_auxiliares["anio_edicion_promedio_por_usuario"]
     n_generos_distintos_por_usuario = features_auxiliares["n_generos_distintos_por_usuario"]
     dias_desde_ultima_interaccion_por_usuario = features_auxiliares["dias_desde_ultima_interaccion_por_usuario"]
@@ -436,6 +455,7 @@ def generar_candidatos_con_features(
 
             editorial = editorial_por_libro.get(id_libro)
             n_editorial_leidos = editoriales_leidas.get(editorial, 0) if pd.notna(editorial) else 0
+            n_libros_editorial_catalogo = n_libros_por_editorial.get(editorial, 0) if pd.notna(editorial) else 0
 
             anio_candidato = anio_edicion_por_libro.get(id_libro)
             if pd.notna(anio_candidato) and anio_promedio_usuario is not None:
@@ -480,6 +500,7 @@ def generar_candidatos_con_features(
                     "sim_resumen_historial": float(sim_resumen_por_candidato.get(id_libro, 0.0)),
                     "popularidad_genero_macro_candidato": float(popularidad_genero_macro),
                     "frecuencia_genero_macro_usuario": float(frecuencia_genero_macro),
+                    "n_libros_editorial_catalogo": n_libros_editorial_catalogo,
                 }
             )
 

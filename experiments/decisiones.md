@@ -14,33 +14,37 @@ la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 
 Estado actual: `"ranker"` (v3, ALS+género+popularidad+autor/año/diversidad/
 recencia+co-lectura+editorial+resumen+popularidad/frecuencia de
-macro-género → LightGBM) es el modelo de referencia del proyecto, con
-**0.04658 confirmado en Kaggle** (récord actual). Ideas concretas para
-la próxima sesión, en orden sugerido:
+macro-género+tamaño de catálogo de editorial → LightGBM, 23 features) es
+el modelo de referencia del proyecto, con **0.04831 confirmado en
+Kaggle** (récord actual). Ideas concretas para la próxima sesión, en
+orden sugerido:
 
-1. **Probar la combinación de 22 features SIN editorial contra Kaggle**
-   — se confirmó la versión *con* editorial (pese a ser la señal más
-   débil en `feature_importances_`), pero nunca se probó esa
-   combinación específica sin ella; podría dar un resultado aún mejor o
-   igual, no se sabe.
-2. **Retomar el tuneo de LightGBM sobre la base de features nueva** — se
+1. **Reconsiderar el criterio de decisión en sí** — dos veces seguidas
+   (género macro, tamaño de editorial) un resultado "positivo en los 3
+   seeds pero sin superar el desvío" se confirmó como mejora real en
+   Kaggle. Evaluar si "positivo en los 3 seeds individualmente" alcanza
+   como filtro para gastar una submission, reservando la regla del
+   desvío para decisiones que no impliquen Kaggle (ej. hiperparámetros).
+2. **Probar la combinación de 22 features SIN editorial contra Kaggle**
+   — se confirmó la versión *con* editorial (`en_editorial_leida`/
+   `n_libros_editorial_leidos`, pese a ser de las señales más débiles en
+   `feature_importances_`), pero nunca se probó esa combinación
+   específica sin ella.
+3. **Retomar el tuneo de LightGBM sobre la base de features nueva** — se
    descartó dos veces (`scripts/tune_ranker.py`) sobre bases de
    features distintas porque la mejora encontrada era menor que el
-   ruido entre seeds; con la base actual (22 features) el óptimo podría
+   ruido entre seeds; con la base actual (23 features) el óptimo podría
    ser distinto. Repetir con la misma validación cruzada multi-seed,
    nunca contra un solo split.
-3. **Evaluar con más de 3 seeds en casos límite** — la ronda de
-   género macro dio positivo en los 3 seeds pero no superó el desvío
-   local, y aun así se confirmó en Kaggle; con solo 3 seeds la regla
-   puede ser demasiado conservadora para mejoras reales pero chicas.
-4. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
+4. **Evaluar con más de 3 seeds en casos límite** — ver punto 1.
+5. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
    abajo).
 
 Ver `experiments/bitacora.md`, sección "Se retoma el ranker", para el
 detalle de por qué se priorizaron features sobre hiperparámetros, y
-sección "Co-lectura, editorial, resumen y género macro" para la ronda
-más reciente.
+secciones "Co-lectura, editorial, resumen y género macro" y "Tamaño de
+catálogo de editorial" para las dos rondas más recientes.
 
 ## 1. Split y validación local
 
@@ -127,6 +131,13 @@ más reciente.
 | Cómic y novela gráfica | 2.197 | cómics, novela gráfica |
 | Poesía y teatro | 1.234 | poesía/teatro, poesía |
 | Práctico y misceláneo (catch-all) | 1.799 | ~27 categorías restantes (humor, autoayuda, cocina, economía, música, deportes, medicina, derecho, idiomas, ...), todas con menos de 460 libros |
+
+## 8. Tamaño de catálogo de editorial (ronda 2026-08-30, parte 2)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| No aplicar una macro-taxonomía categórica a `editorial` (a diferencia de género) | ✅ **resuelto -- se descarta explícitamente** | 2.762 editoriales entre libros con interacción (vs. 52 de género), cola mucho más larga (91% con <20 libros, 51% con exactamente 1) y sin agrupación temática natural -- "Anagrama" y "Alfaguara" no comparten un "dominio" como sí lo hacen las categorías de género. Forzar 6-10 "familias de editoriales" habría sido artificial. |
+| `n_libros_editorial_catalogo` (tamaño del catálogo de la editorial, no del historial del usuario) como feature numérica simple | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | CV 3 seeds: 0.109735±0.003719, mismo patrón límite que la fila de género macro (positivo en los 3 seeds, no supera el desvío). `feature_importances_` la ubica por delante de `en_editorial_leida`/`n_libros_editorial_leidos` en los 3 seeds. Confirmado con el usuario vía submission real: **0.04831 en Kaggle, +3.7% sobre el récord anterior** (0.04658). Ver `bitacora.md`, sección "Tamaño de catálogo de editorial". |
 
 ---
 

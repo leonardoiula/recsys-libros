@@ -46,6 +46,7 @@ def _features_auxiliares_vacias() -> dict:
         "n_libros_autor_leidos_por_usuario": {},
         "editorial_por_libro": {},
         "n_libros_editorial_leidos_por_usuario": {},
+        "n_libros_por_editorial": {},
         "anio_edicion_promedio_por_usuario": {},
         "n_generos_distintos_por_usuario": {},
         "dias_desde_ultima_interaccion_por_usuario": {},
@@ -174,6 +175,10 @@ def test_calcular_features_auxiliares():
     # mismo patron para editorial: 2 de "PLANETA" (a, b), 1 de "SUDAMERICANA" (c)
     assert aux["n_libros_editorial_leidos_por_usuario"]["u1"]["PLANETA"] == 2
     assert aux["n_libros_editorial_leidos_por_usuario"]["u1"]["SUDAMERICANA"] == 1
+    # tamano de catalogo por editorial: PLANETA tiene 2 libros (a, b) en TODO
+    # el catalogo (no solo los leidos), SUDAMERICANA tiene 1 (c)
+    assert aux["n_libros_por_editorial"]["PLANETA"] == 2
+    assert aux["n_libros_por_editorial"]["SUDAMERICANA"] == 1
     # anio promedio de a,b,c = (2000+2010+2020)/3
     assert aux["anio_edicion_promedio_por_usuario"]["u1"] == 2010.0
     # generos normalizados: "terror" (a,b, normalizado igual) + "novela negra" (c) = 2 distintos
@@ -390,6 +395,59 @@ def test_generar_candidatos_sentinel_cuando_no_hay_dato_de_genero_macro():
     fila = candidatos.iloc[0]
     assert fila["popularidad_genero_macro_candidato"] == 0.0
     assert fila["frecuencia_genero_macro_usuario"] == 0.0
+
+
+def test_generar_candidatos_incluye_tamano_catalogo_editorial():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    aux = {
+        **_features_auxiliares_vacias(),
+        "editorial_por_libro": {"a": "PLANETA"},
+        "n_libros_por_editorial": {"PLANETA": 1874},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    assert candidatos.iloc[0]["n_libros_editorial_catalogo"] == 1874
+
+
+def test_generar_candidatos_sentinel_cuando_no_hay_editorial():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    # "a" no tiene editorial conocida
+    aux = {**_features_auxiliares_vacias(), "editorial_por_libro": {"a": None}}
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    assert candidatos.iloc[0]["n_libros_editorial_catalogo"] == 0
 
 
 def test_armar_dataset_marca_el_positivo_y_arma_group():

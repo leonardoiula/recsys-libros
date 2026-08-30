@@ -1556,3 +1556,59 @@ Se confirmó que el refactor es puramente de reorganización: corriendo
 `scripts/evaluate_ranker.py` para seed=42 antes y después del cambio, el
 NDCG@20 del ranker dio exactamente igual (`0.105679`) -- mismo pipeline,
 solo separado en dos funciones en vez de una.
+
+---
+
+## Tuneo de LightGBM sobre 23 features: tercera vez que no se adopta
+
+### Objetivo
+
+Con el pipeline ya separado (sección anterior), se corrió
+`scripts/tune_ranker.py` sobre la base actual de 23 features: 10 trials
+de optuna, 2 seeds por trial, confirmación final con los 3 seeds
+completos.
+
+### Corrida real: dos jobs en background se cortaron solos
+
+La búsqueda de optuna (10 trials × 2 seeds) terminó bien, en 1324.6s
+(~22 min, tal como estimaba el refactor). Pero el proceso se cortó
+("killed") durante la confirmación final con los 3 seeds -- y un
+segundo intento de correr *solo* esa confirmación también se cortó,
+esta vez casi de inmediato. En vez de seguir reintentando en background,
+se corrió la confirmación **seed por seed, en primer plano** (tres
+llamadas de ~370s cada una, bien por debajo del límite de una corrida
+en primer plano) -- inestabilidad del entorno de esta sesión, no del
+código.
+
+### Resultado: mixto, no se adopta
+
+Mejor config encontrado por optuna: `num_leaves=7, learning_rate=0.134,
+n_estimators=280, min_child_samples=82, reg_alpha=0.0012,
+reg_lambda=7.58`.
+
+| | seed=42 | seed=7 | seed=123 | media ± desvío |
+|---|---|---|---|---|
+| Conservador (actual, confirmado en Kaggle: 0.04831) | 0.10568 | 0.11054 | 0.11299 | 0.109735 ± 0.003719 |
+| Tuneado (optuna) | 0.10637 | 0.11113 | 0.11209 | 0.109864 ± 0.003066 |
+
+Mixto: positivo en seed=42 (+0.00069) y seed=7 (+0.00059), negativo en
+seed=123 (-0.00090). Mejora promedio +0.12% (0.00013) -- indistinguible
+de ruido, ni siquiera cerca del patrón "positivo en los 3 seeds" que
+justificó confirmar los dos casos límite anteriores (género macro,
+tamaño de editorial). Es la **tercera vez** que el tuneo de LightGBM en
+este proyecto da un resultado así de chico e inconsistente (las dos
+anteriores, sobre bases de features distintas, tampoco se adoptaron --
+ver sección "Se retoma el ranker" y `experiments/log.csv`). Se
+mantienen los hiperparámetros conservadores (`num_leaves=31,
+learning_rate=0.05, n_estimators=200`) en producción -- no se gasta una
+submission en esto, ni hace falta: la señal local ya es claramente
+insuficiente, sin ningún patrón consistente que sugiera lo contrario.
+
+### Próximos pasos
+
+- Con tres intentos de tuneo de LightGBM (sobre tres bases de features
+  distintas) dando siempre mejoras menores al ruido, quizás no valga la
+  pena seguir insistiendo con esto -- el patrón sugiere que los
+  hiperparámetros conservadores ya están cerca de un óptimo razonable
+  para este tipo de dataset/tarea, y que el margen real sigue estando en
+  features nuevas, no en hiperparámetros.

@@ -14,28 +14,17 @@ la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 
 Estado actual: `"ranker"` (v3, ALS+género+popularidad+autor/año/diversidad/
 recencia+co-lectura+editorial+resumen+popularidad/frecuencia de
-macro-género+tamaño de catálogo de editorial → LightGBM, 23 features) es
-el modelo de referencia del proyecto, con **0.04831 confirmado en
-Kaggle** (récord actual). Ideas concretas para la próxima sesión, en
-orden sugerido:
+macro-género+tamaño de catálogo de editorial → LightGBM, 23 features,
+hiperparámetros conservadores) es el modelo de referencia del proyecto,
+con **0.04831 confirmado en Kaggle** (récord actual). Ideas concretas
+para la próxima sesión, en orden sugerido:
 
-1. **Reconsiderar el criterio de decisión en sí** — dos veces seguidas
-   (género macro, tamaño de editorial) un resultado "positivo en los 3
-   seeds pero sin superar el desvío" se confirmó como mejora real en
-   Kaggle, y una tercera vez (sacar `en_editorial_leida`/
-   `n_libros_editorial_leidos`) el patrón mixto/negativo correctamente
-   anticipó que no valía la pena una submission. Evaluar si "positivo en
-   los 3 seeds individualmente" alcanza como filtro para gastar una
-   submission, reservando la regla del desvío para decisiones que no
-   impliquen Kaggle (ej. hiperparámetros).
-2. **Retomar el tuneo de LightGBM sobre la base de features nueva** — se
-   descartó dos veces (`scripts/tune_ranker.py`) sobre bases de
-   features distintas porque la mejora encontrada era menor que el
-   ruido entre seeds; con la base actual (23 features) el óptimo podría
-   ser distinto. Repetir con la misma validación cruzada multi-seed,
-   nunca contra un solo split.
-3. **Evaluar con más de 3 seeds en casos límite** — ver punto 1.
-4. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
+1. **Seguir sumando features de dominio** — con el tuneo de
+   hiperparámetros descartado tres veces (ver resuelto abajo), el margen
+   real sigue estando ahí, no en LightGBM. Candidatos sin explorar
+   todavía: ver `experiments/features.md`, sección "Qué no está"
+   (`vive_en`, franja de nacimiento, señales cruzadas lector↔libro).
+2. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
    abajo).
 
@@ -45,6 +34,24 @@ orden sugerido:
 se gastó una submission. Se mantienen las 23 features. Ver sección 8 y
 `bitacora.md`, sección "¿Sacar editorial? Ablation resuelve la pregunta
 pendiente".
+
+**Resuelto:** el criterio de "positivo en los 3 seeds individualmente"
+(sin exigir que supere el desvío) para decidir si gastar una submission
+-- el usuario lo confirmó explícitamente ("me parece que el criterio de
+los 3 seeds va bien") después de que acertara en los tres casos de esta
+sesión (género macro y tamaño de editorial: confirmar valió la pena;
+sacar editorial: no confirmar también fue la decisión correcta). Queda
+como criterio del proyecto para decidir submissions, no reemplaza la
+regla del desvío para decisiones que no impliquen Kaggle (ej.
+hiperparámetros, donde si se aplicó y evitó adoptar mejoras de ruido).
+
+**Resuelto:** retomar el tuneo de LightGBM sobre la base de 23 features
+-- mixto (positivo en 2 de 3 seeds, negativo en el tercero), mejora
+promedio +0.12%, indistinguible de ruido. **Tercera vez** que el tuneo
+de hiperparámetros da un resultado así de chico sobre bases de features
+distintas -- no se adopta, se mantienen los hiperparámetros
+conservadores. Ver `bitacora.md`, sección "Tuneo de LightGBM sobre 23
+features: tercera vez que no se adopta".
 
 Ver `experiments/bitacora.md`, sección "Se retoma el ranker", para el
 detalle de por qué se priorizaron features sobre hiperparámetros, y
@@ -144,6 +151,8 @@ catálogo de editorial" para las dos rondas más recientes.
 | No aplicar una macro-taxonomía categórica a `editorial` (a diferencia de género) | ✅ **resuelto -- se descarta explícitamente** | 2.762 editoriales entre libros con interacción (vs. 52 de género), cola mucho más larga (91% con <20 libros, 51% con exactamente 1) y sin agrupación temática natural -- "Anagrama" y "Alfaguara" no comparten un "dominio" como sí lo hacen las categorías de género. Forzar 6-10 "familias de editoriales" habría sido artificial. |
 | `n_libros_editorial_catalogo` (tamaño del catálogo de la editorial, no del historial del usuario) como feature numérica simple | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | CV 3 seeds: 0.109735±0.003719, mismo patrón límite que la fila de género macro (positivo en los 3 seeds, no supera el desvío). `feature_importances_` la ubica por delante de `en_editorial_leida`/`n_libros_editorial_leidos` en los 3 seeds. Confirmado con el usuario vía submission real: **0.04831 en Kaggle, +3.7% sobre el récord anterior** (0.04658). Ver `bitacora.md`, sección "Tamaño de catálogo de editorial". |
 | Sacar `en_editorial_leida`/`n_libros_editorial_leidos` (las más débiles individualmente) ahora que está `n_libros_editorial_catalogo` | ✅ **resuelto -- no conviene, no se sube a Kaggle** | Ablation (23 → 21 features): CV 3 seeds 0.109287±0.003276, negativo en 2 de 3 seeds -- a diferencia de los casos límite anteriores (siempre positivos), acá la señal local apunta claramente en contra. Aunque son las features más débiles individualmente, no son ruido puro: aportan algo real en conjunto. Se mantienen las 23 features. Ver `bitacora.md`, sección "¿Sacar editorial? Ablation resuelve la pregunta pendiente". |
+| "Positivo en los 3 seeds individualmente" como criterio para gastar una submission (sin exigir que supere el desvío) | ✅ **confirmado por el usuario** | Acertó en los tres casos de esta sesión (género macro y tamaño de editorial: confirmar valió la pena; sacar editorial, mixto/negativo: no confirmar también fue correcto). Sigue reservándose la regla del desvío para decisiones que no impliquen Kaggle. |
+| Retomar el tuneo de `LGBMRanker` con optuna sobre la base de 23 features (10 trials × 2 seeds, `scripts/tune_ranker.py`, ahora con contexto cacheado por seed -- ver `bitacora.md`) | ❌ **no se adopta -- tercera vez, mejora menor que el ruido** | Mejor config (`num_leaves=7, learning_rate=0.134, n_estimators=280, min_child_samples=82, reg_alpha=0.0012, reg_lambda=7.58`): CV 3 seeds 0.109864±0.003066 vs 0.109735±0.003719 del conservador -- MIXTO (positivo en 2 seeds, negativo en 1), +0.12% de mejora promedio. Tercera vez que el tuneo de hiperparámetros da un resultado así de chico sobre bases de features distintas. Quedan los hiperparámetros conservadores (`num_leaves=31, learning_rate=0.05, n_estimators=200`) en producción. |
 
 ---
 

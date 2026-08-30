@@ -1497,3 +1497,62 @@ gastó una submission en esto: a diferencia de los casos límite
 anteriores (todos positivos en los 3 seeds, lo que justificó confirmar
 con Kaggle), acá la señal local ya apunta claramente en contra. Se
 mantienen las 23 features tal cual.
+
+---
+
+## Separar armado de candidatos de tuneo de LightGBM (antes de tunear)
+
+### Objetivo
+
+Antes de retomar el tuneo de `LGBMRanker` (pendiente en `decisiones.md`)
+sobre la base actual de 23 features, se midió cuánto tardaría con el
+diseño existente de `scripts/tune_ranker.py`, que llama a
+`ranker.evaluar_pipeline` completo en cada trial de optuna.
+
+### Medición (una corrida completa, seed=42, 23 features)
+
+| Etapa | Tiempo | ¿Depende de `lgbm_params`? |
+|---|---|---|
+| ALS + popularidad + género + `calcular_features_auxiliares` (TF-IDF, co-lectura, macro-género) | ~18s | No |
+| `generar_candidatos_con_features` (train_ranker, ~7.9k usuarios) | ~129s | No |
+| `armar_dataset_entrenamiento` | ~22s | No |
+| `fit_ranker` (LightGBM) | ~22s | **Sí -- lo único que cambia entre trials** |
+
+(Se suma una segunda llamada a `generar_candidatos_con_features` para
+`test_final`, de magnitud similar a la de `train_ranker`.)
+
+De los ~350-450s que tarda una corrida completa, **solo ~22s dependen
+de los hiperparámetros que se están tuneando** -- el resto (armar
+candidatos y el dataset de entrenamiento) es idéntico entre trials para
+el mismo seed. Con el diseño anterior (10 trials × 2 seeds + confirmación
+final con 3 seeds), el tuneo completo hubiera tardado **~2.5 horas**.
+
+### Decisión: separar `preparar_pipeline` de `evaluar_con_params`
+
+`ranker.py::evaluar_pipeline` se partió en dos funciones (ver sus
+docstrings para el detalle completo):
+
+- **`preparar_pipeline(interacciones, libros, seed, n_por_fuente, k)`**:
+  todo lo que no depende de `lgbm_params` -- split de tres niveles, fit
+  de ALS/popularidad/género, `calcular_features_auxiliares`, las dos
+  llamadas a `generar_candidatos_con_features`, `armar_dataset_entrenamiento`,
+  y el NDCG de ALS solo. Devuelve un dict "contexto" reusable.
+- **`evaluar_con_params(contexto, lgbm_params)`**: la parte barata
+  (~22s) -- entrena `LGBMRanker` con una config puntual sobre el
+  contexto ya armado y evalúa NDCG@k.
+- `evaluar_pipeline` queda como atajo de conveniencia (`preparar_pipeline`
+  + `evaluar_con_params`) para el caso de una sola config por seed --
+  `scripts/evaluate_ranker.py` no necesitó ningún cambio.
+
+`scripts/tune_ranker.py` ahora arma el contexto **una sola vez por
+seed** (cacheado en `_CONTEXTOS`) y prueba todas las configuraciones de
+optuna contra ese mismo contexto vía `evaluar_con_params`. Mismo alcance
+de búsqueda (10 trials, 2 seeds por trial, confirmación final con 3
+seeds), de **~2.5 horas a ~20-25 minutos**.
+
+### Verificación de que no cambió el resultado
+
+Se confirmó que el refactor es puramente de reorganización: corriendo
+`scripts/evaluate_ranker.py` para seed=42 antes y después del cambio, el
+NDCG@20 del ranker dio exactamente igual (`0.105679`) -- mismo pipeline,
+solo separado en dos funciones en vez de una.

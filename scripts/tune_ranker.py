@@ -8,13 +8,20 @@ menos, después del episodio de ALS+optuna donde un sweep sobre un único
 split mejoró el NDCG local pero empeoró el score real de Kaggle, ver
 `experiments/bitacora.md`). Al terminar la búsqueda, confirma el mejor
 config encontrado con los 3 seeds completos (`SEEDS_FINAL`, mismos de
-`scripts/evaluate_ranker.py`) para comparar contra los hiperparámetros
-conservadores actuales -- reusa `ranker.evaluar_pipeline`, no duplica el
-split de tres niveles ni el armado de candidatos/dataset.
+`scripts/evaluate_ranker.py`).
 
-Referencia (misma corrida de `evaluate_ranker.py`, ya con las features
-de autor/año/género/recencia, hiperparámetros conservadores,
-`n_por_fuente=150`, 3 seeds): ranker = 0.106815 +- 0.001498.
+Contexto cacheado por seed, no `ranker.evaluar_pipeline` por trial: con
+el set de 23 features, armar candidatos/dataset (`ranker.preparar_pipeline`)
+tarda ~280-300s y entrenar LightGBM con una config (`ranker.evaluar_con_params`)
+tarda ~22s -- ver el docstring de `preparar_pipeline` para el detalle de
+costos. Como el armado de candidatos no depende de `lgbm_params`, se
+arma **una sola vez por seed** (`_contexto`, cacheado en `_CONTEXTOS`) y
+se reusa en todos los trials -- sin este cacheo, 10 trials x 2 seeds +
+confirmación final con 3 seeds tardarían ~2.5 horas; con él, ~20-25 min.
+
+Referencia (`scripts/evaluate_ranker.py`, ranker de 23 features
+confirmado en Kaggle -- ver `experiments/log.csv`, fila con
+`ndcg_kaggle=0.04831`, 3 seeds): ranker = 0.109735 +- 0.003719.
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from recsys.data import load_interacciones, load_libros
 from recsys.evaluation import evaluar_multisplit
-from recsys.models.ranker import evaluar_pipeline
+from recsys.models.ranker import evaluar_con_params, preparar_pipeline
 
 K = 20
 N_POR_FUENTE = 150
@@ -37,18 +44,27 @@ SEEDS_TUNING = [42, 7]
 SEEDS_FINAL = [42, 7, 123]
 N_TRIALS = 10
 
-BASELINE_CONSERVADOR = 0.106815  # ver docstring, misma corrida de evaluate_ranker.py
+BASELINE_CONSERVADOR = 0.109735  # ver docstring, misma corrida de evaluate_ranker.py
 
 interacciones = load_interacciones()
 libros = load_libros()
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+_CONTEXTOS: dict[int, dict] = {}
+
+
+def _contexto(seed: int) -> dict:
+    """Arma el contexto de `preparar_pipeline` la primera vez que se pide
+    ese seed, y lo cachea -- es la parte cara (~280-300s) del pipeline,
+    la misma para todos los trials de un mismo seed."""
+    if seed not in _CONTEXTOS:
+        _CONTEXTOS[seed] = preparar_pipeline(interacciones, libros, seed, n_por_fuente=N_POR_FUENTE, k=K)
+    return _CONTEXTOS[seed]
+
 
 def ndcg_ranker(seed: int, lgbm_params: dict | None) -> float:
-    return evaluar_pipeline(interacciones, libros, seed, n_por_fuente=N_POR_FUENTE, lgbm_params=lgbm_params, k=K)[
-        "ndcg_ranker"
-    ]
+    return evaluar_con_params(_contexto(seed), lgbm_params)["ndcg_ranker"]
 
 
 def objective(trial: optuna.Trial) -> float:

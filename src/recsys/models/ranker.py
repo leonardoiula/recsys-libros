@@ -628,33 +628,42 @@ def recomendar_por_usuario(
     return recomendaciones
 
 
-def evaluar_pipeline(
+def preparar_pipeline(
     interacciones: pd.DataFrame,
     libros: pd.DataFrame,
     seed: int,
     n_por_fuente: int = 150,
-    lgbm_params: dict | None = None,
     k: int = 20,
 ) -> dict:
-    """Corre el pipeline completo del ranker de dos etapas para un seed:
-    split de **tres niveles** (`train_candidatos`/`train_ranker`/`test_final`,
-    ver docstring del módulo), fit de las señales solo con
-    `train_candidatos`, entrenamiento del `LGBMRanker` con las etiquetas
-    de `train_ranker`, y evaluación de NDCG@k en `test_final`. También
-    evalúa ALS solo sobre las mismas señales (mismo `train_candidatos`),
-    para una comparación controlada -- aísla el efecto de agregar la capa
-    de ranking, no el de tener más o menos datos de entrenamiento.
+    """Arma todo lo que necesita el pipeline del ranker para un seed,
+    **excepto** entrenar el `LGBMRanker` en sí -- eso queda para
+    `evaluar_con_params`, que recibe el dict que devuelve esta función
+    (el "contexto") y lo reusa.
 
-    `lgbm_params` se pasa tal cual a `fit_ranker` (`None` -> hiperparámetros
-    conservadores por default). Existe para reusarse tanto desde
-    `scripts/evaluate_ranker.py` (hiperparámetros fijos) como desde
-    `scripts/tune_ranker.py` (búsqueda con optuna) sin duplicar esta
-    lógica en cada script.
+    Por qué está separado de `evaluar_con_params`: medido con el set de
+    23 features (`experiments/bitacora.md`, sección "Separar armado de
+    candidatos de tuneo de LightGBM"), una corrida de esta función tarda
+    ~280-300s (fit de ALS/popularidad/género, `calcular_features_auxiliares`
+    -- TF-IDF/co-lectura/macro-género --, y sobre todo las dos llamadas a
+    `generar_candidatos_con_features`, la parte más cara con ~130s cada
+    una), mientras que entrenar el `LGBMRanker` (`fit_ranker`) tarda
+    ~22s. Nada de lo que arma esta función depende de los hiperparámetros
+    de LightGBM -- son las mismas señales/candidatos/dataset sin importar
+    qué configuración se vaya a probar. `scripts/tune_ranker.py` explota
+    justo eso: arma el contexto **una sola vez por seed** y prueba muchas
+    configuraciones de LightGBM contra el mismo contexto vía
+    `evaluar_con_params`, en vez de repetir los ~280-300s en cada trial.
 
-    Devuelve `{"ndcg_als": ..., "ndcg_ranker": ..., "modelo_ranker": ...}`
-    -- el modelo entrenado se incluye para poder inspeccionar
-    `feature_importances_` (ver `scripts/evaluate_ranker.py`) sin
-    reentrenar.
+    Reproduce el split de **tres niveles** (`train_candidatos`/
+    `train_ranker`/`test_final`, ver docstring del módulo) y fitea las
+    señales solo con `train_candidatos`, igual que antes.
+
+    Devuelve un dict con todo lo que `evaluar_con_params` necesita:
+    `X`/`y`/`group` (dataset de entrenamiento del ranker), `candidatos_test`
+    (candidatos de `test_final` ya con features), `ranking_global`,
+    `libros_leidos_hasta_ranker`, `usuarios_test`, `test_final` (para
+    calcular NDCG@k), `ndcg_als` (score de ALS solo -- tampoco depende de
+    `lgbm_params`, se calcula acá una sola vez) y `k`.
     """
     train_candidatos_full, test_final = split_train_val(interacciones, n_val=1, seed=seed)
     train_candidatos, train_ranker = split_train_val(train_candidatos_full, n_val=1, seed=seed + 1000)
@@ -690,7 +699,6 @@ def evaluar_pipeline(
     X, y, group = armar_dataset_entrenamiento(
         candidatos_train_ranker, train_ranker[["id_lector", "id_libro"]], n_por_fuente=n_por_fuente
     )
-    modelo_ranker = fit_ranker(X, y, group, **(lgbm_params or {}))
 
     libros_leidos_hasta_ranker = libros_leidos_por_usuario(train_candidatos_full)
     usuarios_test = test_final["id_lector"].unique().tolist()
@@ -698,15 +706,6 @@ def evaluar_pipeline(
     candidatos_test = generar_candidatos_con_features(
         usuarios=usuarios_test, libros_leidos=libros_leidos_hasta_ranker, **args_candidatos
     )
-    recs_ranker = recomendar_por_usuario(
-        usuarios=usuarios_test,
-        modelo_ranker=modelo_ranker,
-        candidatos_df=candidatos_test,
-        ranking_global=ranking_global,
-        libros_leidos=libros_leidos_hasta_ranker,
-        k=k,
-    )
-    ndcg_ranker = evaluar_ndcg_personalizado(test_final, recs_ranker, k)
 
     recs_als = _recomendar_als(
         usuarios=usuarios_test,
@@ -720,4 +719,80 @@ def evaluar_pipeline(
     )
     ndcg_als = evaluar_ndcg_personalizado(test_final, recs_als, k)
 
-    return {"ndcg_als": ndcg_als, "ndcg_ranker": ndcg_ranker, "modelo_ranker": modelo_ranker}
+    return {
+        "X": X,
+        "y": y,
+        "group": group,
+        "candidatos_test": candidatos_test,
+        "ranking_global": ranking_global,
+        "libros_leidos_hasta_ranker": libros_leidos_hasta_ranker,
+        "usuarios_test": usuarios_test,
+        "test_final": test_final,
+        "ndcg_als": ndcg_als,
+        "k": k,
+    }
+
+
+def evaluar_con_params(contexto: dict, lgbm_params: dict | None = None) -> dict:
+    """Entrena un `LGBMRanker` con `lgbm_params` sobre el `contexto` que
+    arma `preparar_pipeline` (ver ese docstring para el porqué de la
+    separación) y evalúa NDCG@k en `test_final` -- la parte barata del
+    pipeline (~22s medido con 23 features), pensada para llamarse muchas
+    veces con distintos `lgbm_params` contra el mismo `contexto`/seed sin
+    repetir el armado de candidatos.
+
+    Devuelve `{"ndcg_als": ..., "ndcg_ranker": ..., "modelo_ranker": ...}`
+    -- mismo shape que devolvía `evaluar_pipeline` (`ndcg_als` viene tal
+    cual del contexto, no depende de `lgbm_params`).
+    """
+    modelo_ranker = fit_ranker(contexto["X"], contexto["y"], contexto["group"], **(lgbm_params or {}))
+
+    recs_ranker = recomendar_por_usuario(
+        usuarios=contexto["usuarios_test"],
+        modelo_ranker=modelo_ranker,
+        candidatos_df=contexto["candidatos_test"],
+        ranking_global=contexto["ranking_global"],
+        libros_leidos=contexto["libros_leidos_hasta_ranker"],
+        k=contexto["k"],
+    )
+    ndcg_ranker = evaluar_ndcg_personalizado(contexto["test_final"], recs_ranker, contexto["k"])
+
+    return {"ndcg_als": contexto["ndcg_als"], "ndcg_ranker": ndcg_ranker, "modelo_ranker": modelo_ranker}
+
+
+def evaluar_pipeline(
+    interacciones: pd.DataFrame,
+    libros: pd.DataFrame,
+    seed: int,
+    n_por_fuente: int = 150,
+    lgbm_params: dict | None = None,
+    k: int = 20,
+) -> dict:
+    """Corre el pipeline completo del ranker de dos etapas para un seed:
+    split de **tres niveles** (`train_candidatos`/`train_ranker`/`test_final`,
+    ver docstring del módulo), fit de las señales solo con
+    `train_candidatos`, entrenamiento del `LGBMRanker` con las etiquetas
+    de `train_ranker`, y evaluación de NDCG@k en `test_final`. También
+    evalúa ALS solo sobre las mismas señales (mismo `train_candidatos`),
+    para una comparación controlada -- aísla el efecto de agregar la capa
+    de ranking, no el de tener más o menos datos de entrenamiento.
+
+    Es un atajo de conveniencia (`preparar_pipeline` + `evaluar_con_params`)
+    para el caso de **una sola configuración por seed** -- así la usa
+    `scripts/evaluate_ranker.py`. Si hace falta probar *varias*
+    configuraciones de LightGBM contra el mismo seed (`scripts/tune_ranker.py`),
+    llamar a `preparar_pipeline` una vez y reusar ese contexto en varias
+    llamadas a `evaluar_con_params` es mucho más barato que llamar a esta
+    función una vez por configuración -- ver el docstring de
+    `preparar_pipeline` para el detalle de costos.
+
+    `lgbm_params` se pasa tal cual a `fit_ranker` (`None` -> hiperparámetros
+    conservadores por default).
+
+    Devuelve `{"ndcg_als": ..., "ndcg_ranker": ..., "modelo_ranker": ...}`
+    -- el modelo entrenado se incluye para poder inspeccionar
+    `feature_importances_` (ver `scripts/evaluate_ranker.py`) sin
+    reentrenar.
+    """
+    contexto = preparar_pipeline(interacciones, libros, seed, n_por_fuente=n_por_fuente, k=k)
+    return evaluar_con_params(contexto, lgbm_params)

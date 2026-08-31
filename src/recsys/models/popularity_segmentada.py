@@ -151,34 +151,144 @@ def fit_popularidad_por_genero_macro(interacciones: pd.DataFrame, libros: pd.Dat
     }
 
 
+PAIS_DESCONOCIDO = "desconocido"
+
+
+def _extraer_pais(vive_en: pd.Series) -> pd.Series:
+    """Extrae el país del formato libre de `lectores.vive_en` ("Ciudad -
+    País", a veces solo "País", a veces vacío o el placeholder "¿?" que
+    usa el dataset para "no especifica"). Se queda con lo que sigue al
+    *último* " - " (si no hay separador, el string entero es el país).
+
+    Normaliza igual que el género (`_normalizar_genero`: minúsculas, sin
+    acentos) para no separar variantes de tildeo ("México"/"Mexico") en
+    países distintos -- confirmado con los datos reales que, después de
+    normalizar así, no queda ningún caso de colisión entre países
+    temáticamente distintos (ver `experiments/bitacora.md`).
+
+    A diferencia de género/franja de nacimiento, acá "desconocido" es una
+    categoría propia en vez de un valor que se descarta: ~9% de los
+    lectores no especifica ubicación (534 vacíos + 457 con el placeholder
+    "¿?" sobre 11.285 lectores) -- decidido así con el usuario en vez de
+    excluirlos o asignarles un país por default.
+    """
+    pais_crudo = vive_en.fillna("").str.strip().str.rsplit(" - ", n=1).str[-1]
+    pais_normalizado = pais_crudo.str.strip().str.lower().map(_quitar_acentos)
+    return pais_normalizado.replace(["", "¿?"], PAIS_DESCONOCIDO)
+
+
+def pais_por_usuario(lectores: pd.DataFrame) -> dict:
+    """País de cada lector (`vive_en` parseado y normalizado, ver
+    `_extraer_pais`). A diferencia de `franja_nacimiento_por_usuario`,
+    devuelve una entrada para **todos** los lectores -- "desconocido" es
+    una categoría propia, no se descarta a nadie.
+    """
+    paises = pd.Series(_extraer_pais(lectores["vive_en"]).values, index=lectores["id_lector"])
+    return paises.to_dict()
+
+
+def fit_popularity_por_pais(interacciones: pd.DataFrame, lectores: pd.DataFrame) -> dict:
+    """Ranking de popularidad (score bayesiano) entre los lectores de cada
+    país (~98 países reales + "desconocido" como categoría propia, ver
+    `pais_por_usuario`). Devuelve {pais: DataFrame}, mismo formato que
+    `fit_popularity`.
+
+    Muy sesgado hacia España (68% de los lectores) -- igual que género/
+    franja, C y m del shrinkage bayesiano se calculan por separado dentro
+    de cada país (`fit_popularity` recibe solo las interacciones de ese
+    país), así que la cola de países chicos no se contamina con el
+    volumen de España.
+    """
+    paises = pais_por_usuario(lectores)
+    con_pais = interacciones.copy()
+    con_pais["pais"] = con_pais["id_lector"].map(paises)
+
+    return {
+        pais: fit_popularity(grupo[["id_libro", "rating"]])
+        for pais, grupo in con_pais.groupby("pais")
+    }
+
+
+FRANJA_DESCONOCIDA = "desconocido"
+NACIMIENTO_SENTINEL = 1910
+"""`nacimiento == 1910` no es gente real nacida ese año: de los 438
+lectores que caerían en la franja "1910s", 415 tienen el valor *exacto*
+1910 (vs. 1 a 9 casos para 1911-1917) -- un patrón consistente con un
+default de formulario, no con una década real (implicaría más de 110
+años en un dataset de lectura activa). Confirmado con el usuario antes
+de tratarlo así (ver `experiments/bitacora.md`)."""
+
+
 def franja_nacimiento_por_usuario(lectores: pd.DataFrame) -> dict:
     """Década de nacimiento de cada lector (ej. "1980s"), como proxy de edad.
 
     Se usa década en vez de edad real porque no hay una fecha de referencia
-    confiable para calcularla a partir de `nacimiento`. Devuelve
-    {id_lector: franja} solo para lectores con `nacimiento` numérico válido.
+    confiable para calcularla a partir de `nacimiento`. `nacimiento` inválido
+    (no numérico) o igual a `NACIMIENTO_SENTINEL` se trata como
+    `FRANJA_DESCONOCIDA` -- una categoría propia, no se descarta al lector
+    (mismo criterio que `pais_por_usuario`; ~30% de los lectores cae acá,
+    entre `nacimiento` faltante y el sentinel). Devuelve una entrada para
+    **todos** los lectores.
     """
     nacimiento = pd.to_numeric(lectores["nacimiento"], errors="coerce")
+    conocido = nacimiento.notna() & (nacimiento != NACIMIENTO_SENTINEL)
     franja = ((nacimiento // 10) * 10).astype("Int64")
-    franja_str = franja.astype("string") + "s"
+    franja_str = (franja.astype("string") + "s").where(conocido, FRANJA_DESCONOCIDA)
 
     resultado = pd.Series(franja_str.values, index=lectores["id_lector"])
-    return resultado.dropna().to_dict()
+    return resultado.to_dict()
 
 
 def fit_popularity_por_franja_nacimiento(interacciones: pd.DataFrame, lectores: pd.DataFrame) -> dict:
     """Ranking de popularidad (score bayesiano) dentro de cada franja de
-    nacimiento. Devuelve {franja: DataFrame}, mismo formato que `fit_popularity`.
+    nacimiento (incluye `FRANJA_DESCONOCIDA` como categoría propia, ver
+    `franja_nacimiento_por_usuario`). Devuelve {franja: DataFrame}, mismo
+    formato que `fit_popularity`.
     """
     franjas = franja_nacimiento_por_usuario(lectores)
 
     con_franja = interacciones.copy()
     con_franja["franja"] = con_franja["id_lector"].map(franjas)
-    con_franja = con_franja.dropna(subset=["franja"])
 
     return {
         franja: fit_popularity(grupo[["id_libro", "rating"]])
         for franja, grupo in con_franja.groupby("franja")
+    }
+
+
+GENERO_LECTOR_DESCONOCIDO = "desconocido"
+
+
+def genero_lector_por_usuario(lectores: pd.DataFrame) -> dict:
+    """Género declarado de cada lector (`lectores.genero`: "Mujer"/"Hombre"),
+    NO el género literario del libro -- son dos columnas con el mismo
+    nombre (`genero`) en `lectores`/`libros` pero significados
+    completamente distintos; todo el resto de este módulo (`_normalizar_genero`,
+    `genero_macro`, etc.) se refiere siempre al género *literario*.
+
+    El dato viene limpio (solo 3 valores exactos en todo el dataset:
+    "Mujer", "Hombre", "-" -- sin variantes de capitalización/espacios
+    que normalizar). `"-"` (32% de los lectores, "no especifica") se
+    mapea a `GENERO_LECTOR_DESCONOCIDO` -- categoría propia, mismo
+    criterio que país/franja de nacimiento. Devuelve una entrada para
+    todos los lectores.
+    """
+    genero_lector = lectores["genero"].replace("-", GENERO_LECTOR_DESCONOCIDO)
+    return pd.Series(genero_lector.values, index=lectores["id_lector"]).to_dict()
+
+
+def fit_popularity_por_genero_lector(interacciones: pd.DataFrame, lectores: pd.DataFrame) -> dict:
+    """Ranking de popularidad (score bayesiano) entre lectores del mismo
+    género declarado (ver `genero_lector_por_usuario`). Devuelve
+    {genero_lector: DataFrame}, mismo formato que `fit_popularity`.
+    """
+    generos_lector = genero_lector_por_usuario(lectores)
+    con_genero_lector = interacciones.copy()
+    con_genero_lector["genero_lector"] = con_genero_lector["id_lector"].map(generos_lector)
+
+    return {
+        genero_lector: fit_popularity(grupo[["id_libro", "rating"]])
+        for genero_lector, grupo in con_genero_lector.groupby("genero_lector")
     }
 
 

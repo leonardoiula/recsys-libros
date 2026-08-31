@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from recsys.data import load_interacciones, load_libros
+from recsys.data import load_interacciones, load_lectores, load_libros
 from recsys.evaluation import evaluar_multisplit
 from recsys.models.ranker import FEATURES, evaluar_pipeline
 
@@ -33,13 +33,16 @@ SEEDS = [42, 7, 123]
 
 interacciones = load_interacciones()
 libros = load_libros()
+lectores = load_lectores()
 
 
 def main() -> None:
     resultados_por_seed = {}
     for seed in SEEDS:
         t0 = time.time()
-        resultados_por_seed[seed] = evaluar_pipeline(interacciones, libros, seed, n_por_fuente=N_POR_FUENTE, k=K)
+        resultados_por_seed[seed] = evaluar_pipeline(
+            interacciones, libros, lectores, seed, n_por_fuente=N_POR_FUENTE, k=K
+        )
         r = resultados_por_seed[seed]
         print(f"seed={seed}: ALS={r['ndcg_als']:.6f}  ranker={r['ndcg_ranker']:.6f}  ({time.time()-t0:.1f}s)")
         modelo_ranker = r.get("modelo_ranker")

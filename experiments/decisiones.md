@@ -10,23 +10,50 @@ está.
 Columna **Estado**: es una sugerción de lectura, no un veredicto —
 la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 
-## Para retomar: próximos pasos pendientes (al 2026-08-30)
+## Para retomar: próximos pasos pendientes (al 2026-08-31)
 
 Estado actual: `"ranker"` (v3, ALS+género+popularidad+autor/año/diversidad/
 recencia+co-lectura+editorial+resumen+popularidad/frecuencia de
-macro-género+tamaño de catálogo de editorial → LightGBM, 23 features,
-hiperparámetros conservadores) es el modelo de referencia del proyecto,
-con **0.04831 confirmado en Kaggle** (récord actual). Ideas concretas
-para la próxima sesión, en orden sugerido:
+macro-género+tamaño de catálogo de editorial+señales cruzadas lector↔libro
+→ LightGBM, 26 features, hiperparámetros conservadores) es el modelo de
+referencia del proyecto, con **0.04855 confirmado en Kaggle** (récord
+actual). Ideas concretas para la próxima sesión, en orden sugerido:
 
 1. **Seguir sumando features de dominio** — con el tuneo de
-   hiperparámetros descartado tres veces (ver resuelto abajo), el margen
-   real sigue estando ahí, no en LightGBM. Candidatos sin explorar
-   todavía: ver `experiments/features.md`, sección "Qué no está"
-   (`vive_en`, franja de nacimiento, señales cruzadas lector↔libro).
+   hiperparámetros descartado tres veces y país/franja de nacimiento
+   descartados (ver resuelto abajo), el margen real sigue estando en
+   features, no en LightGBM. Las señales cruzadas lector↔libro (esta
+   ronda) dieron el mejor resultado de la sesión -- candidatos sin
+   explorar: ver `experiments/features.md`, sección "Qué no está"
+   (isbn/img_src, descartados de entrada por sesgo/sparsity, pero podría
+   valer la pena revisar con otro enfoque).
 2. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
    abajo).
+
+**Resuelto:** señales cruzadas lector↔libro (`popularidad_genero_lector_candidato`,
+`frecuencia_genero_macro_por_genero_lector`, `edad_lector_al_publicarse`,
+26 features en total) -- casi positivo en los 3 seeds (positivo en 2,
+apenas negativo en el tercero, muy por debajo del ruido). Se confirmó
+con el usuario vía submission real pese al caso límite: **0.04855 en
+Kaggle, nuevo récord del proyecto** (+0.5% sobre 0.04831). Ver sección 11
+y `bitacora.md`, sección "Señales cruzadas lector↔libro: nuevo récord
+del proyecto".
+
+**Resuelto:** franja de nacimiento del usuario como feature del ranker
+(`popularidad_franja_candidato`, calco de país) -- mixto y negativo en
+2 de 3 seeds, no cumple el criterio de "positivo en los 3 seeds". No se
+gastó una submission; se revirtió del ranker (se mantiene un fix de
+calidad de datos hecho de paso: `nacimiento == 1910` es un sentinel, no
+una década real). Ver sección 10 y `bitacora.md`, sección "Franja de
+nacimiento del lector: explorada y descartada".
+
+**Resuelto:** país del usuario (`vive_en`) como feature del ranker
+(`popularidad_pais_candidato`, popularidad segmentada por país) --
+negativo en 2 de 3 seeds, no cumple el criterio de "positivo en los 3
+seeds" que sí justificó género macro/tamaño de editorial. No se gastó
+una submission; se revirtió del ranker. Ver sección 9 y `bitacora.md`,
+sección "País del usuario (`vive_en`): explorada y descartada".
 
 **Resuelto:** probar 23 features sin `en_editorial_leida`/
 `n_libros_editorial_leidos` contra Kaggle -- el ablation dio negativo en
@@ -153,6 +180,34 @@ catálogo de editorial" para las dos rondas más recientes.
 | Sacar `en_editorial_leida`/`n_libros_editorial_leidos` (las más débiles individualmente) ahora que está `n_libros_editorial_catalogo` | ✅ **resuelto -- no conviene, no se sube a Kaggle** | Ablation (23 → 21 features): CV 3 seeds 0.109287±0.003276, negativo en 2 de 3 seeds -- a diferencia de los casos límite anteriores (siempre positivos), acá la señal local apunta claramente en contra. Aunque son las features más débiles individualmente, no son ruido puro: aportan algo real en conjunto. Se mantienen las 23 features. Ver `bitacora.md`, sección "¿Sacar editorial? Ablation resuelve la pregunta pendiente". |
 | "Positivo en los 3 seeds individualmente" como criterio para gastar una submission (sin exigir que supere el desvío) | ✅ **confirmado por el usuario** | Acertó en los tres casos de esta sesión (género macro y tamaño de editorial: confirmar valió la pena; sacar editorial, mixto/negativo: no confirmar también fue correcto). Sigue reservándose la regla del desvío para decisiones que no impliquen Kaggle. |
 | Retomar el tuneo de `LGBMRanker` con optuna sobre la base de 23 features (10 trials × 2 seeds, `scripts/tune_ranker.py`, ahora con contexto cacheado por seed -- ver `bitacora.md`) | ❌ **no se adopta -- tercera vez, mejora menor que el ruido** | Mejor config (`num_leaves=7, learning_rate=0.134, n_estimators=280, min_child_samples=82, reg_alpha=0.0012, reg_lambda=7.58`): CV 3 seeds 0.109864±0.003066 vs 0.109735±0.003719 del conservador -- MIXTO (positivo en 2 seeds, negativo en 1), +0.12% de mejora promedio. Tercera vez que el tuneo de hiperparámetros da un resultado así de chico sobre bases de features distintas. Quedan los hiperparámetros conservadores (`num_leaves=31, learning_rate=0.05, n_estimators=200`) en producción. |
+
+## 9. País del usuario (`vive_en`, ronda 2026-08-31)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| País (98 categorías, `vive_en` parseado a lo que sigue al último " - ") en vez de macro-regiones o saltar la feature | ✅ **co-diseñado con el usuario** | 68% de los lectores vive en España, cola larga de 97 países más. Se descartó agrupar en macro-regiones (España/Latinoamérica/otro) -- se probó país tal cual. |
+| "Desconocido" como categoría propia (no fallback a popularidad global) para los ~9% de `vive_en` vacíos o `"¿?"` | ✅ **co-diseñado con el usuario** | En su momento, a diferencia de cómo se manejaba la franja de nacimiento (que descartaba los `NaN`) -- ver sección 10, donde se alineó el mismo criterio para franja. |
+| `popularidad_pais_candidato` (popularidad bayesiana del candidato dentro del país del usuario, `popularity_segmentada.fit_popularity_por_pais`) | ❌ **descartada -- no se sube a Kaggle** | CV 3 seeds: 0.109002±0.003161 vs 0.109735±0.003719 de las 23 features confirmadas -- negativo en 2 de 3 seeds (seed=7, seed=123), prácticamente empatado en el tercero (seed=42). No cumple el criterio de "positivo en los 3 seeds" que sí justificó confirmar género macro y tamaño de editorial. `feature_importances_` la ubica en la mitad de la tabla -- no es la señal más floja, pero el conjunto empeora con ella adentro. Revertida de `FEATURES`/`ranker.py` para no regresionar el récord actual (0.04831). Se mantienen `pais_por_usuario`/`fit_popularity_por_pais` en `popularity_segmentada.py` (testeadas, sin usar) por si vale la pena retomar la idea con otro enfoque. Ver `bitacora.md`, sección "País del usuario (`vive_en`): explorada y descartada". |
+
+## 10. Franja de nacimiento del usuario (`nacimiento`, ronda 2026-08-31)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| `nacimiento == 1910` tratado como "desconocido" (no una década real) | ✅ **co-diseñado con el usuario** | 415 de 438 lectores en la franja "1910s" tienen el valor exacto 1910 (vs. 1-9 casos para 1911-1917) -- patrón consistente con un default de formulario, no con gente real de esa edad en un dataset de lectura activa. |
+| Modificar `franja_nacimiento_por_usuario`/`fit_popularity_por_franja_nacimiento` (compartidas con v1) en vez de una copia aislada para el ranker | ✅ **co-diseñado con el usuario** | v1 (`popularity_segmentada.recomendar_por_usuario`, fallback género→franja→global) ahora también trata "desconocido" como categoría propia en vez de saltar directo a popularidad global para ese ~30% de usuarios. No se re-evaluó el NDCG de v1 con este cambio (no es el modelo activo del proyecto), pero es una mejora de calidad de dato, no una regresión esperada. |
+| `popularidad_franja_candidato` (calco de `popularidad_pais_candidato`, segmentado por franja de nacimiento del usuario) | ❌ **descartada -- no se sube a Kaggle** | CV 3 seeds: 0.109300±0.002688 vs 0.109735±0.003719 de las 23 features confirmadas -- mixto (positivo en seed=42, negativo en seed=7 y seed=123), media -0.40%. No cumple "positivo en los 3 seeds". Mismo desenlace que país pese a que género del lector/franja está mejor distribuido (menos sesgo a una categoría dominante). Revertida de `FEATURES`/`ranker.py`; se mantiene el fix del sentinel 1910 (independiente de esta feature puntual). Ver `bitacora.md`, sección "Franja de nacimiento del lector: explorada y descartada". |
+
+## 11. Señales cruzadas lector↔libro (ronda 2026-08-31, parte 2)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| `lectores.genero` es el género DECLARADO del lector (Mujer/Hombre/"-"), no el género literario -- documentado explícitamente en el código para no confundir | ✅ **hallazgo, no decisión** | Mismo nombre de columna (`genero`) que `libros.genero` pero significado completamente distinto -- trampa real detectada antes de implementar nada. |
+| Probar sistemáticamente los 3 candidatos de señales cruzadas juntos (en vez de uno a la vez) | ✅ **co-diseñado con el usuario** | Pedido explícito del usuario ("probemos sistematicamente las 3") para acelerar la exploración, dado que el modelo venía sin superar expectativas tras dos rondas fallidas (país, franja). |
+| `popularidad_genero_lector_candidato` (popularidad bayesiana segmentada por género declarado, mismo patrón que país/franja) | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | La más fuerte de las 3 en `feature_importances_` (consistentemente top-10 del set completo en los 3 seeds). A diferencia de país (68% un solo valor) y franja (~30% desconocido), género del lector está bien balanceado (35/33/32%) -- posible explicación de por qué esta ronda sí funcionó donde las dos anteriores fallaron. |
+| `frecuencia_genero_macro_por_genero_lector` (afinidad de *cohorte* por macro-género, no historial individual) | ✅ **confirmado en Kaggle (en conjunto) -- señal débil pero no descartable sola** | Una de las dos más débiles del trío en `feature_importances_`. No se probó aislada. |
+| `edad_lector_al_publicarse` (`anio_edicion - nacimiento`, cruce directo lector↔libro) | ✅ **confirmado en Kaggle (en conjunto) -- ablation confirma que aporta pese a ser la más floja** | Sacarla en un ablation empeoró el resultado (ver fila siguiente) -- mismo patrón que `en_editorial_leida`/`n_libros_editorial_leidos`: la feature más débil individualmente no es ruido puro. |
+| Ranker con las 3 features de esta ronda (26 en total) | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | CV 3 seeds: 0.110112±0.003411 -- casi positivo en los 3 seeds (positivo en 2, apenas negativo en el tercero, muy por debajo del ruido). Confirmado con el usuario vía submission real pese al caso límite (mismo criterio que género macro/tamaño de editorial). **0.04855 en Kaggle, +0.5% sobre el récord anterior** (0.04831). Tercera vez que un caso límite se confirma real. Ver `bitacora.md`, sección "Señales cruzadas lector↔libro: nuevo récord del proyecto". |
+| Ablation: sacar `edad_lector_al_publicarse` (25 features) para intentar que el seed límite cruce a positivo | ❌ **descartado -- empeoró en vez de mejorar** | CV 3 seeds: 0.109897±0.002980, peor que las 26 completas en media y en el seed límite (-0.00084 vs -0.00024). Se revirtió el ablation, quedaron las 26 features completas. |
 
 ---
 

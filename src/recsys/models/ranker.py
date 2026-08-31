@@ -3,8 +3,9 @@ popularidad global, reordenados por un `LGBMRanker` (LightGBM,
 objetivo `lambdarank`) entrenado para combinar esas tres señales mejor
 de lo que cada una hace sola, más features auxiliares de autor/editorial/
 año de edición/diversidad de género/recencia/co-lectura ítem-ítem/
-similitud de resumen/popularidad y frecuencia de macro-género (ver
-`calcular_features_auxiliares`).
+similitud de resumen/popularidad y frecuencia de macro-género/señales
+cruzadas lector↔libro (género declarado del lector, edad del lector al
+publicarse el libro -- ver `calcular_features_auxiliares`).
 
 Un ranker que usa el score de otros modelos como *features* necesita que
 esos scores salgan de datos que el ranker no vio como etiqueta -- si no,
@@ -35,9 +36,12 @@ from recsys.models.als import fit_als
 from recsys.models.als import recomendar_por_usuario as _recomendar_als
 from recsys.models.popularity import fit_popularity
 from recsys.models.popularity_segmentada import (
+    NACIMIENTO_SENTINEL,
     _normalizar_genero,
     fit_popularidad_por_genero_macro,
     fit_popularity_por_genero,
+    fit_popularity_por_genero_lector,
+    genero_lector_por_usuario,
     genero_preferido_por_usuario,
     normalizar_genero_macro,
 )
@@ -66,6 +70,9 @@ FEATURES = [
     "popularidad_genero_macro_candidato",
     "frecuencia_genero_macro_usuario",
     "n_libros_editorial_catalogo",
+    "popularidad_genero_lector_candidato",
+    "frecuencia_genero_macro_por_genero_lector",
+    "edad_lector_al_publicarse",
 ]
 
 N_MAX_FEATURES_TFIDF = 20000
@@ -165,6 +172,7 @@ def _calcular_perfil_texto(interacciones: pd.DataFrame, libros: pd.DataFrame, fi
 def calcular_features_auxiliares(
     interacciones: pd.DataFrame,
     libros: pd.DataFrame,
+    lectores: pd.DataFrame,
     matriz_usuario_libro,
     fila_por_usuario: dict,
     libros_por_columna: list,
@@ -200,6 +208,21 @@ def calcular_features_auxiliares(
     - `n_libros_por_editorial`: tamaño del catálogo de la editorial del
       candidato (cuántos libros tiene en total `libros`, no solo los
       leídos) -- señal de volumen, no de historial del usuario.
+    - `genero_lector_por_lector` / `score_por_libro_por_genero_lector` /
+      `afinidad_genero_macro_por_genero_lector`: señales cruzadas
+      lector↔libro. `lectores.genero` (Mujer/Hombre/desconocido -- OJO,
+      NO es el género literario) segmenta tanto una popularidad bayesiana
+      del candidato (mismo patrón que país/franja: el segmento lo define
+      el usuario) como una afinidad de *cohorte* por macro-género (qué
+      proporción de las interacciones de gente que declaró el mismo
+      género que el usuario cae en el macro-género del candidato --
+      distinto de `frecuencia_genero_macro_por_usuario`, que mira el
+      historial *individual*, no el de la cohorte).
+    - `nacimiento_por_lector`: año de nacimiento numérico de cada lector
+      (`nacimiento` inválido o igual a `NACIMIENTO_SENTINEL` -- ver
+      `popularity_segmentada.py` -- queda como `NaN`), para cruzar contra
+      `anio_edicion_por_libro` y estimar la edad del lector cuando se
+      publicó el candidato.
 
     `matriz_usuario_libro`, `fila_por_usuario` y `libros_por_columna` son
     los que ya devuelve `fit_als` sobre el mismo `train_candidatos` --
@@ -281,6 +304,38 @@ def calcular_features_auxiliares(
     cooc, columna_por_libro = _calcular_cooccurrencia(matriz_usuario_libro, libros_por_columna)
     perfil_texto = _calcular_perfil_texto(interacciones, libros, fila_por_usuario)
 
+    # Señales cruzadas lector<->libro (ver docstring): género DECLARADO
+    # del lector (no confundir con género literario) segmenta tanto una
+    # popularidad bayesiana (mismo patrón que país/franja) como una
+    # afinidad de cohorte por macro-género.
+    genero_lector_por_lector = genero_lector_por_usuario(lectores)
+    stats_por_genero_lector = fit_popularity_por_genero_lector(interacciones, lectores)
+    score_por_libro_por_genero_lector = {
+        genero_lector: tabla.set_index("id_libro")["score"].to_dict()
+        for genero_lector, tabla in stats_por_genero_lector.items()
+    }
+
+    con_genero_lector = interacciones.assign(
+        genero_lector=interacciones["id_lector"].map(genero_lector_por_lector),
+        genero_macro=interacciones["id_libro"].map(genero_macro_por_libro),
+    ).dropna(subset=["genero_macro"])
+    conteos_genero_lector = (
+        con_genero_lector.groupby(["genero_lector", "genero_macro"]).size().rename("n").reset_index()
+    )
+    total_por_genero_lector = conteos_genero_lector.groupby("genero_lector")["n"].transform("sum")
+    conteos_genero_lector["frecuencia"] = conteos_genero_lector["n"] / total_por_genero_lector
+    afinidad_genero_macro_por_genero_lector: dict = {}
+    for genero_lector, genero_macro, frecuencia in zip(
+        conteos_genero_lector["genero_lector"], conteos_genero_lector["genero_macro"], conteos_genero_lector["frecuencia"]
+    ):
+        afinidad_genero_macro_por_genero_lector.setdefault(genero_lector, {})[genero_macro] = frecuencia
+
+    # Edad del lector cuando se publicó el candidato (nacimiento inválido
+    # o sentinel -> NaN, mismo criterio que `franja_nacimiento_por_usuario`).
+    nacimiento_num = pd.to_numeric(lectores.set_index("id_lector")["nacimiento"], errors="coerce")
+    nacimiento_num = nacimiento_num.where(nacimiento_num != NACIMIENTO_SENTINEL)
+    nacimiento_por_lector = nacimiento_num.to_dict()
+
     return {
         "autor_por_libro": autor_por_libro,
         "anio_edicion_por_libro": anio_edicion_por_libro,
@@ -296,6 +351,10 @@ def calcular_features_auxiliares(
         "genero_macro_por_libro": genero_macro_por_libro,
         "score_por_libro_genero_macro": score_por_libro_genero_macro,
         "frecuencia_genero_macro_por_usuario": frecuencia_genero_macro_por_usuario,
+        "genero_lector_por_lector": genero_lector_por_lector,
+        "score_por_libro_por_genero_lector": score_por_libro_por_genero_lector,
+        "afinidad_genero_macro_por_genero_lector": afinidad_genero_macro_por_genero_lector,
+        "nacimiento_por_lector": nacimiento_por_lector,
         **perfil_texto,
     }
 
@@ -353,6 +412,10 @@ def generar_candidatos_con_features(
     genero_macro_por_libro = features_auxiliares.get("genero_macro_por_libro", {})
     score_por_libro_genero_macro = features_auxiliares.get("score_por_libro_genero_macro", {})
     frecuencia_genero_macro_por_usuario = features_auxiliares.get("frecuencia_genero_macro_por_usuario", {})
+    genero_lector_por_lector = features_auxiliares.get("genero_lector_por_lector", {})
+    score_por_libro_por_genero_lector = features_auxiliares.get("score_por_libro_por_genero_lector", {})
+    afinidad_genero_macro_por_genero_lector = features_auxiliares.get("afinidad_genero_macro_por_genero_lector", {})
+    nacimiento_por_lector = features_auxiliares.get("nacimiento_por_lector", {})
     n_por_libro = stats_popularidad.set_index("id_libro")["n"].to_dict()
     score_popularidad_por_libro = stats_popularidad.set_index("id_libro")["score"].to_dict()
     ranking_global_ids = stats_popularidad["id_libro"].tolist()
@@ -435,6 +498,10 @@ def generar_candidatos_con_features(
         )
         co_scores_usuario = co_scores_por_usuario.get(id_lector, {})
         frecuencias_genero_macro_usuario = frecuencia_genero_macro_por_usuario.get(id_lector, {})
+        genero_lector_usuario = genero_lector_por_lector.get(id_lector)
+        score_por_libro_genero_lector_usuario = score_por_libro_por_genero_lector.get(genero_lector_usuario, {})
+        afinidad_genero_macro_usuario = afinidad_genero_macro_por_genero_lector.get(genero_lector_usuario, {})
+        nacimiento_usuario = nacimiento_por_lector.get(id_lector)
 
         # Similitud de texto: un solo matmul chico (como mucho ~3*n_por_fuente
         # filas de tfidf_norm) contra el perfil de ESTE usuario -- nunca un
@@ -474,6 +541,17 @@ def generar_candidatos_con_features(
                 else 0.0
             )
 
+            popularidad_genero_lector = score_por_libro_genero_lector_usuario.get(id_libro, 0.0)
+            frecuencia_genero_macro_genero_lector = (
+                afinidad_genero_macro_usuario.get(genero_macro_candidato, 0.0)
+                if genero_macro_candidato is not None
+                else 0.0
+            )
+            if pd.notna(anio_candidato) and pd.notna(nacimiento_usuario):
+                edad_lector_al_publicarse = anio_candidato - nacimiento_usuario
+            else:
+                edad_lector_al_publicarse = 0.0
+
             filas_resultado.append(
                 {
                     "id_lector": id_lector,
@@ -501,6 +579,9 @@ def generar_candidatos_con_features(
                     "popularidad_genero_macro_candidato": float(popularidad_genero_macro),
                     "frecuencia_genero_macro_usuario": float(frecuencia_genero_macro),
                     "n_libros_editorial_catalogo": n_libros_editorial_catalogo,
+                    "popularidad_genero_lector_candidato": float(popularidad_genero_lector),
+                    "frecuencia_genero_macro_por_genero_lector": float(frecuencia_genero_macro_genero_lector),
+                    "edad_lector_al_publicarse": float(edad_lector_al_publicarse),
                 }
             )
 
@@ -631,6 +712,7 @@ def recomendar_por_usuario(
 def preparar_pipeline(
     interacciones: pd.DataFrame,
     libros: pd.DataFrame,
+    lectores: pd.DataFrame,
     seed: int,
     n_por_fuente: int = 150,
     k: int = 20,
@@ -676,7 +758,7 @@ def preparar_pipeline(
     genero_por_usuario = genero_preferido_por_usuario(train_candidatos, libros)
     modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos)
     features_auxiliares = calcular_features_auxiliares(
-        train_candidatos, libros, matriz, fila_por_usuario, libros_por_columna
+        train_candidatos, libros, lectores, matriz, fila_por_usuario, libros_por_columna
     )
 
     args_candidatos = dict(
@@ -763,6 +845,7 @@ def evaluar_con_params(contexto: dict, lgbm_params: dict | None = None) -> dict:
 def evaluar_pipeline(
     interacciones: pd.DataFrame,
     libros: pd.DataFrame,
+    lectores: pd.DataFrame,
     seed: int,
     n_por_fuente: int = 150,
     lgbm_params: dict | None = None,
@@ -794,5 +877,5 @@ def evaluar_pipeline(
     `feature_importances_` (ver `scripts/evaluate_ranker.py`) sin
     reentrenar.
     """
-    contexto = preparar_pipeline(interacciones, libros, seed, n_por_fuente=n_por_fuente, k=k)
+    contexto = preparar_pipeline(interacciones, libros, lectores, seed, n_por_fuente=n_por_fuente, k=k)
     return evaluar_con_params(contexto, lgbm_params)

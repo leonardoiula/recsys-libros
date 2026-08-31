@@ -4,12 +4,20 @@ cadena de fallback (género -> franja de nacimiento -> global)."""
 import pandas as pd
 
 from recsys.models.popularity_segmentada import (
+    FRANJA_DESCONOCIDA,
+    GENERO_LECTOR_DESCONOCIDO,
     MACRO_GENERO_DEFAULT,
+    PAIS_DESCONOCIDO,
     fit_popularidad_por_genero_macro,
+    fit_popularity_por_franja_nacimiento,
+    fit_popularity_por_genero_lector,
+    fit_popularity_por_pais,
     franja_nacimiento_por_usuario,
+    genero_lector_por_usuario,
     genero_macro,
     genero_preferido_por_usuario,
     normalizar_genero_macro,
+    pais_por_usuario,
     recomendar_por_usuario,
 )
 
@@ -127,8 +135,142 @@ def test_franja_nacimiento_por_usuario():
     franjas = franja_nacimiento_por_usuario(lectores)
 
     assert franjas["u1"] == "1980s"
-    assert "u2" not in franjas
-    assert "u3" not in franjas
+    # a diferencia de la version anterior (que descartaba estos lectores),
+    # nacimiento invalido/vacio cae en su propia categoria "desconocido"
+    assert franjas["u2"] == FRANJA_DESCONOCIDA
+    assert franjas["u3"] == FRANJA_DESCONOCIDA
+
+
+def test_franja_nacimiento_trata_sentinel_1910_como_desconocido():
+    lectores = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2"],
+            "nacimiento": ["1910", "1911"],  # 1910 es el sentinel, 1911 es una decada real
+        }
+    )
+
+    franjas = franja_nacimiento_por_usuario(lectores)
+
+    assert franjas["u1"] == FRANJA_DESCONOCIDA
+    assert franjas["u2"] == "1910s"
+
+
+def test_fit_popularity_por_franja_nacimiento_agrupa_desconocido_por_separado():
+    lectores = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2", "u3"],
+            "nacimiento": ["1985", "", "1910"],  # u2/u3 caen ambos en "desconocido"
+        }
+    )
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2", "u3"],
+            "id_libro": ["a", "b", "c"],
+            "rating": [8, 6, 7],
+        }
+    )
+
+    stats = fit_popularity_por_franja_nacimiento(interacciones, lectores)
+
+    assert set(stats) == {"1980s", FRANJA_DESCONOCIDA}
+    assert set(stats["1980s"]["id_libro"]) == {"a"}
+    # u2 (vacio) y u3 (sentinel 1910) se agrupan juntos en "desconocido"
+    assert set(stats[FRANJA_DESCONOCIDA]["id_libro"]) == {"b", "c"}
+
+
+def test_genero_lector_por_usuario_mapea_guion_a_desconocido():
+    lectores = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2", "u3"],
+            "genero": ["Mujer", "Hombre", "-"],
+        }
+    )
+
+    generos = genero_lector_por_usuario(lectores)
+
+    assert generos["u1"] == "Mujer"
+    assert generos["u2"] == "Hombre"
+    assert generos["u3"] == GENERO_LECTOR_DESCONOCIDO
+
+
+def test_fit_popularity_por_genero_lector_agrupa_por_genero_declarado():
+    lectores = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2", "u3"],
+            "genero": ["Mujer", "Hombre", "-"],
+        }
+    )
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2", "u3"],
+            "id_libro": ["a", "b", "c"],
+            "rating": [8, 6, 7],
+        }
+    )
+
+    stats = fit_popularity_por_genero_lector(interacciones, lectores)
+
+    assert set(stats) == {"Mujer", "Hombre", GENERO_LECTOR_DESCONOCIDO}
+    assert set(stats["Mujer"]["id_libro"]) == {"a"}
+    assert set(stats[GENERO_LECTOR_DESCONOCIDO]["id_libro"]) == {"c"}
+
+
+def test_pais_por_usuario_extrae_pais_de_ciudad_pais():
+    lectores = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2", "u3"],
+            # "Ciudad - País", solo "País", y variantes de tildeo que deberian
+            # colapsar en el mismo pais normalizado
+            "vive_en": ["Vigo - España", "Mexico", "Bogota - Colombia"],
+        }
+    )
+
+    paises = pais_por_usuario(lectores)
+
+    assert paises["u1"] == "espana"
+    assert paises["u2"] == "mexico"
+    assert paises["u3"] == "colombia"
+
+
+def test_pais_por_usuario_marca_desconocido_como_categoria_propia():
+    lectores = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2", "u3"],
+            # vacio, el placeholder "¿?" del dataset, y nulo real -- los tres
+            # son "no especifica", pero a diferencia de franja de nacimiento
+            # no se descartan: quedan con su propia categoria
+            "vive_en": ["", "¿?", None],
+        }
+    )
+
+    paises = pais_por_usuario(lectores)
+
+    assert paises["u1"] == PAIS_DESCONOCIDO
+    assert paises["u2"] == PAIS_DESCONOCIDO
+    assert paises["u3"] == PAIS_DESCONOCIDO
+    assert set(paises) == {"u1", "u2", "u3"}  # nadie se descarta
+
+
+def test_fit_popularity_por_pais_agrupa_por_pais_del_lector():
+    lectores = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2"],
+            "vive_en": ["Madrid - España", "Lima - Peru"],
+        }
+    )
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2"],
+            "id_libro": ["a", "b"],
+            "rating": [8, 6],
+        }
+    )
+
+    stats = fit_popularity_por_pais(interacciones, lectores)
+
+    assert set(stats) == {"espana", "peru"}
+    assert set(stats["espana"]["id_libro"]) == {"a"}
+    assert set(stats["peru"]["id_libro"]) == {"b"}
 
 
 def test_recomendar_usa_genero_cuando_alcanza():

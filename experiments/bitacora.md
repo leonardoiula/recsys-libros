@@ -1612,3 +1612,225 @@ insuficiente, sin ningún patrón consistente que sugiera lo contrario.
   hiperparámetros conservadores ya están cerca de un óptimo razonable
   para este tipo de dataset/tarea, y que el margen real sigue estando en
   features nuevas, no en hiperparámetros.
+
+
+## País del usuario (`vive_en`): explorada y descartada
+
+### Objetivo
+
+Retomar el primer punto de "próximos pasos pendientes" de `decisiones.md`:
+sumar `vive_en` (ubicación del lector, nunca explorada) como feature del
+ranker.
+
+### Exploración de los datos, co-diseñada con el usuario
+
+`lectores.vive_en` es texto libre ("Ciudad - País", a veces solo "País",
+a veces vacío) con 1.585 valores distintos. Extrayendo el país (lo que
+sigue al último " - "): **98 países reales, muy sesgado** (68% de los
+lectores vive en España, 7.675/11.285), con ~9% de valores "desconocido"
+explícitos (534 vacíos + 457 con el placeholder `"¿?"` que usa el
+dataset). Un valor llamativo, `"Santiago - Cote d'Ivoire"` (75 casos),
+es casi seguro un artefacto de geocodificación upstream (Santiago es top
+de Chile, no de Costa de Marfil) -- no se intentó corregir, se dejó
+como un país más de la cola larga.
+
+Los libros no tienen país propio (no hay país de la editorial ni nada
+así), así que no hay cruce directo lector↔libro por ubicación -- la
+única feature con sentido es del mismo tipo que `popularity_segmentada`
+v1 (fallback por género/franja): popularidad del libro entre lectores
+del *mismo país que el usuario*.
+
+Antes de implementar, se co-diseñó con el usuario (memoria del
+proyecto: los tradeoffs de dominio se deciden en conjunto, no se
+implementa una propuesta ya cerrada):
+- **Granularidad**: se descartó agrupar en macro-regiones (España/
+  Latinoamérica/otro) o saltar la feature directamente -- se eligió país
+  tal cual (98 categorías), aceptando el sesgo hacia España.
+- **Desconocidos**: se eligió tratarlos como categoría propia
+  ("desconocido") en vez de caer a un fallback de popularidad global,
+  a diferencia de cómo se manejan los `NaN` de franja de nacimiento
+  (que simplemente se descartan).
+
+### Implementación
+
+`popularity_segmentada.py`: `pais_por_usuario` (parsea y normaliza
+`vive_en` como género -- minúsculas, sin acentos -- confirmado que no
+queda ninguna colisión real entre países al normalizar así) y
+`fit_popularity_por_pais` (popularidad bayesiana segmentada por país,
+mismo patrón que `fit_popularity_por_franja_nacimiento`). `ranker.py`:
+nueva feature `popularidad_pais_candidato` -- a diferencia de macro-género/
+editorial (propiedades del *libro*, un score por `id_libro`), acá el
+segmento lo define el *usuario*, así que el lookup queda anidado por
+país (`{pais: {id_libro: score}}`).
+
+### Resultado: negativo, no se confirma
+
+| | seed=42 | seed=7 | seed=123 | media ± desvío |
+|---|---|---|---|---|
+| 23 features (confirmado en Kaggle: 0.04831) | 0.10568 | 0.11054 | 0.11299 | 0.109735 ± 0.003719 |
+| 24 features (+ `popularidad_pais_candidato`) | 0.10565 | 0.10942 | 0.11193 | 0.109002 ± 0.003161 |
+
+Negativo en 2 de 3 seeds (seed=7: -0.00112, seed=123: -0.00106) y
+prácticamente empatado en el tercero (seed=42: -0.00003) -- media
+-0.67%. No cumple el criterio de "positivo en los 3 seeds
+individualmente" que el usuario confirmó como suficiente para justificar
+una submission (género macro, tamaño de editorial); es más parecido al
+caso de la ablation de `en_editorial_leida` (negativo en 2/3 seeds), que
+tampoco se subió a Kaggle. `feature_importances_` la ubica en la mitad
+de la tabla en los 3 seeds -- no es la señal más floja del set, pero el
+conjunto en su totalidad empeora con ella adentro.
+
+**No se gastó una submission.** Se revirtió la feature del ranker
+(`FEATURES` vuelve a las 23 confirmadas en Kaggle) para que
+`submit.py --model ranker` no regresione respecto al récord actual. Se
+mantienen `pais_por_usuario`/`fit_popularity_por_pais` en
+`popularity_segmentada.py` (testeadas, sin usar en el ranker) -- decisión
+explícita del usuario, igual que `franja_nacimiento_por_usuario` hoy: no
+cuesta nada dejarlas por si vale la pena retomar la idea con otro
+enfoque (otra granularidad, cruzarla con otra señal).
+
+
+## Franja de nacimiento del lector: explorada y descartada (con un fix de datos que sí queda)
+
+### Objetivo
+
+Retomar el segundo candidato de "próximos pasos pendientes": franja de
+nacimiento del lector (probada en v1 como fallback, nunca llevada al
+ranker), con el mismo patrón de `popularidad_pais_candidato` de esta
+sesión: popularidad bayesiana segmentada por franja *del usuario*.
+
+### Hallazgo de calidad de datos: el sentinel 1910
+
+Antes de implementar, mirando la distribución de `nacimiento`: ~30% de
+los lectores tiene `nacimiento` inválido o faltante (vs. ~9% de
+"desconocido" en país). Dentro de la franja "1910s" (438 lectores), 415
+tienen el valor *exacto* 1910 -- muy distinto de los 1-9 casos de
+1911-1917. Ese patrón no es gente real nacida en 1910 (implicaría más
+de 110 años en un dataset de lectura activa): es casi seguro un default
+de formulario. Confirmado con el usuario, se decidió tratar
+`nacimiento == 1910` igual que un `nacimiento` inválido -- categoría
+propia `"desconocido"`, no una década real.
+
+Como `franja_nacimiento_por_usuario`/`fit_popularity_por_franja_nacimiento`
+son compartidas con el fallback de v1 (`popularity_segmentada.recomendar_por_usuario`,
+género → franja → global), se decidió con el usuario tocar esas
+funciones compartidas (no una copia aislada para el ranker) -- v1 ahora
+también trata "desconocido" como su propia categoría en el fallback de
+franja, en vez de saltarla directo a popularidad global para ese ~30%
+de usuarios.
+
+### Implementación
+
+Nuevas constantes `FRANJA_DESCONOCIDA`/`NACIMIENTO_SENTINEL` en
+`popularity_segmentada.py`. `franja_nacimiento_por_usuario` ahora
+devuelve una entrada para *todos* los lectores (antes descartaba
+`nacimiento` inválido). `ranker.py`: nueva feature
+`popularidad_franja_candidato`, calco exacto de `popularidad_pais_candidato`
+(mismo patrón de lookup anidado `{franja: {id_libro: score}}`, porque el
+segmento lo define el usuario, no el libro).
+
+### Resultado: mixto, negativo en 2 de 3 seeds, no se confirma
+
+| | seed=42 | seed=7 | seed=123 | media ± desvío |
+|---|---|---|---|---|
+| 23 features (confirmado en Kaggle: 0.04831) | 0.10568 | 0.11054 | 0.11299 | 0.109735 ± 0.003719 |
+| 24 features (+ `popularidad_franja_candidato`) | 0.10638 | 0.10984 | 0.11168 | 0.109300 ± 0.002688 |
+
+Positivo en seed=42 (+0.00070), negativo en seed=7 (-0.00070) y
+seed=123 (-0.00132) -- media -0.40%. No cumple "positivo en los 3
+seeds". Mismo desenlace que país (sección anterior), pese a que género
+del lector/franja de nacimiento está mejor distribuido que país (menos
+sesgado a una sola categoría dominante) -- la mejor distribución no
+alcanzó para convertirlo en una señal útil para el ranker.
+
+**No se gastó una submission.** Se revirtió la feature del ranker
+(`FEATURES` vuelve a las 23 confirmadas), pero **se mantiene el fix del
+sentinel 1910** -- es una mejora de calidad de dato independiente de si
+esta feature puntual sirve, y beneficia también a v1. Las funciones
+`franja_nacimiento_por_usuario`/`fit_popularity_por_franja_nacimiento`
+quedan sin usar en el ranker, mismo criterio que `pais_por_usuario`/
+`fit_popularity_por_pais`.
+
+
+## Señales cruzadas lector↔libro: nuevo récord del proyecto (0.04855)
+
+### Objetivo
+
+Con país y franja de nacimiento descartados (secciones anteriores), el
+usuario pidió probar sistemáticamente los 3 candidatos de señales
+cruzadas lector↔libro que quedaron del brainstorm, en vez de seguir con
+más variantes de "popularidad segmentada por X" (el patrón que ya
+falló dos veces).
+
+### Hallazgo previo: `lectores.genero` es el género DECLARADO del lector
+
+Antes de implementar, se encontró que `lectores.genero` (Mujer 3925,
+Hombre 3712, "-" 3648 -- ~35%/33%/32%, sin variantes de capitalización
+que normalizar) es una columna con el mismo nombre que `libros.genero`
+(género literario) pero un significado completamente distinto -- una
+trampa de nombres real, documentada explícitamente en el código
+(`popularity_segmentada.genero_lector_por_usuario`) para no confundirla
+con el resto del módulo, que siempre habla de género *literario*.
+
+### Las 3 features implementadas juntas
+
+1. **`popularidad_genero_lector_candidato`**: popularidad bayesiana
+   segmentada por género declarado del usuario (Mujer/Hombre/desconocido
+   -- `"-"` mapeado a categoría propia). Mismo patrón exacto que
+   `popularidad_pais_candidato`/`popularidad_franja_candidato`, pero con
+   mejor balance de categorías que las dos anteriores.
+2. **`frecuencia_genero_macro_por_genero_lector`**: a diferencia de
+   `frecuencia_genero_macro_usuario` (historial *individual*), mide qué
+   proporción de las interacciones de la *cohorte* que declaró el mismo
+   género que el usuario cae en el macro-género del candidato -- señal
+   de grupo, no de persona.
+3. **`edad_lector_al_publicarse`** (`anio_edicion - nacimiento`): cruza
+   una propiedad del lector con una del libro directamente -- distinta
+   de `anio_edicion_dif` (que compara contra el promedio de lectura del
+   propio usuario, no contra su nacimiento). Reusa el sentinel `1910`
+   corregido en la sección anterior.
+
+Implementadas en `calcular_features_auxiliares`/`generar_candidatos_con_features`
+(mismo patrón de lookup anidado por segmento que país/franja para las
+dos primeras); 26 features en total.
+
+### Resultado combinado: el más cercano de la sesión, pero no limpio
+
+| | seed=42 | seed=7 | seed=123 | media ± desvío |
+|---|---|---|---|---|
+| 23 features (confirmado en Kaggle: 0.04831) | 0.10568 | 0.11054 | 0.11299 | 0.109735 ± 0.003719 |
+| 26 features (+3 cruzadas) | 0.10626 | 0.11132 | 0.11275 | 0.110112 ± 0.003411 |
+
+Positivo en seed=42 (+0.00058) y seed=7 (+0.00078), apenas negativo en
+seed=123 (-0.00024) -- una diferencia muy por debajo del desvío entre
+seeds (~0.0034) y mucho más chica que los fallos reales de país/franja
+(que rondaban -0.001 a -0.0013). `feature_importances_` ubica a
+`popularidad_genero_lector_candidato` como la más fuerte de las 3
+(consistentemente top-10 del set completo), y a las otras dos como las
+más débiles del trío.
+
+### Ablation: sacar la más floja no ayudó (al revés)
+
+Para intentar que seed=123 cruzara a positivo limpio, se probó sacar
+`edad_lector_al_publicarse` (25 features). Resultado contrario al
+esperado: seed=123 empeoró (-0.00084 vs -0.00024 con las 26 completas),
+pese a que seed=42/seed=7 mejoraron levemente. Media total también peor
+(0.109897 vs 0.110112). Mismo patrón que ya se vio con
+`en_editorial_leida`/`n_libros_editorial_leidos`: la feature más floja
+individualmente no es ruido puro, aporta algo real en conjunto. Se
+revirtió el ablation, quedaron las 26 features completas.
+
+### Decisión y confirmación en Kaggle
+
+Con el resultado más cercano de la sesión al criterio estricto (y
+mucho más cercano que país/franja), se decidió con el usuario confirmar
+con una submission real -- mismo criterio que género macro/tamaño de
+editorial, casos límite anteriores que sí resultaron mejoras reales.
+**CONFIRMADO EN KAGGLE: 0.04855** -- nuevo récord del proyecto, +0.5%
+sobre el récord anterior (0.04831). Tercera vez que un caso límite (que
+no pasa la regla estricta de "positivo en los 3 seeds") se confirma
+igual como mejora real -- refuerza que la regla estricta es útil como
+guía pero demasiado conservadora para descartar candidatos sin probar,
+sobre todo cuando el "fallo" es de una magnitud mucho menor que el
+ruido entre seeds. `"ranker"` (26 features) pasa a ser el modelo de
+referencia del proyecto.

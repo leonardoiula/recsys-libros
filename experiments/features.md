@@ -1,6 +1,6 @@
 # Catálogo de features del ranker
 
-Lista única y legible de las 23 features que usa `"ranker"` (`FEATURES`
+Lista única y legible de las 26 features que usa `"ranker"` (`FEATURES`
 en `src/recsys/models/ranker.py`), para revisar de un vistazo qué hay y
 pensar qué falta o vale la pena mejorar. El detalle de *por qué* se
 agregó cada una, los resultados de validación cruzada y de Kaggle están
@@ -105,6 +105,18 @@ se imputa a ciegas (ver columna "Si falta").
 |---|---|---|
 | `n_libros_editorial_catalogo` | Cantidad de libros que tiene la editorial del candidato en *todo* `libros` (no solo los leídos por algún usuario) — señal de volumen/reconocimiento de la editorial, independiente del historial de cada usuario. | `0` |
 
+## Señales cruzadas lector↔libro (ronda 2026-08-31 — ver `decisiones.md` sección 11)
+
+`lectores.genero` es el género **declarado del lector** (Mujer/Hombre) —
+OJO, no confundir con `libros.genero` (género literario), mismo nombre
+de columna pero significado completamente distinto.
+
+| Feature | Qué mide | Si falta |
+|---|---|---|
+| `popularidad_genero_lector_candidato` | Score bayesiano de popularidad del candidato, calculado *solo* con interacciones de lectores que declararon el mismo género que el usuario (Mujer/Hombre/desconocido). Mismo patrón que `popularidad_pais_candidato`/`popularidad_franja_candidato`: el segmento lo define el usuario. | `0.0` |
+| `frecuencia_genero_macro_por_genero_lector` | Proporción (0–1) de las interacciones de la *cohorte* que declaró el mismo género que el usuario que caen en el macro-género del candidato — a diferencia de `frecuencia_genero_macro_usuario` (historial *individual*), acá es el patrón agregado del grupo. | `0.0` |
+| `edad_lector_al_publicarse` | `anio_edicion` del candidato menos `nacimiento` del usuario — años de vida que tenía el lector cuando se publicó el libro (negativo = se publicó antes de que naciera). Cruza una propiedad del lector con una del libro directamente, a diferencia de `anio_edicion_dif` (que compara contra el promedio de lectura del usuario, no contra su nacimiento). | `0.0` (usuario sin `nacimiento` válido -- inválido o sentinel `1910`, ver `popularity_segmentada.NACIMIENTO_SENTINEL` -- o candidato sin `anio_edicion`) |
+
 ---
 
 ## Qué no está (candidatos para la próxima ronda)
@@ -113,8 +125,31 @@ Metadata disponible en el dataset que **todavía no se usa** en ninguna
 feature del ranker (ver también `decisiones.md`, sección "EDA: qué se
 usó y qué no"):
 
-- `vive_en` (ubicación del lector) — nunca explorada como señal.
-- Franja de nacimiento / década de nacimiento del lector — se probó en
-  v1 (`popularity_segmentada.py`) pero no llegó al ranker.
-- Metadata cruzada lector↔libro más allá de género/autor/editorial (ej.
-  coincidencia de idioma, o señales de `isbn`/`img_src`, sin explorar).
+- Señales cruzadas lector↔libro basadas en `isbn`/`img_src` (ej. país/idioma
+  implícito en el prefijo de grupo del ISBN vs. `vive_en` del lector) —
+  evaluado y descartado de entrada sin implementar: 61% de los libros no
+  tiene ISBN, y del resto, 94% es del grupo "84" (España) -- casi sin
+  varianza, mismo problema de sesgo que `vive_en`/editorial pero peor.
+- `vive_en` (ubicación del lector) — **se probó y se descartó** como
+  `popularidad_pais_candidato` (popularidad segmentada por país del
+  usuario, mismo patrón que macro-género): empeoró el ranker en 2 de 3
+  seeds (ver `decisiones.md` sección 9 y `bitacora.md`). `pais_por_usuario`/
+  `fit_popularity_por_pais` quedan en `popularity_segmentada.py`
+  (testeadas, sin usar en el ranker) por si vale la pena retomar la idea
+  con otro enfoque (otra granularidad, cruzarla con otra señal).
+- Franja de nacimiento del lector — **se probó y se descartó** como
+  `popularidad_franja_candidato` (popularidad segmentada por década de
+  nacimiento, mismo patrón que país): mixto y negativo en 2 de 3 seeds
+  (ver `decisiones.md` sección 10 y `bitacora.md`). De paso se corrigió
+  un sentinel de datos (`nacimiento == 1910` es casi seguro un default
+  de formulario, no gente real -- ver `popularity_segmentada.NACIMIENTO_SENTINEL`),
+  que sí queda en el código porque mejora la calidad del dato para v1
+  independientemente de esta feature puntual. `franja_nacimiento_por_usuario`/
+  `fit_popularity_por_franja_nacimiento` quedan sin usar en el ranker.
+- `vive_en` (ubicación del lector) — **se probó y se descartó** como
+  `popularidad_pais_candidato` (popularidad segmentada por país del
+  usuario, mismo patrón que macro-género): empeoró el ranker en 2 de 3
+  seeds (ver `decisiones.md` sección 9 y `bitacora.md`). `pais_por_usuario`/
+  `fit_popularity_por_pais` quedan en `popularity_segmentada.py`
+  (testeadas, sin usar en el ranker) por si vale la pena retomar la idea
+  con otro enfoque (otra granularidad, cruzarla con otra señal).

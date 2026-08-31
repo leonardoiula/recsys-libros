@@ -129,6 +129,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     """
     interacciones = load_interacciones()
     libros = load_libros()
+    lectores = load_lectores()
     train_candidatos, train_ranker = split_train_val(interacciones, n_val=1, seed=42)
 
     libros_leidos_stage1 = libros_leidos_por_usuario(train_candidatos)
@@ -139,7 +140,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     genero_por_usuario = genero_preferido_por_usuario(train_candidatos, libros)
     modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos)
     features_auxiliares = calcular_features_auxiliares(
-        train_candidatos, libros, matriz, fila_por_usuario, libros_por_columna
+        train_candidatos, libros, lectores, matriz, fila_por_usuario, libros_por_columna
     )
 
     args_candidatos = dict(

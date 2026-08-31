@@ -34,7 +34,7 @@ import optuna
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from recsys.data import load_interacciones, load_libros
+from recsys.data import load_interacciones, load_lectores, load_libros
 from recsys.evaluation import evaluar_multisplit
 from recsys.models.ranker import evaluar_con_params, preparar_pipeline
 
@@ -48,6 +48,7 @@ BASELINE_CONSERVADOR = 0.109735  # ver docstring, misma corrida de evaluate_rank
 
 interacciones = load_interacciones()
 libros = load_libros()
+lectores = load_lectores()
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -59,7 +60,7 @@ def _contexto(seed: int) -> dict:
     ese seed, y lo cachea -- es la parte cara (~280-300s) del pipeline,
     la misma para todos los trials de un mismo seed."""
     if seed not in _CONTEXTOS:
-        _CONTEXTOS[seed] = preparar_pipeline(interacciones, libros, seed, n_por_fuente=N_POR_FUENTE, k=K)
+        _CONTEXTOS[seed] = preparar_pipeline(interacciones, libros, lectores, seed, n_por_fuente=N_POR_FUENTE, k=K)
     return _CONTEXTOS[seed]
 
 

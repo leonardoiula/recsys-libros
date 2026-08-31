@@ -58,6 +58,10 @@ def _features_auxiliares_vacias() -> dict:
         "genero_macro_por_libro": {},
         "score_por_libro_genero_macro": {},
         "frecuencia_genero_macro_por_usuario": {},
+        "genero_lector_por_lector": {},
+        "score_por_libro_por_genero_lector": {},
+        "afinidad_genero_macro_por_genero_lector": {},
+        "nacimiento_por_lector": {},
     }
 
 
@@ -162,12 +166,13 @@ def test_calcular_features_auxiliares():
             ],
         }
     )
+    lectores = pd.DataFrame({"id_lector": ["u1"], "genero": ["Mujer"], "nacimiento": ["1970"]})
     # u1 con fila 0, leyo a/b/c (columnas 0/1/2); "d" (columna 3) sin leer
     matriz = np.array([[1, 1, 1, 0]])
     fila_por_usuario = {"u1": 0}
     libros_por_columna = ["a", "b", "c", "d"]
 
-    aux = calcular_features_auxiliares(interacciones, libros, matriz, fila_por_usuario, libros_por_columna)
+    aux = calcular_features_auxiliares(interacciones, libros, lectores, matriz, fila_por_usuario, libros_por_columna)
 
     # u1 leyo 2 libros de "KING, STEPHEN" (a, b) y 1 de "OTRO" (c)
     assert aux["n_libros_autor_leidos_por_usuario"]["u1"]["KING, STEPHEN"] == 2
@@ -208,6 +213,15 @@ def test_calcular_features_auxiliares():
     assert aux["frecuencia_genero_macro_por_usuario"]["u1"]["novela negra y suspenso"] == pytest.approx(1 / 3)
     # popularidad pooleada por macro-genero: existe un score para cada libro con interaccion
     assert aux["score_por_libro_genero_macro"]["c"] == pytest.approx(8.0)
+
+    # genero declarado del lector (NO el genero literario): u1 es "Mujer"
+    assert aux["genero_lector_por_lector"]["u1"] == "Mujer"
+    assert aux["score_por_libro_por_genero_lector"]["Mujer"]["a"] == pytest.approx(8.0)
+    # afinidad de cohorte por macro-genero, mismas proporciones que el historial
+    # individual porque la cohorte "Mujer" acá es solo u1
+    assert aux["afinidad_genero_macro_por_genero_lector"]["Mujer"][MACRO_GENERO_DEFAULT] == pytest.approx(2 / 3)
+    # nacimiento numerico (no el sentinel 1910, no invalido)
+    assert aux["nacimiento_por_lector"]["u1"] == 1970.0
 
 
 def test_generar_candidatos_incluye_features_de_autor_y_recencia():
@@ -448,6 +462,124 @@ def test_generar_candidatos_sentinel_cuando_no_hay_editorial():
     )
 
     assert candidatos.iloc[0]["n_libros_editorial_catalogo"] == 0
+
+
+def test_generar_candidatos_incluye_senales_cruzadas_genero_lector():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    aux = {
+        **_features_auxiliares_vacias(),
+        "genero_lector_por_lector": {"u1": "Mujer"},
+        "score_por_libro_por_genero_lector": {"Mujer": {"a": 7.1}, "Hombre": {"a": 2.0}},
+        "genero_macro_por_libro": {"a": "novela negra y suspenso"},
+        "afinidad_genero_macro_por_genero_lector": {"Mujer": {"novela negra y suspenso": 0.6}},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    fila = candidatos.iloc[0]
+    # usa la tabla del genero declarado DEL USUARIO (Mujer), no la de otro (Hombre)
+    assert fila["popularidad_genero_lector_candidato"] == pytest.approx(7.1)
+    assert fila["frecuencia_genero_macro_por_genero_lector"] == pytest.approx(0.6)
+
+
+def test_generar_candidatos_sentinel_cuando_no_hay_dato_de_genero_lector():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    # "u1" no tiene genero de lector conocido (no aparece en genero_lector_por_lector)
+    aux = {
+        **_features_auxiliares_vacias(),
+        "score_por_libro_por_genero_lector": {"Mujer": {"a": 7.1}},
+        "genero_macro_por_libro": {"a": None},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    fila = candidatos.iloc[0]
+    assert fila["popularidad_genero_lector_candidato"] == 0.0
+    assert fila["frecuencia_genero_macro_por_genero_lector"] == 0.0
+
+
+def test_generar_candidatos_incluye_edad_lector_al_publicarse():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    aux = {
+        **_features_auxiliares_vacias(),
+        "anio_edicion_por_libro": {"a": 2000.0},
+        "nacimiento_por_lector": {"u1": 1970.0},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    # el candidato se publico cuando el usuario tenia 2000-1970 = 30 anios
+    assert candidatos.iloc[0]["edad_lector_al_publicarse"] == pytest.approx(30.0)
+
+
+def test_generar_candidatos_sentinel_cuando_no_hay_dato_de_nacimiento():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    # "u1" no tiene nacimiento conocido (invalido o sentinel 1910, ver popularity_segmentada)
+    aux = {**_features_auxiliares_vacias(), "anio_edicion_por_libro": {"a": 2000.0}}
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    assert candidatos.iloc[0]["edad_lector_al_publicarse"] == 0.0
 
 
 def test_armar_dataset_marca_el_positivo_y_arma_group():

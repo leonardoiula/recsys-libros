@@ -196,11 +196,252 @@ algo estructuralmente distinto es tuya:
   del modelo de reranking en sí.
 - Esta arquitectura (candidatos de ALS + reranking supervisado) ya es
   un patrón de recsys real, no un modelo genérico de ML aplicado a la
-  fuerza. Si se evalúa un cambio de paradigma, las alternativas típicas
-  para pensar (sin que esto sea una recomendación) suelen ser: modelos
-  híbridos colaborativo+contenido nativos (ej. LightFM), factorization
-  machines, modelos de dos torres/embeddings aprendidos end-to-end, o
-  modelos secuenciales que usen el orden temporal del historial (ej.
-  GRU4Rec/SASRec) — el dataset tiene 16 años de historial con fecha por
-  interacción, señal temporal que hoy solo se usa de forma agregada
-  (recencia, año de edición), no secuencial.
+  fuerza.
+
+---
+
+## Recomendación: ¿cambiar de paradigma? (análisis dedicado, 2026-08-31)
+
+Encargado a un modelo separado (Opus) con instrucciones de medir en vez
+de opinar en abstracto — corrió diagnósticos reales contra el código
+del proyecto (scripts quedaron en el scratchpad de la sesión, no en el
+repo). Resumen del dictamen:
+
+**Recomendación: no migrar de paradigma. El cuello de botella medible
+no es el modelo de reranking ni el de filtrado colaborativo — es el
+generador de candidatos.**
+
+### El embudo pierde más de lo que el reranking puede recuperar
+
+Descomponiendo el NDCG local (seed 42, 8.904 usuarios de `test_final`):
+
+| | valor |
+|---|---|
+| Target presente en `train_candidatos` (techo absoluto de cualquier generador) | **0.931** |
+| Recall del set de candidatos actual (unión de 3 fuentes, ~419/usuario) | **0.394** |
+| NDCG@20 del ranker | 0.1063 |
+| Fracción del techo que captura el ranker | 0.270 |
+
+El NDCG es aproximadamente `0.394 × 0.270`. Las últimas rondas de
+features movieron el segundo factor menos del 2%; el primero está a
+0.394 de un techo de 0.931 — ahí está el margen real.
+
+Ese factor es muy sensible a cambios simples y baratos:
+
+| set de candidatos | recall | candidatos/usuario |
+|---|---|---|
+| unión actual, `n_por_fuente=150` | 0.414 | 705 |
+| unión actual, `n_por_fuente=500` | 0.559 | 2.292 |
+| + 4ª fuente "libros de autores ya leídos" (top-20/autor), n=150 | 0.507 | 936 |
+| unión + autor, n=500 | **0.620** | 2.487 |
+| solo la fuente autor | 0.268 | 268 |
+
+**28,6% de los targets de validación son libros de un autor que el
+usuario ya leyó** — autor hoy solo existe como *feature*
+(`en_autor_leido`/`n_libros_autor_leidos`), que solo puede activarse si
+ALS o popularidad ya trajeron el libro como candidato. No está en el
+generador. Si la eficiencia de ranking (0.27) se mantuviera, recall
+0.62 daría NDCG ~0.167 (+57%) — no se va a sostener igual con más
+candidatos (ranking más difícil), pero incluso un tercio de eso es 5-10x
+más grande que cualquier cosa medida en las últimas 4 rondas de esta
+sesión.
+
+### Los modelos secuenciales quedan descartados por los datos, no por costo
+
+Se midió la estructura temporal antes de recomendar nada:
+
+- **67,5% de los gaps entre interacciones consecutivas son 0 días**;
+  gap mediano 0, p75 = 4 días.
+- Span temporal mediano por usuario: 26 días (mediana 9 interacciones)
+  — la mayoría lee "todo junto".
+- **45,7% de los usuarios tiene más de una interacción en su fecha
+  máxima** — el propio ground truth ("el próximo libro") se decide hoy
+  por un desempate aleatorio dentro de un lote del mismo día.
+
+SASRec/GRU4Rec modelan el *orden* de la secuencia; acá el orden
+intra-día es arbitrario y es la mayoría de la señal — pedirle a un
+modelo secuencial que aprenda un orden que el dataset no tiene. Lo que
+sí hay es **coherencia local sin orden** (mismo autor que la
+interacción inmediata anterior: 12,2% vs. 4,4% al azar, 2,8x; mismo
+género: 30,3% vs. 22,4%, 1,35x) — se captura con features ponderadas
+por recencia sobre el último lote, no con un modelo secuencial. Ojo:
+popularidad *reciente* (ventana global) es peor que all-time (recall en
+top-150: 0.194 vs. 0.245) porque los targets están repartidos en 16
+años (solo 12% cae en 2024) — cada usuario tiene su propio "ahora"; si
+se explora esto, la ventana debe ser relativa al propio usuario.
+
+**LightFM / dos torres / factorization machines reemplazarían a ALS,
+que no es el problema.** Su valor agregado sobre ALS es meter metadata
+en el embedding — metadata que ya está en las 26 features del ranker,
+donde LightGBM la usa con más libertad (no lineal). Efecto esperado:
+del orden de lo que se viene midiendo, por debajo de la resolución del
+instrumento actual. Costo de implementación: alto. Mala relación
+costo/beneficio comparado con atacar el generador de candidatos.
+
+### Hallazgo incómodo: las últimas 3 "confirmaciones" podrían ser ruido
+
+Se reimplementó la comparación de las 3 señales cruzadas (26 vs. 23
+features) sobre el mismo contexto/seed, con un **test pareado por
+usuario** (en vez de comparar promedios de 3 seeds independientes):
+
+```
+NDCG@20 26 features: 0.106833      NDCG@20 23 features: 0.106919
+diferencia media pareada: -0.000086   SE pareado: 0.000770
+bootstrap 95% CI: [-0.001499, +0.001411]     P(diferencia > 0) = 0.46
+usuarios donde cambia el NDCG: 13.3%  (mejoran 573, empeoran 611)
+```
+
+Con ~4,9x más precisión que el criterio actual (comparar contra el
+desvío entre 3 seeds), el efecto de las 3 features nuevas es
+**estadísticamente cero** (mejoran y empeoran usuarios en proporciones
+similares — churn, no mejora real). Y el "+0.5% en Kaggle" que
+confirmó esta ronda son 0.00024 absolutos = 0.04 desvíos estándar del
+ruido de Kaggle. Los tres "casos límite" confirmados esta sesión
+(género macro +4.5%, editorial +3.7%, señales cruzadas +0.5%) son 0.3,
+0.3 y 0.04 SE respectivamente — **ninguno es evidencia estadística
+real**, pese a estar documentados como "confirmados en Kaggle". Lo que
+veníamos leyendo como "retornos decrecientes de las features de
+dominio" parece ser, en buena parte, el momento en que el efecto real
+cayó por debajo de la resolución del instrumento de medición.
+
+Esto no significa que esas features estén mal (no hay evidencia de que
+*empeoren* tampoco) — significa que el criterio de decisión usado
+hasta ahora (comparar contra el desvío entre 3 seeds, o confirmar con
+una sola submission de Kaggle) no tiene poder estadístico suficiente
+para distinguir señal real de ruido en este rango de efectos.
+
+### Next steps, en orden de prioridad
+
+1. **Fuente de candidatos por autor** (4ª fuente): top-20 libros por
+   popularidad de cada autor leído por el usuario, filtrando leídos.
+   Barato (ya existe `autor_por_libro` en `calcular_features_auxiliares`),
+   recall 0.414 → 0.507.
+2. **Subir `n_por_fuente` de 150 a 500** y medir recall del set de
+   candidatos y NDCG por separado (cambio de una línea; sube el costo
+   de cómputo de `preparar_pipeline` de ~300s a ~15-20 min/seed).
+   Combinado con (1): recall 0.620.
+3. **Item-item kNN / EASE^R como 5ª fuente de candidatos** (no solo
+   como feature): ya se calcula `cooc = X.T @ X` para `score_coleido`
+   en ~3s; normalizado y usado como generador (top-N vecinos del
+   historial reciente) suele empatar o ganarle a ALS en datos
+   implícitos así de dispersos, y trae candidatos que ALS no trae.
+   Antes que cualquier LightFM/dos torres.
+4. **Decidir sobre etapa 1 con recall del set de candidatos, no con
+   NDCG del pipeline completo** — se mide en 17-76s por variante (vs.
+   ~300s de contexto completo), sin gastar submissions. Solo cuando el
+   recall sube vale la pena correr el pipeline completo.
+5. **Features ponderadas por recencia** (última fecha / últimas N
+   interacciones) de las señales que hoy poolean todo el historial
+   parejo (autor, editorial, co-lectura, `sim_resumen_historial`) — la
+   forma correcta de aprovechar la señal temporal en estos datos, dado
+   que un modelo secuencial no aplica. Va *después* de (1)-(3): es un
+   factor de eficiencia de ranking, no de recall.
+6. **Revisar el refit de etapa 1 en `submit.py`**: hoy fitea ALS/
+   popularidad sobre `train_candidatos` (sin la interacción más
+   reciente de cada usuario, ~10.673 interacciones, la parte más
+   informativa) para generar los candidatos finales de producción. La
+   práctica estándar es refitear etapa 1 sobre todos los datos después
+   de entrenar el ranker sobre el split — testeable localmente sin
+   leakage (comparar señales fitteadas en `train_candidatos` vs.
+   `train_candidatos_full`, evaluando siempre en `test_final`).
+7. **No volver a tunear LightGBM.** 3/3 intentos fallidos, y ahora se
+   entiende por qué: el efecto que se buscaba (~0.0013) está por
+   debajo del error estándar no pareado (0.0038) con el que se medía.
+
+---
+
+## Recomendación: ¿incorporar agentes de IA al flujo de trabajo? (mismo análisis)
+
+**El 80% de la ganancia de velocidad no viene de agentes de IA — viene
+de cachear el contexto de candidatos y paralelizar los seeds, que es
+ingeniería determinista.** Los sub-agentes valen para tres cosas
+puntuales: implementar features en paralelo (worktrees) mientras corre
+una evaluación, auditar leakage antes de quemar una corrida, y
+replicar un resultado de forma independiente antes de gastar una
+submission. Envolver un `for seed in seeds` en un LLM no agrega nada.
+
+### Lo que no es un problema de agentes
+
+- **Los 3 seeds corren en serie** (`scripts/evaluate_ranker.py` es un
+  `for seed in SEEDS`) pudiendo correr en paralelo con 2-3 workers de
+  proceso (~20-25 min → ~10 min) — pero antes de paralelizar hay que
+  subir el archivo de paginación y bajar el pico de memoria del TF-IDF
+  (`tfidf_norm[filas_texto].multiply(...)`, procesarlo por chunks): dos
+  corridas simultáneas dieron `MemoryError` en la máquina de esta
+  sesión.
+- **El contexto se recalcula para cada ablation sin hacer falta.** Ya
+  existe la separación `preparar_pipeline` (~300s, no depende de
+  hiperparámetros de LightGBM) / `evaluar_con_params` (~22s). Falta el
+  paso obvio: el contexto también sirve para comparar *subconjuntos de
+  features* del ranker, no solo hiperparámetros — el test pareado de la
+  sección anterior entrenó 26 y 23 features sobre el mismo contexto en
+  ~1 minuto en vez de repetir dos corridas completas de ~20-25 min cada
+  una. Cacheando el contexto a disco por seed (con **todas** las
+  columnas candidatas, incluidas las experimentales), cada ablation
+  pasa de 20-25 min a ~1 min.
+- **El criterio de decisión actual tiene poco poder estadístico** (ver
+  hallazgo de arriba). Dos arreglos concretos, sin agentes:
+  - Test pareado por usuario en vez de "mejora > desvío entre seeds":
+    medido, SE no pareado 0.003775 vs. SE pareado 0.000770 → ~4,9x más
+    poder, efectos detectables desde ~0.0015 en vez de ~0.0075.
+  - Ponderar la evaluación local por la población real de Kaggle: los
+    832 usuarios de `ejemplo.csv` tienen mediana de 95 interacciones;
+    la evaluación local promedia 8.904 usuarios con mediana 9 — un
+    usuario con 200+ interacciones pesa ~5,3x más en Kaggle que en el
+    promedio local sin ponderar. La bitácora ya hizo este reponderado a
+    mano una vez para ALS; falta meterlo en el pipeline de CV.
+
+### Dónde sí sirven sub-agentes (con contexto cacheado, el cuello de
+botella pasa a ser implementar/auditar, no evaluar)
+
+1. **Worktrees paralelos para ideas independientes** (ej. fuente por
+   autor / item-item kNN como fuente / features ponderadas por
+   recencia): 2-3 sub-agentes implementando en paralelo contra el mismo
+   contexto cacheado, revisión humana de los diffs, una sola corrida
+   determinista evalúa todas las variantes en conjunto y pareadas.
+2. **Auditor de leakage dedicado y adversarial**: un sub-agente cuyo
+   único trabajo es leer el diff de una feature nueva y buscar uso de
+   datos posteriores al corte — este proyecto ya tuvo dos episodios
+   reales de este tipo (split aleatorio con leakage temporal: NDCG
+   0.260 → 0.123 al corregirlo; necesidad del split de tres niveles).
+   Corrida perdida: 20-25 min. Auditor: ~1 min.
+3. **Replicación independiente antes de gastar una submission**: un
+   sub-agente que no vio la implementación reimplementa la *medición*
+   (no la feature) y reporta el número pareado — es exactamente lo que
+   se hizo en este análisis, y encontró que el "récord confirmado" de
+   esta sesión es indistinguible de ruido.
+
+### Dónde no
+
+- Envolver la ejecución de los 3 seeds en agentes (es
+  `joblib`/`multiprocessing`, no un problema de LLM).
+- Decidir si se gasta una submission, o elegir taxonomías de dominio
+  (queda humano — y con la agenda de arriba se necesitan *menos*
+  submissions, no más).
+- Interpretar resultados límite con más agentes: el modo de falla
+  histórico del proyecto no es falta de análisis, es **exceso de
+  narrativa sobre ruido** (los tres casos límite, con explicación
+  causal convincente cada uno, resultaron ser efecto real cero). Un
+  enjambre de agentes produce más historias plausibles por hora, no
+  más señal — la defensa correcta es estadística (test pareado,
+  población ponderada, umbrales pre-registrados), no más razonamiento.
+- Tuneo de hiperparámetros paralelizado con agentes: está muerto por
+  evidencia (3/3), paralelizarlo no cambia eso.
+
+### Next steps concretos
+
+1. Cachear el contexto de `preparar_pipeline` a disco por seed con
+   **todas** las columnas de features (incluidas las experimentales);
+   que `fit_ranker`/la predicción reciban la lista de features como
+   parámetro en vez de leer `ranker.FEATURES` global. Habilita
+   ablations de ~1 min.
+2. Cambiar el criterio de decisión en `evaluation.py`: NDCG por usuario
+   + diferencia media pareada + CI bootstrap, y NDCG ponderado por la
+   distribución de actividad de `ejemplo.csv` reportado al lado del
+   plano. Pre-registrar el umbral (ej. adoptar si el CI pareado del
+   95% excluye el 0 en la población ponderada).
+3. Subir el archivo de paginación, bajar el pico de memoria del TF-IDF,
+   recién entonces paralelizar los seeds con 2-3 workers.
+4. Con eso andando, abrir la agenda del generador de candidatos con
+   2-3 worktrees paralelos, auditoría de leakage por sub-agente, y una
+   sola submission al final del bloque — no una por idea.

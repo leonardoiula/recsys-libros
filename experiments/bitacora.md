@@ -1834,3 +1834,88 @@ guía pero demasiado conservadora para descartar candidatos sin probar,
 sobre todo cuando el "fallo" es de una magnitud mucho menor que el
 ruido entre seeds. `"ranker"` (26 features) pasa a ser el modelo de
 referencia del proyecto.
+
+
+## 4ª fuente de candidatos: libros de autores ya leídos — la mejora más grande de la sesión
+
+### Objetivo
+
+Implementar la recomendación #1 del análisis de generador de candidatos
+(`experiments/modelo_actual.md`, sección "Recomendación: ¿cambiar de
+paradigma?"): agregar una 4ª fuente de candidatos (no solo feature)
+para libros de autores que el usuario ya leyó. El análisis midió que
+28.6% de los targets de validación son de un autor ya leído, señal que
+antes solo existía como *feature* (`en_autor_leido`/
+`n_libros_autor_leidos`), incapaz de proponer un candidato nuevo por sí
+sola -- solo podía activarse si ALS o popularidad ya habían traído el
+libro por otro motivo.
+
+### Implementación
+
+Para cada autor que el usuario ya leyó, hasta `n_por_autor=20` libros
+sin leer de ese autor, rankeados por el score de popularidad **global**
+(no se refittea un score bayesiano por autor -- la mayoría tiene muy
+pocas interacciones para un shrinkage propio confiable). 3 features
+nuevas: `score_autor_candidato`/`rank_autor_candidato`/
+`en_autor_candidato` (26 → 29), deliberadamente con nombres distintos
+de `en_autor_leido`/`n_libros_autor_leidos` (que miden historial, sin
+importar qué fuente trajo el candidato).
+
+### Problema real de memoria, encontrado en la verificación
+
+La primera versión no topeaba el total de candidatos por usuario de
+esta fuente (solo el top-20 *por autor*). Usuarios que leyeron cientos
+de autores distintos llegaron a **5.304 candidatos** de esta fuente
+sola (media 653/usuario, contra ~419 antes) -- una corrida completa de
+`scripts/evaluate_ranker.py` se cortó (`killed`, sin traceback) después
+de 2 de 3 seeds. Se agregó un tope total de `n_por_fuente` (150)
+candidatos por usuario para esta fuente, igual que las otras 3,
+**priorizando los autores que más leyó el usuario** (no el orden
+arbitrario del dict) en vez de cortar a ciegas. Con el tope: recall
+0.473→0.445 (baja un poco, sigue muy por encima del 0.394 original) y
+candidatos por usuario mucho más razonables (media 486, máximo 581).
+
+Nota aparte: durante la verificación, corridas en *background* de este
+pipeline más pesado se cortaron dos veces sin error visible (posible
+límite de memoria del entorno de esta sesión, no del código -- ver
+también el hallazgo similar del análisis de paradigma, sección
+"agentes"). Correrlas en *foreground*, seed por seed, funcionó sin
+problemas -- mismo patrón que ya se había usado antes en el proyecto
+cuando el background resultó inestable (ver sección "Tuneo de LightGBM
+sobre 23 features").
+
+### Resultado: la mejora más grande y sólida de la sesión
+
+| | seed=42 | seed=7 | seed=123 | media ± desvío |
+|---|---|---|---|---|
+| 26 features (confirmado en Kaggle: 0.04855) | 0.10568 | 0.11054 | 0.11299 | 0.109735 ± 0.003719 |
+| 29 features + 4ª fuente (autor, topeada) | 0.11481 | 0.11776 | 0.11991 | 0.117495 ± 0.002562 |
+
+**Positivo en los 3 seeds**, con una diferencia (+0.00913/+0.00722/
++0.00692) **5-10x más grande** que cualquier resultado de esta sesión
+(los "casos límite" rondaban 0.0001-0.0013). Recall del set de
+candidatos (`scripts/recall_candidatos.py`): 0.3941→0.4450 (+12.9%).
+
+### Hallazgo adicional: la mejora viene de los candidatos, no de las features
+
+Test pareado (`scripts/comparar_features_pareado.py`, seed=42, mismo
+contexto/pool de candidatos con vs. sin las 3 features de tracking de
+esta fuente): diferencia +0.0004, **0.44 sigma, no significativa**. El
+ranker ya lograba aprovechar casi toda la mejora usando solo las
+features *existentes* (`en_autor_leido`, `n_libros_autor_leidos`,
+`n_interacciones_libro`, etc.) para puntuar los candidatos nuevos -- las
+3 features explícitas de esta fuente no aportan mucho por sí solas,
+aunque tampoco restan. Se mantienen de todos modos (documentan
+explícitamente qué fuente propuso el candidato, sin costo).
+
+Este resultado **confirma limpiamente la tesis central del análisis de
+paradigma**: el margen real estaba en el recall del generador de
+candidatos, no en agregar más features al reranking -- exactamente lo
+opuesto al patrón de retornos decrecientes que se venía viendo con
+features puramente informativas (país, franja, señales cruzadas).
+
+### Decisión
+
+Se generó la submission (`ranker_...4a-fuente-autor...csv`) para
+confirmar en Kaggle -- ver próxima entrada de `log.csv` para el
+resultado real.

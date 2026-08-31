@@ -582,6 +582,178 @@ def test_generar_candidatos_sentinel_cuando_no_hay_dato_de_nacimiento():
     assert candidatos.iloc[0]["edad_lector_al_publicarse"] == 0.0
 
 
+def test_generar_candidatos_incluye_fuente_autor():
+    # u1 leyo al autor "X" (ver n_libros_autor_leidos_por_usuario); "b" y
+    # "c" son de "X" y no los leyo, con distinto score de popularidad.
+    # n_por_fuente queda en su default (150) -- popularidad global TAMBIEN
+    # va a proponer b/c/d (estan en stats_popularidad), pero eso no debe
+    # afectar los campos propios de la fuente de autor, que se verifican
+    # por separado.
+    modelo = _ModeloALSFalso({0: ([], [])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["b", "c", "d"], [9.0, 5.0, 1.0])  # ya ordenado por score desc
+    aux = {
+        **_features_auxiliares_vacias(),
+        "autor_por_libro": {"b": "X", "c": "X", "d": "OTRO"},
+        "n_libros_autor_leidos_por_usuario": {"u1": {"X": 2}},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+        n_por_autor=20,
+    )
+
+    fila_b = candidatos[candidatos["id_libro"] == "b"].iloc[0]
+    fila_c = candidatos[candidatos["id_libro"] == "c"].iloc[0]
+    fila_d = candidatos[candidatos["id_libro"] == "d"].iloc[0]
+    assert fila_b["en_autor_candidato"] == 1
+    assert fila_b["rank_autor_candidato"] == 0  # mayor score entre los libros de "X"
+    assert fila_b["score_autor_candidato"] == pytest.approx(9.0)
+    assert fila_c["en_autor_candidato"] == 1
+    assert fila_c["rank_autor_candidato"] == 1
+    # "d" es de "OTRO" autor (no leido) -- aparece via popularidad global,
+    # pero NO via la fuente de autor
+    assert fila_d["en_autor_candidato"] == 0
+
+
+def test_generar_candidatos_fuente_autor_filtra_libros_leidos():
+    modelo = _ModeloALSFalso({0: ([], [])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["b"], [9.0])
+    aux = {
+        **_features_auxiliares_vacias(),
+        "autor_por_libro": {"b": "X"},
+        "n_libros_autor_leidos_por_usuario": {"u1": {"X": 1}},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={"u1": {"b"}},  # "b" ya leido -- se filtra de TODAS las fuentes
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+        n_por_autor=20,
+    )
+
+    assert "b" not in set(candidatos["id_libro"])
+
+
+def test_generar_candidatos_fuente_autor_respeta_top_n_por_autor():
+    modelo = _ModeloALSFalso({0: ([], [])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["b", "c", "d"], [9.0, 5.0, 1.0])
+    aux = {
+        **_features_auxiliares_vacias(),
+        "autor_por_libro": {"b": "X", "c": "X", "d": "X"},
+        "n_libros_autor_leidos_por_usuario": {"u1": {"X": 1}},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+        n_por_autor=2,  # solo top-2 de "X" -> "d" (rank 2) queda afuera de esta fuente
+    )
+
+    # "d" sigue apareciendo (via popularidad global), pero no via autor
+    fila_d = candidatos[candidatos["id_libro"] == "d"].iloc[0]
+    assert fila_d["en_autor_candidato"] == 0
+    assert candidatos[candidatos["id_libro"] == "b"].iloc[0]["en_autor_candidato"] == 1
+    assert candidatos[candidatos["id_libro"] == "c"].iloc[0]["en_autor_candidato"] == 1
+
+
+def test_generar_candidatos_fuente_autor_topea_total_priorizando_autores_mas_leidos():
+    # u1 leyo dos autores: "X" (5 veces, mas leido) e "Y" (1 vez). Con
+    # n_por_fuente=1 como tope TOTAL de la fuente, solo debe entrar 1
+    # candidato -- y tiene que ser de "X" (el autor mas leido), no de "Y".
+    modelo = _ModeloALSFalso({0: ([], [])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["b", "e"], [9.0, 8.0])
+    aux = {
+        **_features_auxiliares_vacias(),
+        "autor_por_libro": {"b": "X", "e": "Y"},
+        "n_libros_autor_leidos_por_usuario": {"u1": {"X": 5, "Y": 1}},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=1,
+        n_por_autor=20,
+    )
+
+    # con el tope total en 1, solo "b" (del autor mas leido, "X") entra
+    # via esta fuente -- "e" (del autor menos leido, "Y") ni siquiera
+    # llega a aparecer (tambien topeada la popularidad global a 1)
+    libros_desde_autor = set(candidatos[candidatos["en_autor_candidato"] == 1]["id_libro"])
+    assert libros_desde_autor == {"b"}
+
+
+def test_generar_candidatos_sentinel_cuando_no_hay_fuente_autor():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    # "u1" no tiene autores leidos (no aparece en n_libros_autor_leidos_por_usuario)
+    aux = _features_auxiliares_vacias()
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+        n_por_autor=20,
+    )
+
+    fila = candidatos.iloc[0]
+    assert fila["en_autor_candidato"] == 0
+    assert fila["rank_autor_candidato"] == 20
+    assert fila["score_autor_candidato"] == 0.0
+
+
 def test_armar_dataset_marca_el_positivo_y_arma_group():
     candidatos_df = pd.DataFrame(
         {
@@ -616,6 +788,7 @@ def test_armar_dataset_inyecta_positivo_faltante():
     assert y.sum() == 1
     fila_inyectada = X[y == 1].iloc[0]
     assert fila_inyectada["rank_als"] == 150  # sentinel
+    assert fila_inyectada["rank_autor_candidato"] == 20  # sentinel (default n_por_autor)
 
 
 def test_armar_dataset_usuario_sin_candidatos_igual_aporta_el_positivo():

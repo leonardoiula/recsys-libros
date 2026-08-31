@@ -54,13 +54,21 @@ N_POR_FUENTE = 150
 SEED = 42
 N_BOOTSTRAP = 2000
 
-# Por defecto, replica la comparación de esta sesión: las 26 features
-# actuales vs. esas mismas 26 sin las 3 señales cruzadas lector↔libro.
+# Comparación activa: las 29 features actuales (incluye la 4a fuente de
+# candidatos por autor) vs. esas mismas 29 sin las 3 features de esa
+# fuente -- para confirmar con rigor la 4a fuente de candidatos por
+# autor (ver experiments/modelo_actual.md, "Recomendación: ¿cambiar de
+# paradigma?"). OJO: esto solo compara las FEATURES del ranker, no la
+# generación de candidatos en sí -- la fuente de autor igual aporta
+# candidatos nuevos en ambos casos (A y B comparten el mismo contexto,
+# incluida la unión de las 4 fuentes); lo que se aísla acá es si el
+# ranker aprende algo de los 3 campos score/rank/en_autor_candidato,
+# no si el recall extra ayuda (eso ya lo mide `recall_candidatos.py`).
 FEATURES_A = R.FEATURES
 FEATURES_EXCLUIR_EN_B = [
-    "popularidad_genero_lector_candidato",
-    "frecuencia_genero_macro_por_genero_lector",
-    "edad_lector_al_publicarse",
+    "score_autor_candidato",
+    "rank_autor_candidato",
+    "en_autor_candidato",
 ]
 FEATURES_B = [f for f in R.FEATURES if f not in FEATURES_EXCLUIR_EN_B]
 

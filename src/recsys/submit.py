@@ -103,12 +103,14 @@ def _recomendaciones_als(usuarios: list, k: int) -> dict:
 
 
 N_POR_FUENTE_RANKER = 150
+N_POR_AUTOR_RANKER = 20
 
 
 def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     """v3: ranker de dos etapas -- candidatos de ALS + popularidad por
-    género + popularidad global, reordenados por un `LGBMRanker`
-    (LightGBM) entrenado para combinar esas señales.
+    género + popularidad global + libros de autores ya leídos,
+    reordenados por un `LGBMRanker` (LightGBM) entrenado para combinar
+    esas señales.
 
     Validado con validación cruzada sobre 3 seeds antes de wirear acá:
     le ganó a ALS solo en los 3 seeds (+3.9% de NDCG@20 en promedio, con
@@ -154,6 +156,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
         n_interacciones_por_usuario=n_interacciones_por_usuario,
         features_auxiliares=features_auxiliares,
         n_por_fuente=N_POR_FUENTE_RANKER,
+        n_por_autor=N_POR_AUTOR_RANKER,
     )
 
     usuarios_ranker = train_ranker["id_lector"].unique().tolist()
@@ -164,6 +167,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
         candidatos_train_ranker,
         train_ranker[["id_lector", "id_libro"]],
         n_por_fuente=N_POR_FUENTE_RANKER,
+        n_por_autor=N_POR_AUTOR_RANKER,
     )
     modelo_ranker = fit_ranker(X, y, group)
 

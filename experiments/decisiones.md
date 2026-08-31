@@ -229,6 +229,14 @@ catálogo de editorial" para las dos rondas más recientes.
 | Ranker con las 3 features de esta ronda (26 en total) | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | CV 3 seeds: 0.110112±0.003411 -- casi positivo en los 3 seeds (positivo en 2, apenas negativo en el tercero, muy por debajo del ruido). Confirmado con el usuario vía submission real pese al caso límite (mismo criterio que género macro/tamaño de editorial). **0.04855 en Kaggle, +0.5% sobre el récord anterior** (0.04831). Tercera vez que un caso límite se confirma real. Ver `bitacora.md`, sección "Señales cruzadas lector↔libro: nuevo récord del proyecto". |
 | Ablation: sacar `edad_lector_al_publicarse` (25 features) para intentar que el seed límite cruce a positivo | ❌ **descartado -- empeoró en vez de mejorar** | CV 3 seeds: 0.109897±0.002980, peor que las 26 completas en media y en el seed límite (-0.00084 vs -0.00024). Se revirtió el ablation, quedaron las 26 features completas. |
 
+## 12. 4ª fuente de candidatos: libros de autores ya leídos (ronda 2026-08-31, parte 3)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| Agregar una 4ª fuente de candidatos (no solo feature) para libros de autores ya leídos, en vez de seguir sumando features sobre las 3 fuentes existentes | ✅ **confirmado — la mejora más grande de la sesión** | Motivada por el análisis de generador de candidatos (`modelo_actual.md`): 28.6% de los targets son de un autor ya leído. Rankeada por popularidad global (no un score bayesiano por autor). CV 3 seeds: 0.117495±0.002562 vs 0.109735±0.003719 de las 26 features -- positivo en los 3 seeds, 5-10x más grande que cualquier resultado previo de la sesión. Recall del set de candidatos: 0.394→0.445. Ver `bitacora.md`, sección "4ª fuente de candidatos: libros de autores ya leídos". |
+| Topear el total de candidatos de esta fuente a `n_por_fuente` (150), priorizando los autores más leídos | ✅ **resuelto -- problema real de memoria encontrado en la verificación** | Sin tope, usuarios con cientos de autores leídos llegaban a 5.304 candidatos de esta fuente sola -- una corrida completa se cortó (`killed`, sin traceback). Con el tope: recall baja levemente (0.473→0.445) pero sigue muy por encima del original, y el pipeline corre de forma estable. |
+| `score_autor_candidato`/`rank_autor_candidato`/`en_autor_candidato` (3 features nuevas, 26→29) | 🔄 **mantenidas, pero test pareado dice que no aportan por sí solas** | Comparando el mismo pool de candidatos con vs. sin estas 3 features (test pareado, seed=42): diferencia +0.0004, 0.44 sigma, no significativa -- el ranker ya aprovechaba casi toda la mejora con features existentes (`en_autor_leido`, `n_libros_autor_leidos`, etc.). La mejora real viene de los candidatos, no de las features. Se mantienen igual (no restan, documentan la fuente explícitamente). |
+
 ---
 
 ## EDA: qué se usó y qué no (para tu feedback)

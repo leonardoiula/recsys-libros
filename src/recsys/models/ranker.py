@@ -1,11 +1,12 @@
 """Ranker de dos etapas: candidatos de ALS + popularidad por género +
-popularidad global, reordenados por un `LGBMRanker` (LightGBM,
-objetivo `lambdarank`) entrenado para combinar esas tres señales mejor
-de lo que cada una hace sola, más features auxiliares de autor/editorial/
-año de edición/diversidad de género/recencia/co-lectura ítem-ítem/
-similitud de resumen/popularidad y frecuencia de macro-género/señales
-cruzadas lector↔libro (género declarado del lector, edad del lector al
-publicarse el libro -- ver `calcular_features_auxiliares`).
+popularidad global + libros de autores ya leídos, reordenados por un
+`LGBMRanker` (LightGBM, objetivo `lambdarank`) entrenado para combinar
+esas cuatro señales mejor de lo que cada una hace sola, más features
+auxiliares de autor/editorial/año de edición/diversidad de género/
+recencia/co-lectura ítem-ítem/similitud de resumen/popularidad y
+frecuencia de macro-género/señales cruzadas lector↔libro (género
+declarado del lector, edad del lector al publicarse el libro -- ver
+`calcular_features_auxiliares`).
 
 Un ranker que usa el score de otros modelos como *features* necesita que
 esos scores salgan de datos que el ranker no vio como etiqueta -- si no,
@@ -73,6 +74,9 @@ FEATURES = [
     "popularidad_genero_lector_candidato",
     "frecuencia_genero_macro_por_genero_lector",
     "edad_lector_al_publicarse",
+    "score_autor_candidato",
+    "rank_autor_candidato",
+    "en_autor_candidato",
 ]
 
 N_MAX_FEATURES_TFIDF = 20000
@@ -372,9 +376,11 @@ def generar_candidatos_con_features(
     n_interacciones_por_usuario: dict,
     features_auxiliares: dict,
     n_por_fuente: int = 150,
+    n_por_autor: int = 20,
 ) -> pd.DataFrame:
-    """Arma, para cada usuario, la unión de candidatos de las tres fuentes
-    (ALS, popularidad por género, popularidad global) con sus features.
+    """Arma, para cada usuario, la unión de candidatos de las cuatro fuentes
+    (ALS, popularidad por género, popularidad global, libros de autores ya
+    leídos) con sus features.
 
     Reusa las estructuras que ya arman `fit_popularity` (`stats_popularidad`),
     `fit_popularity_por_genero` (`stats_por_genero`) y `genero_preferido_por_usuario`
@@ -383,7 +389,22 @@ def generar_candidatos_con_features(
     finalmente elegidos) por fuente que lo propuso, y `en_*` (1/0) indicando
     qué fuentes lo propusieron. Un candidato que no vino de una fuente
     queda con score 0.0 y rank `n_por_fuente` (sentinel: "justo afuera de
-    la ventana de esa fuente").
+    la ventana de esa fuente") -- la fuente de autor usa su propia ventana
+    `n_por_autor` como sentinel, no `n_por_fuente`.
+
+    La fuente de autor (`experiments/modelo_actual.md`, sección
+    "Recomendación: ¿cambiar de paradigma?" -- 28.6% de los libros
+    objetivo son de un autor que el usuario ya leyó, y antes de esto esa
+    señal solo existía como *feature*, nunca proponía candidatos nuevos
+    por sí sola): para cada autor que el usuario ya leyó
+    (`n_libros_autor_leidos_por_usuario`), hasta `n_por_autor` libros sin
+    leer de ese autor, rankeados por el score de popularidad GLOBAL (no
+    se refittea un score bayesiano por autor -- la mayoría de los
+    autores tiene muy pocas interacciones para un shrinkage propio
+    confiable). `score_autor_candidato`/`rank_autor_candidato`/
+    `en_autor_candidato` son distintos de `en_autor_leido`/
+    `n_libros_autor_leidos` (que miden el historial del usuario con ese
+    autor, sin importar qué fuente propuso el candidato).
 
     `features_auxiliares` es el dict que arma `calcular_features_auxiliares`
     (autor, año de edición, diversidad de género, recencia). Un candidato
@@ -420,6 +441,21 @@ def generar_candidatos_con_features(
     score_popularidad_por_libro = stats_popularidad.set_index("id_libro")["score"].to_dict()
     ranking_global_ids = stats_popularidad["id_libro"].tolist()
     rank_popularidad_por_libro = {libro: i for i, libro in enumerate(ranking_global_ids)}
+
+    # Fuente de autor: hasta n_por_autor libros por autor, rankeados por
+    # popularidad GLOBAL (no un score bayesiano por autor -- la mayoría
+    # de los autores tiene muy pocas interacciones). `ranking_global_ids`
+    # ya viene ordenado por score descendente (ver `fit_popularity`), así
+    # que un solo pase alcanza para quedarse con el top-n_por_autor de
+    # cada autor sin ordenar de nuevo.
+    libros_por_autor_ordenados: dict = {}
+    for id_libro in ranking_global_ids:
+        autor = autor_por_libro.get(id_libro)
+        if autor is None or pd.isna(autor):
+            continue
+        lista = libros_por_autor_ordenados.setdefault(autor, [])
+        if len(lista) < n_por_autor:
+            lista.append(id_libro)
 
     usuarios_con_als = [u for u in usuarios if u in fila_por_usuario]
     ids_items_als: dict = {}
@@ -487,6 +523,31 @@ def generar_candidatos_con_features(
                 c["rank_genero"] = rank
                 c["en_genero"] = 1
                 agregados += 1
+
+        # Tope total (no solo por autor): un usuario que leyó cientos de
+        # autores distintos podía aportar miles de candidatos de esta
+        # fuente sola (medido: hasta 5.304 candidatos para un usuario en
+        # un solo seed, contra ~450 típicos) -- un problema real de
+        # memoria/rendimiento en la corrida completa, no solo teórico.
+        # Se prioriza a los autores que MÁS leyó el usuario (no el orden
+        # arbitrario del dict) hasta `n_por_fuente` candidatos en total,
+        # mismo criterio de ventana que las otras 3 fuentes.
+        autores_leidos_conteo = n_libros_autor_leidos_por_usuario.get(id_lector, {})
+        autores_ordenados = sorted(autores_leidos_conteo, key=lambda a: -autores_leidos_conteo[a])
+        agregados_autor = 0
+        for autor in autores_ordenados:
+            if agregados_autor >= n_por_fuente:
+                break
+            for rank_autor, id_libro in enumerate(libros_por_autor_ordenados.get(autor, [])):
+                if agregados_autor >= n_por_fuente:
+                    break
+                if id_libro in vistos:
+                    continue
+                c = candidatos.setdefault(id_libro, {})
+                c["score_autor_candidato"] = score_popularidad_por_libro.get(id_libro, 0.0)
+                c["rank_autor_candidato"] = rank_autor
+                c["en_autor_candidato"] = 1
+                agregados_autor += 1
 
         n_usuario = n_interacciones_por_usuario.get(id_lector, 0)
         autores_leidos = n_libros_autor_leidos_por_usuario.get(id_lector, {})
@@ -582,6 +643,9 @@ def generar_candidatos_con_features(
                     "popularidad_genero_lector_candidato": float(popularidad_genero_lector),
                     "frecuencia_genero_macro_por_genero_lector": float(frecuencia_genero_macro_genero_lector),
                     "edad_lector_al_publicarse": float(edad_lector_al_publicarse),
+                    "score_autor_candidato": f.get("score_autor_candidato", 0.0),
+                    "rank_autor_candidato": f.get("rank_autor_candidato", n_por_autor),
+                    "en_autor_candidato": f.get("en_autor_candidato", 0),
                 }
             )
 
@@ -593,13 +657,14 @@ def armar_dataset_entrenamiento(
     candidatos_df: pd.DataFrame,
     etiquetas_df: pd.DataFrame,
     n_por_fuente: int = 150,
+    n_por_autor: int = 20,
 ) -> tuple[pd.DataFrame, pd.Series, list]:
     """Arma (X, y, group) para `lightgbm.LGBMRanker.fit` a partir de los
     candidatos generados y las etiquetas reales (el "próximo libro" de
     cada usuario en `train_ranker`, columnas `id_lector`/`id_libro`).
 
     Si el libro-etiqueta de un usuario no aparece entre sus candidatos
-    generados (cobertura incompleta de las 3 fuentes), se lo inyecta
+    generados (cobertura incompleta de las 4 fuentes), se lo inyecta
     igual con features "ausente" (mismo sentinel que usa
     `generar_candidatos_con_features`) -- si no, ese usuario no aporta
     ningún positivo y el ranker nunca aprendería de él. `group` es la
@@ -624,6 +689,7 @@ def armar_dataset_entrenamiento(
             fila_faltante["rank_als"] = n_por_fuente
             fila_faltante["rank_popularidad"] = n_por_fuente
             fila_faltante["rank_genero"] = n_por_fuente
+            fila_faltante["rank_autor_candidato"] = n_por_autor
             fila_faltante["dias_desde_ultima_interaccion_usuario"] = SENTINEL_DIAS_DESCONOCIDO
             fila_faltante["id_lector"] = id_lector
             fila_faltante["id_libro"] = libro_objetivo
@@ -715,6 +781,7 @@ def preparar_pipeline(
     lectores: pd.DataFrame,
     seed: int,
     n_por_fuente: int = 150,
+    n_por_autor: int = 20,
     k: int = 20,
 ) -> dict:
     """Arma todo lo que necesita el pipeline del ranker para un seed,
@@ -772,6 +839,7 @@ def preparar_pipeline(
         n_interacciones_por_usuario=n_interacciones_por_usuario,
         features_auxiliares=features_auxiliares,
         n_por_fuente=n_por_fuente,
+        n_por_autor=n_por_autor,
     )
 
     usuarios_ranker = train_ranker["id_lector"].unique().tolist()
@@ -779,7 +847,10 @@ def preparar_pipeline(
         usuarios=usuarios_ranker, libros_leidos=libros_leidos_stage1, **args_candidatos
     )
     X, y, group = armar_dataset_entrenamiento(
-        candidatos_train_ranker, train_ranker[["id_lector", "id_libro"]], n_por_fuente=n_por_fuente
+        candidatos_train_ranker,
+        train_ranker[["id_lector", "id_libro"]],
+        n_por_fuente=n_por_fuente,
+        n_por_autor=n_por_autor,
     )
 
     libros_leidos_hasta_ranker = libros_leidos_por_usuario(train_candidatos_full)
@@ -848,6 +919,7 @@ def evaluar_pipeline(
     lectores: pd.DataFrame,
     seed: int,
     n_por_fuente: int = 150,
+    n_por_autor: int = 20,
     lgbm_params: dict | None = None,
     k: int = 20,
 ) -> dict:
@@ -877,5 +949,7 @@ def evaluar_pipeline(
     `feature_importances_` (ver `scripts/evaluate_ranker.py`) sin
     reentrenar.
     """
-    contexto = preparar_pipeline(interacciones, libros, lectores, seed, n_por_fuente=n_por_fuente, k=k)
+    contexto = preparar_pipeline(
+        interacciones, libros, lectores, seed, n_por_fuente=n_por_fuente, n_por_autor=n_por_autor, k=k
+    )
     return evaluar_con_params(contexto, lgbm_params)

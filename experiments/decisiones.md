@@ -17,19 +17,39 @@ recencia+co-lectura+editorial+resumen+popularidad/frecuencia de
 macro-género+tamaño de catálogo de editorial+señales cruzadas lector↔libro
 → LightGBM, 26 features, hiperparámetros conservadores) es el modelo de
 referencia del proyecto, con **0.04855 confirmado en Kaggle** (récord
-actual). Ideas concretas para la próxima sesión, en orden sugerido:
+actual, aunque ver el hallazgo de abajo sobre cuánto de eso es señal
+real). **Antes de seguir sumando features sueltas, leer
+`experiments/modelo_actual.md`** — tiene el resumen completo del modelo
+y dos secciones de recomendaciones con next steps priorizados y
+concretos:
 
-1. **Seguir sumando features de dominio** — con el tuneo de
-   hiperparámetros descartado tres veces y país/franja de nacimiento
-   descartados (ver resuelto abajo), el margen real sigue estando en
-   features, no en LightGBM. Las señales cruzadas lector↔libro (esta
-   ronda) dieron el mejor resultado de la sesión -- candidatos sin
-   explorar: ver `experiments/features.md`, sección "Qué no está"
-   (isbn/img_src, descartados de entrada por sesgo/sparsity, pero podría
-   valer la pena revisar con otro enfoque).
-2. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
+1. **"Recomendación: ¿cambiar de paradigma?"** — no migrar de
+   ALS+popularidad→LightGBM. El cuello de botella medido es el
+   **generador de candidatos** (recall 0.394 contra un techo de 0.931),
+   no el reranking. Próximo paso #1: agregar una 4ª fuente de
+   candidatos por autor (recall 0.414→0.507, barato). También documenta
+   que los modelos secuenciales (SASRec/GRU4Rec) quedan descartados por
+   la estructura real de los datos (el ground truth ya tiene desempate
+   arbitrario intra-día), y que LightFM/dos torres reemplazarían a ALS,
+   que no es el cuello de botella.
+2. **Hallazgo importante a tener en cuenta con todo lo confirmado hasta
+   ahora**: un test pareado por usuario (mucho más poder estadístico
+   que comparar promedios de 3 seeds) mostró que el efecto de las 3
+   señales cruzadas lector↔libro (la ronda que dio +0.5% en Kaggle) es
+   estadísticamente indistinguible de ruido — y lo mismo aplica en
+   términos relativos a los otros dos "casos límite" de esta sesión
+   (género macro, tamaño de editorial). El criterio usado hasta ahora
+   (desvío entre 3 seeds) no tiene poder suficiente para este rango de
+   efectos. Ver `scripts/comparar_features_pareado.py` para repetir
+   este test con cualquier par de subconjuntos de features.
+3. **"Recomendación: ¿incorporar agentes de IA al flujo de trabajo?"**
+   — dónde sí y dónde no tiene sentido, con next steps concretos
+   (cachear el contexto de `preparar_pipeline` para ablations de ~1 min
+   en vez de ~20-25 min, cambiar el criterio de decisión a un test
+   pareado + población ponderada por la actividad real de Kaggle).
+4. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
-   abajo).
+   abajo); parte de esto se solapa con el punto 2 de arriba.
 
 **Resuelto:** señales cruzadas lector↔libro (`popularidad_genero_lector_candidato`,
 `frecuencia_genero_macro_por_genero_lector`, `edad_lector_al_publicarse`,

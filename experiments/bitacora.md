@@ -1926,3 +1926,50 @@ un margen muy por encima del ruido, y un test pareado que aisló el
 mecanismo real (candidatos, no features) antes de gastar la submission.
 `"ranker"` (29 features, 4 fuentes de candidatos) pasa a ser el modelo
 de referencia del proyecto.
+
+
+## n_por_fuente=150→500: recall sube fuerte, NDCG no acompaña
+
+### Objetivo
+
+Retomar el next step #2 del análisis de generador de candidatos: subir
+`n_por_fuente` de 150 a 500 (cambio de una línea) sobre la base ya
+confirmada de 29 features/4 fuentes (0.05140 en Kaggle).
+
+### Resultado: recall +30%, NDCG +0.7% -- no se justifica
+
+Medido con `scripts/recall_candidatos.py` (seed=42, la herramienta
+pensada justo para decidir esto sin correr el pipeline completo):
+
+| | recall | candidatos/usuario (media) | NDCG@20 | eficiencia (NDCG/recall) |
+|---|---|---|---|---|
+| `n_por_fuente=150` | 0.4450 | 486 | 0.114810 | 0.258 |
+| `n_por_fuente=500` | 0.5784 | 1496 (hasta 1864) | 0.115601 | 0.200 |
+
+El recall subió muchísimo (+30%), pero la eficiencia de ranking bajó
+de 0.258 a 0.20 -- con ~3x más candidatos por usuario, la tarea de
+rankear se vuelve más difícil (más distractores), tal como anticipaba
+el análisis original ("no se va a sostener igual con más candidatos").
+Acá el efecto fue más fuerte de lo esperado: prácticamente cancela toda
+la ganancia de recall, dejando un NDCG casi idéntico (+0.7% en un solo
+seed, dentro del ruido). Además, el costo de cómputo casi se duplicó
+(contexto: 880s vs ~450s; dataset de entrenamiento: ~12M filas vs ~3.9M).
+
+**No se corrió el CV completo de 3 seeds** -- el propio método diseñado
+esta sesión ("medir recall primero, correr el pipeline completo solo
+si vale la pena") funcionó como se esperaba: evitó gastar ~20 minutos
+extra en una idea que ya se veía marginal con un solo seed. Se
+descarta el cambio; `n_por_fuente` se mantiene en 150 en producción
+(`scripts/recall_candidatos.py` revertido a su default).
+
+### Reflexión: no toda ganancia de recall se traduce en NDCG
+
+Este resultado matiza la lectura simple de "más recall = mejor" -- el
+recall es un techo, no una garantía. Agregar candidatos ayuda si son
+candidatos que el ranker puede aprender a distinguir bien del resto
+(como pasó con la fuente de autor: candidatos con una señal fuerte y
+específica -- "ya leíste a este autor"). Simplemente ampliar la
+ventana de las fuentes existentes agrega, en cambio, sobre todo
+*distractores* de las mismas fuentes que ya venían aportando poco en
+ese rango (libros populares/de género que el usuario no leyó por buenas
+razones), sin agregar una señal cualitativamente nueva.

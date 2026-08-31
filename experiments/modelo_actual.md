@@ -357,22 +357,33 @@ para distinguir señal real de ruido en este rango de efectos.
    candidatos y rompían la corrida por memoria). Recall 0.394 → 0.445.
    CV positivo en los 3 seeds, +5.9% en Kaggle -- la segunda mejora más
    grande de todo el proyecto. Ver `decisiones.md` sección 12.
-2. **Subir `n_por_fuente` de 150 a 500** y medir recall del set de
-   candidatos y NDCG por separado (cambio de una línea; sube el costo
-   de cómputo de `preparar_pipeline` de ~300s a ~15-20 min/seed).
-   Combinado con (1): recall medido en 0.620 en el diagnóstico
-   original (antes de agregar el tope de memoria a la fuente de autor
-   -- revalidar el número exacto ahora que esa fuente está topeada).
-3. **Item-item kNN / EASE^R como 5ª fuente de candidatos** (no solo
-   como feature): ya se calcula `cooc = X.T @ X` para `score_coleido`
-   en ~3s; normalizado y usado como generador (top-N vecinos del
-   historial reciente) suele empatar o ganarle a ALS en datos
-   implícitos así de dispersos, y trae candidatos que ALS no trae.
-   Antes que cualquier LightFM/dos torres.
+2. ~~**Subir `n_por_fuente` de 150 a 500**~~ **❌ DESCARTADO (2026-08-31)**:
+   recall del set de candidatos +30% (0.445→0.578), pero la eficiencia
+   de ranking bajó de 0.258 a 0.20 (más candidatos = tarea de rankear
+   más difícil) -- NDCG casi no se movió (+0.7%, un solo seed, dentro
+   del ruido) a casi el doble de costo de cómputo. **Lección: no toda
+   ganancia de recall se traduce en NDCG** -- ayuda si los candidatos
+   nuevos traen señal distinguible (como autor), no solo más volumen de
+   las mismas fuentes. Ver `decisiones.md` sección 12 y `bitacora.md`.
+3. **Contenido en vez de más popularidad/colaborativo**: las 4 fuentes
+   actuales están todas sesgadas hacia libros populares/bien conectados
+   en mayor o menor medida -- incluso ALS, pese a ser "personalizado",
+   modela mal los libros con pocas interacciones en una matriz 99.91%
+   dispersa. Candidato sin probar: usar `sim_resumen_historial`
+   (similitud TF-IDF de resúmenes, hoy solo *feature*) como **fuente**
+   de candidatos -- análogo a lo que pasó con autor, y la única idea en
+   danza que no depende en absoluto de cuántos otros lectores leyeron
+   un libro, solo de su contenido. Complemento/alternativa: item-item
+   kNN como 5ª fuente (`cooc`, ya calculado para `score_coleido`) --
+   sigue siendo colaborativo (mismo sesgo hacia libros con suficientes
+   interacciones, aunque menor que popularidad pura), pero trae
+   candidatos que ALS no trae.
 4. **Decidir sobre etapa 1 con recall del set de candidatos, no con
    NDCG del pipeline completo** — se mide en 17-76s por variante (vs.
-   ~300s de contexto completo), sin gastar submissions. Solo cuando el
-   recall sube vale la pena correr el pipeline completo.
+   ~300s de contexto completo), sin gastar submissions. Pero medir
+   siempre los dos números (recall Y NDCG en un seed) -- el caso de
+   `n_por_fuente=500` mostró que el recall puede subir mucho sin que el
+   NDCG lo acompañe.
 5. **Features ponderadas por recencia** (última fecha / últimas N
    interacciones) de las señales que hoy poolean todo el historial
    parejo (autor, editorial, co-lectura, `sim_resumen_historial`) — la

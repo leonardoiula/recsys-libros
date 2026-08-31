@@ -24,22 +24,46 @@ para la próxima sesión, en orden sugerido (ver
 1. **Seguir atacando el generador de candidatos, no el reranking** —
    confirmado con evidencia real esta sesión: la 4ª fuente (autor) dio
    la mejora más grande (+5.9% en Kaggle) y el test pareado mostró que
-   vino de los candidatos, no de features nuevas. Próximos pasos #2 y
-   #3 de `modelo_actual.md`, sin probar todavía: subir `n_por_fuente`
-   de 150 a 500 (recall medido 0.559 en el diagnóstico original, cambio
-   de una línea) e item-item kNN como **5ª fuente** de candidatos (no
-   solo como feature -- ya se calcula `cooc` para `score_coleido`).
-2. **Usar `scripts/recall_candidatos.py` para decidir sobre etapa 1**
+   vino de los candidatos, no de features nuevas. Pero **no todo lo que
+   sube el recall ayuda**: subir `n_por_fuente` a 500 también subió el
+   recall (+30%) y el NDCG no acompañó (ver resuelto abajo) -- la
+   ganancia depende de si los candidatos nuevos traen una señal
+   *distinguible*, no solo más volumen de las mismas fuentes.
+2. **Contenido en vez de más popularidad/colaborativo**: las 4 fuentes
+   actuales (ALS, popularidad global, popularidad por género, autor)
+   están todas sesgadas hacia libros populares/bien conectados en mayor
+   o menor medida (ALS también, pese a ser "personalizado" -- los
+   libros con pocas interacciones tienen un embedding mal estimado en
+   una matriz 99.91% dispersa). Candidato sin probar: usar
+   `sim_resumen_historial` (similitud TF-IDF de resúmenes, hoy solo
+   *feature*) como **fuente** de candidatos -- análogo a lo que pasó
+   con autor, y la única de las ideas en danza que no depende en
+   absoluto de qué tan popular es un libro entre otros lectores, sino
+   del contenido del libro en sí. Alternativa/complemento: item-item
+   kNN como 5ª fuente (`cooc`, ya calculado para `score_coleido`) --
+   sigue siendo colaborativo, con el mismo sesgo hacia libros con
+   suficientes interacciones, aunque menor que popularidad pura.
+3. **Usar `scripts/recall_candidatos.py` para decidir sobre etapa 1**
    (barato, ~5-8 min) **antes** de correr el CV completo (~20-25 min) —
-   solo si el recall sube vale la pena medir NDCG.
-3. **Usar `scripts/comparar_features_pareado.py` como criterio
+   pero medir siempre los dos números (recall Y NDCG en un seed), no
+   solo recall: subir `n_por_fuente` mostró que recall puede subir
+   mucho sin que el NDCG lo acompañe.
+4. **Usar `scripts/comparar_features_pareado.py` como criterio
    principal** para decidir si algo nuevo es señal real, no el desvío
    entre 3 seeds — confirmado esta sesión que tiene ~5x más poder
    estadístico, y que aisló correctamente que la mejora de la 4ª fuente
    viene de los candidatos, no de las features de tracking.
-4. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
+5. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
    abajo).
+
+**Resuelto:** subir `n_por_fuente` de 150 a 500 -- recall del set de
+candidatos +30% (0.445→0.578), pero la eficiencia de ranking bajó
+(0.258→0.20) y el NDCG casi no se movió (+0.7%, un solo seed, dentro
+del ruido), a casi el doble de costo de cómputo. Descartado sin correr
+el CV completo (el propio método "recall primero" evitó gastar ese
+tiempo). Ver `bitacora.md`, sección "n_por_fuente=150→500: recall sube
+fuerte, NDCG no acompaña".
 
 **Resuelto:** 4ª fuente de candidatos por autor ya leído (26→29
 features) -- CV 3 seeds positivo en los 3, +7.1% en promedio, 5-10x más
@@ -236,6 +260,7 @@ catálogo de editorial" para las dos rondas más recientes.
 | Agregar una 4ª fuente de candidatos (no solo feature) para libros de autores ya leídos, en vez de seguir sumando features sobre las 3 fuentes existentes | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | Motivada por el análisis de generador de candidatos (`modelo_actual.md`): 28.6% de los targets son de un autor ya leído. Rankeada por popularidad global (no un score bayesiano por autor). CV 3 seeds: 0.117495±0.002562 vs 0.109735±0.003719 de las 26 features -- positivo en los 3 seeds, 5-10x más grande que cualquier resultado previo de la sesión. Recall del set de candidatos: 0.394→0.445. **0.05140 en Kaggle, +5.9% sobre el récord anterior** (0.04855) -- segunda mejora más grande del proyecto (detrás de +15.3% de autor/año/género/recencia) y la mejor validada estadísticamente. `"ranker"` (29 features, 4 fuentes) pasa a ser el modelo de referencia. Ver `bitacora.md`, sección "4ª fuente de candidatos: libros de autores ya leídos". |
 | Topear el total de candidatos de esta fuente a `n_por_fuente` (150), priorizando los autores más leídos | ✅ **resuelto -- problema real de memoria encontrado en la verificación** | Sin tope, usuarios con cientos de autores leídos llegaban a 5.304 candidatos de esta fuente sola -- una corrida completa se cortó (`killed`, sin traceback). Con el tope: recall baja levemente (0.473→0.445) pero sigue muy por encima del original, y el pipeline corre de forma estable. |
 | `score_autor_candidato`/`rank_autor_candidato`/`en_autor_candidato` (3 features nuevas, 26→29) | 🔄 **mantenidas, pero test pareado dice que no aportan por sí solas** | Comparando el mismo pool de candidatos con vs. sin estas 3 features (test pareado, seed=42): diferencia +0.0004, 0.44 sigma, no significativa -- el ranker ya aprovechaba casi toda la mejora con features existentes (`en_autor_leido`, `n_libros_autor_leidos`, etc.). La mejora real viene de los candidatos, no de las features. Se mantienen igual (no restan, documentan la fuente explícitamente). |
+| Subir `n_por_fuente` de 150 a 500 (next step #2 del análisis de paradigma) | ❌ **descartado -- recall sube, NDCG no acompaña** | Recall del set de candidatos: 0.445→0.578 (+30%), pero la eficiencia de ranking (NDCG/recall) bajó de 0.258 a 0.20 -- con ~3x más candidatos por usuario la tarea de rankear se vuelve más difícil, casi cancelando la ganancia. NDCG@20 (un solo seed, alcanza para descartar): 0.114810→0.115601 (+0.7%, ruido). Costo de cómputo casi 2x. No se corrió el CV completo de 3 seeds -- el método "recall primero, CV completo solo si vale la pena" (diseñado esta sesión) evitó gastar ese tiempo. `n_por_fuente` se mantiene en 150. Ver `bitacora.md`, sección "n_por_fuente=150→500: recall sube fuerte, NDCG no acompaña". |
 
 ---
 

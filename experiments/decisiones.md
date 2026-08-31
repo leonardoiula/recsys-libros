@@ -15,41 +15,41 @@ la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 Estado actual: `"ranker"` (v3, ALS+género+popularidad+autor/año/diversidad/
 recencia+co-lectura+editorial+resumen+popularidad/frecuencia de
 macro-género+tamaño de catálogo de editorial+señales cruzadas lector↔libro
-→ LightGBM, 26 features, hiperparámetros conservadores) es el modelo de
-referencia del proyecto, con **0.04855 confirmado en Kaggle** (récord
-actual, aunque ver el hallazgo de abajo sobre cuánto de eso es señal
-real). **Antes de seguir sumando features sueltas, leer
-`experiments/modelo_actual.md`** — tiene el resumen completo del modelo
-y dos secciones de recomendaciones con next steps priorizados y
-concretos:
+**+4ª fuente de candidatos por autor ya leído** → LightGBM, 29 features,
+hiperparámetros conservadores) es el modelo de referencia del proyecto,
+con **0.05140 confirmado en Kaggle** (récord actual). Ideas concretas
+para la próxima sesión, en orden sugerido (ver
+`experiments/modelo_actual.md` para el detalle completo):
 
-1. **"Recomendación: ¿cambiar de paradigma?"** — no migrar de
-   ALS+popularidad→LightGBM. El cuello de botella medido es el
-   **generador de candidatos** (recall 0.394 contra un techo de 0.931),
-   no el reranking. Próximo paso #1: agregar una 4ª fuente de
-   candidatos por autor (recall 0.414→0.507, barato). También documenta
-   que los modelos secuenciales (SASRec/GRU4Rec) quedan descartados por
-   la estructura real de los datos (el ground truth ya tiene desempate
-   arbitrario intra-día), y que LightFM/dos torres reemplazarían a ALS,
-   que no es el cuello de botella.
-2. **Hallazgo importante a tener en cuenta con todo lo confirmado hasta
-   ahora**: un test pareado por usuario (mucho más poder estadístico
-   que comparar promedios de 3 seeds) mostró que el efecto de las 3
-   señales cruzadas lector↔libro (la ronda que dio +0.5% en Kaggle) es
-   estadísticamente indistinguible de ruido — y lo mismo aplica en
-   términos relativos a los otros dos "casos límite" de esta sesión
-   (género macro, tamaño de editorial). El criterio usado hasta ahora
-   (desvío entre 3 seeds) no tiene poder suficiente para este rango de
-   efectos. Ver `scripts/comparar_features_pareado.py` para repetir
-   este test con cualquier par de subconjuntos de features.
-3. **"Recomendación: ¿incorporar agentes de IA al flujo de trabajo?"**
-   — dónde sí y dónde no tiene sentido, con next steps concretos
-   (cachear el contexto de `preparar_pipeline` para ablations de ~1 min
-   en vez de ~20-25 min, cambiar el criterio de decisión a un test
-   pareado + población ponderada por la actividad real de Kaggle).
+1. **Seguir atacando el generador de candidatos, no el reranking** —
+   confirmado con evidencia real esta sesión: la 4ª fuente (autor) dio
+   la mejora más grande (+5.9% en Kaggle) y el test pareado mostró que
+   vino de los candidatos, no de features nuevas. Próximos pasos #2 y
+   #3 de `modelo_actual.md`, sin probar todavía: subir `n_por_fuente`
+   de 150 a 500 (recall medido 0.559 en el diagnóstico original, cambio
+   de una línea) e item-item kNN como **5ª fuente** de candidatos (no
+   solo como feature -- ya se calcula `cooc` para `score_coleido`).
+2. **Usar `scripts/recall_candidatos.py` para decidir sobre etapa 1**
+   (barato, ~5-8 min) **antes** de correr el CV completo (~20-25 min) —
+   solo si el recall sube vale la pena medir NDCG.
+3. **Usar `scripts/comparar_features_pareado.py` como criterio
+   principal** para decidir si algo nuevo es señal real, no el desvío
+   entre 3 seeds — confirmado esta sesión que tiene ~5x más poder
+   estadístico, y que aisló correctamente que la mejora de la 4ª fuente
+   viene de los candidatos, no de las features de tracking.
 4. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
-   abajo); parte de esto se solapa con el punto 2 de arriba.
+   abajo).
+
+**Resuelto:** 4ª fuente de candidatos por autor ya leído (26→29
+features) -- CV 3 seeds positivo en los 3, +7.1% en promedio, 5-10x más
+grande que cualquier resultado previo de la sesión. Test pareado
+confirmó que la mejora viene de los candidatos extra, no de las 3
+features de tracking (0.44 sigma, no significativa por sí solas).
+**Confirmado en Kaggle: 0.05140, nuevo récord del proyecto** (+5.9%
+sobre 0.04855) -- segunda mejora más grande de todo el proyecto, y la
+mejor validada estadísticamente. Ver sección 12 y `bitacora.md`, sección
+"4ª fuente de candidatos: libros de autores ya leídos".
 
 **Resuelto:** señales cruzadas lector↔libro (`popularidad_genero_lector_candidato`,
 `frecuencia_genero_macro_por_genero_lector`, `edad_lector_al_publicarse`,
@@ -233,7 +233,7 @@ catálogo de editorial" para las dos rondas más recientes.
 
 | Decisión | Estado sugerido | Detalle |
 |---|---|---|
-| Agregar una 4ª fuente de candidatos (no solo feature) para libros de autores ya leídos, en vez de seguir sumando features sobre las 3 fuentes existentes | ✅ **confirmado — la mejora más grande de la sesión** | Motivada por el análisis de generador de candidatos (`modelo_actual.md`): 28.6% de los targets son de un autor ya leído. Rankeada por popularidad global (no un score bayesiano por autor). CV 3 seeds: 0.117495±0.002562 vs 0.109735±0.003719 de las 26 features -- positivo en los 3 seeds, 5-10x más grande que cualquier resultado previo de la sesión. Recall del set de candidatos: 0.394→0.445. Ver `bitacora.md`, sección "4ª fuente de candidatos: libros de autores ya leídos". |
+| Agregar una 4ª fuente de candidatos (no solo feature) para libros de autores ya leídos, en vez de seguir sumando features sobre las 3 fuentes existentes | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | Motivada por el análisis de generador de candidatos (`modelo_actual.md`): 28.6% de los targets son de un autor ya leído. Rankeada por popularidad global (no un score bayesiano por autor). CV 3 seeds: 0.117495±0.002562 vs 0.109735±0.003719 de las 26 features -- positivo en los 3 seeds, 5-10x más grande que cualquier resultado previo de la sesión. Recall del set de candidatos: 0.394→0.445. **0.05140 en Kaggle, +5.9% sobre el récord anterior** (0.04855) -- segunda mejora más grande del proyecto (detrás de +15.3% de autor/año/género/recencia) y la mejor validada estadísticamente. `"ranker"` (29 features, 4 fuentes) pasa a ser el modelo de referencia. Ver `bitacora.md`, sección "4ª fuente de candidatos: libros de autores ya leídos". |
 | Topear el total de candidatos de esta fuente a `n_por_fuente` (150), priorizando los autores más leídos | ✅ **resuelto -- problema real de memoria encontrado en la verificación** | Sin tope, usuarios con cientos de autores leídos llegaban a 5.304 candidatos de esta fuente sola -- una corrida completa se cortó (`killed`, sin traceback). Con el tope: recall baja levemente (0.473→0.445) pero sigue muy por encima del original, y el pipeline corre de forma estable. |
 | `score_autor_candidato`/`rank_autor_candidato`/`en_autor_candidato` (3 features nuevas, 26→29) | 🔄 **mantenidas, pero test pareado dice que no aportan por sí solas** | Comparando el mismo pool de candidatos con vs. sin estas 3 features (test pareado, seed=42): diferencia +0.0004, 0.44 sigma, no significativa -- el ranker ya aprovechaba casi toda la mejora con features existentes (`en_autor_leido`, `n_libros_autor_leidos`, etc.). La mejora real viene de los candidatos, no de las features. Se mantienen igual (no restan, documentan la fuente explícitamente). |
 

@@ -1914,8 +1914,15 @@ candidatos, no en agregar más features al reranking -- exactamente lo
 opuesto al patrón de retornos decrecientes que se venía viendo con
 features puramente informativas (país, franja, señales cruzadas).
 
-### Decisión
+### Confirmación en Kaggle
 
-Se generó la submission (`ranker_...4a-fuente-autor...csv`) para
-confirmar en Kaggle -- ver próxima entrada de `log.csv` para el
-resultado real.
+Se generó la submission (`ranker_...4a-fuente-autor...csv`) y se
+confirmó: **0.05140 en Kaggle -- nuevo récord del proyecto, +5.9% sobre
+el récord anterior** (0.04855). Es la segunda mejora más grande de todo
+el proyecto (detrás de +15.3% de autor/año/género/recencia), y la
+**mejor validada estadísticamente de las dos**: acá hubo un diagnóstico
+de recall aparte (no solo NDCG ruidoso), CV positivo en los 3 seeds por
+un margen muy por encima del ruido, y un test pareado que aisló el
+mecanismo real (candidatos, no features) antes de gastar la submission.
+`"ranker"` (29 features, 4 fuentes de candidatos) pasa a ser el modelo
+de referencia del proyecto.

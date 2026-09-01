@@ -1,4 +1,4 @@
-# Modelo actual: ranker de dos etapas (v3, 32 features)
+# Modelo actual: ranker de dos etapas (v3, 35 features)
 
 Resumen autocontenido del modelo de referencia del proyecto, pensado
 para poder evaluarlo "desde afuera" (¿vale la pena seguir con LightGBM,
@@ -7,27 +7,28 @@ tener que reconstruir el contexto leyendo todo `bitacora.md`. No repite
 el *por qué* de cada decisión — eso está en `decisiones.md`/`bitacora.md`
 — acá solo describe *qué* es el modelo tal como está hoy en el código.
 
-Récord confirmado en Kaggle: **0.05181** (NDCG@20, con 32 features/5
-fuentes de candidatos, 2026-08-31). Código: `src/recsys/models/ranker.py`.
-Ojo: el salto de esta última ronda en Kaggle (+0.8%, +0.00041 absoluto)
-es del orden del error estándar de una sola submission (~0.0065) --
-la evidencia local es más sólida (CV positivo en los 3 seeds, +2.6%,
-test pareado que confirma el mecanismo) que lo que una sola muestra de
-Kaggle puede confirmar por sí sola. Se adopta igual porque es la mejor
-config confirmada hasta ahora y la evidencia local es fuerte, no
-porque el número de Kaggle por sí solo sea concluyente.
+Récord confirmado en Kaggle: **0.05262** (NDCG@20, con 35 features/6
+fuentes de candidatos, 2026-09-01). Código: `src/recsys/models/ranker.py`.
+La ronda más reciente (6ª fuente, co-lectura ítem-ítem/kNN) fue la
+mejora local más chica de las tres fuentes agregadas esta sesión
+(+1.19% local, CV positivo en los 3 seeds pero sin superar el desvío
+entre seeds) y sin embargo dio el salto de Kaggle más grande en
+términos relativos de las tres (+1.56%, +0.00081 absoluto) -- al revés
+de la ronda anterior (resumen), donde Kaggle subestimó una mejora local
+más sólida. Confirma que el ruido de una sola submission pega en las
+dos direcciones, no solo subestimando mejoras reales.
 
 ## Idea básica: candidatos + reranking
 
 No es un solo modelo, son dos etapas:
 
-1. **Generación de candidatos**: cinco fuentes separadas (un modelo de
+1. **Generación de candidatos**: seis fuentes separadas (un modelo de
    filtrado colaborativo + dos baselines de popularidad + libros de
-   autores ya leídos + similitud de resumen) proponen, cada una, hasta
-   150 libros por usuario (`n_por_fuente=150` en el código). Se unen
-   sin duplicar.
+   autores ya leídos + similitud de resumen + co-lectura ítem-ítem)
+   proponen, cada una, hasta 150 libros por usuario (`n_por_fuente=150`
+   en el código). Se unen sin duplicar.
 2. **Reranking**: un `LGBMRanker` (LightGBM, gradient boosted trees)
-   toma la unión de esos candidatos, cada uno con 32 features
+   toma la unión de esos candidatos, cada uno con 35 features
    (incluyendo el score/ranking que le dio cada fuente de la etapa 1),
    y aprende a reordenarlos mejor de lo que cualquier fuente individual
    hace sola.
@@ -106,8 +107,22 @@ populares (mediana 21 vs. 231 interacciones en todo el dataset) que
 los que sí capturan. Procesada en lotes (`TAMANO_LOTE_RESUMEN=500`)
 para no materializar un producto denso usuarios×libros de una sola vez.
 
-**Total de candidatos por usuario**: unión de las 5 fuentes (media
-~620, hasta ~730 para usuarios pesados) — cada candidato queda marcado
+### Co-lectura ítem-ítem / kNN (6ª fuente, agregada 2026-09-01)
+
+Para cada usuario, el top-`n_por_fuente` (150) de libros de **todo el
+catálogo indexado por ALS** con mayor score de co-lectura contra su
+historial -- reusa el mismo cálculo (`co_scores_por_usuario`, batch
+`X_batch @ cooc` sobre la matriz de co-ocurrencia ítem-ítem) que ya
+arma la feature `score_coleido`, que hasta esta ronda solo puntuaba
+candidatos que ya habían llegado de otra fuente. Sigue siendo una señal
+colaborativa (mismo sesgo hacia libros con suficientes interacciones
+que ALS/popularidad, aunque más suave), pero trae candidatos que ALS no
+trae -- dos libros pueden co-leerse mucho sin que ALS los recomiende al
+mismo usuario. No requirió ningún matmul nuevo, solo tomar el
+top-`n_por_fuente` de un cálculo que ya existía.
+
+**Total de candidatos por usuario**: unión de las 6 fuentes (media
+~695, hasta ~820 para usuarios pesados) — cada candidato queda marcado
 con `en_<fuente>` (1/0) y su `score_<fuente>`/`rank_<fuente>` si esa
 fuente lo propuso, `0`/sentinel si no.
 
@@ -166,7 +181,7 @@ memoriza en vez de aprender a combinar señales). Por eso:
 - `test_final`: hold-out aislado para medir NDCG@20 del pipeline
   completo (solo en evaluación local, no existe en producción).
 
-## Features (32 en total)
+## Features (35 en total)
 
 Catálogo completo con el detalle de cada una en `experiments/features.md`.
 Resumen agrupado:
@@ -203,12 +218,17 @@ Resumen agrupado:
   género literario), `frecuencia_genero_macro_por_genero_lector`
   (afinidad de *cohorte* por macro-género, no historial individual),
   `edad_lector_al_publicarse` (`anio_edicion − nacimiento`).
-- **Candidatos por similitud de resumen** (3, ronda más reciente):
+- **Candidatos por similitud de resumen** (3):
   `score_resumen_candidato`, `rank_resumen_candidato`,
   `en_resumen_candidato` -- distintas de `sim_resumen_historial`, que
   nunca propone candidatos nuevos por sí sola. Mismo patrón que autor:
   test pareado da 0.67 sigma, no significativo por sí solas -- la
   mejora viene de los candidatos.
+- **Candidatos por co-lectura ítem-ítem** (3, ronda más reciente):
+  `score_coleido_candidato`, `rank_coleido_candidato`,
+  `en_coleido_candidato` -- distintas de `score_coleido`, que sigue
+  puntuando cualquier candidato sin importar su fuente. No se corrió un
+  test pareado dedicado esta ronda para aislar si aportan por sí solas.
 
 Todas se calculan **solo con `train_candidatos`**, salvo la metadata
 estática del libro (autor/editorial/año/resumen, que no depende del
@@ -221,13 +241,17 @@ split).
 | ALS solo | 0.094406 ± 0.001359 | 0.03864 (mejor config ALS confirmada) |
 | Ranker (26 features, 3 fuentes de candidatos) | 0.109735 ± 0.003719 | 0.04855 |
 | Ranker (29 features, 4 fuentes -- +autor ya leído) | 0.117495 ± 0.002562 | **0.05140 (récord actual)** |
-| Ranker (32 features, 5 fuentes -- +similitud de resumen) | 0.120547 ± 0.002674 | **0.05181 (récord actual)** |
+| Ranker (32 features, 5 fuentes -- +similitud de resumen) | 0.120547 ± 0.002674 | 0.05181 |
+| Ranker (35 features, 6 fuentes -- +co-lectura ítem-ítem/kNN) | 0.121983 ± 0.002949 | **0.05262 (récord actual)** |
 
 La 4ª fuente (autor) dio la mejora más grande y mejor validada de la
 sesión: recall del set de candidatos 0.394→0.445 (medido con
 `scripts/recall_candidatos.py`), CV positivo en los 3 seeds por un
 margen 5-10x mayor que cualquier resultado anterior, y +5.9% real en
-Kaggle -- ver `decisiones.md` sección 12 y `bitacora.md`.
+Kaggle -- ver `decisiones.md` sección 12 y `bitacora.md`. La 6ª fuente
+(co-lectura ítem-ítem) fue la mejora local más chica de las tres
+agregadas en esta ronda de sesiones (+1.19%), pero dio el salto de
+Kaggle relativo más grande (+1.56%) -- ver `decisiones.md` sección 14.
 
 Ojo: el número local **sobreestima bastante** el de Kaggle en términos
 absolutos (investigado en `bitacora.md` — principalmente varianza de
@@ -404,24 +428,30 @@ para distinguir señal real de ruido en este rango de efectos.
    récord anterior (0.05140) -- salto absoluto del orden del ruido de
    una submission, pero la evidencia local es sólida. Ver
    `decisiones.md` sección 13 y `bitacora.md`.
-   Complemento/alternativa que queda sin probar: item-item kNN como 6ª
-   fuente (`cooc`, ya calculado para `score_coleido`) -- sigue siendo
-   colaborativo (mismo sesgo hacia libros con suficientes interacciones,
-   aunque menor que popularidad pura), pero trae candidatos que ALS no
-   trae.
-4. **Decidir sobre etapa 1 con recall del set de candidatos, no con
+4. ~~**Item-item kNN como 6ª fuente** (`cooc`, ya calculado para
+   `score_coleido`)~~ **✅ HECHO Y CONFIRMADO EN KAGGLE (2026-09-01)**:
+   se tomó el top-`n_por_fuente` del mismo cálculo `co_scores_por_usuario`
+   que ya usaba `score_coleido` -- recall 0.456→0.512 (+12.2%), pero la
+   eficiencia de ranking bajó de 0.258 a 0.232 (versión más leve del
+   síntoma de `n_por_fuente=500`, sin cancelar la mejora). CV positivo
+   en los 3 seeds (+1.19% promedio, la mejora local más chica de las
+   tres fuentes de esta sesión). **0.05262 en Kaggle, +1.56%** sobre el
+   récord anterior (0.05181) -- el salto de Kaggle fue mayor que la
+   mejora local, al revés de la ronda de resumen. Ver `decisiones.md`
+   sección 14 y `bitacora.md`.
+5. **Decidir sobre etapa 1 con recall del set de candidatos, no con
    NDCG del pipeline completo** — se mide en 17-76s por variante (vs.
    ~300s de contexto completo), sin gastar submissions. Pero medir
    siempre los dos números (recall Y NDCG en un seed) -- el caso de
    `n_por_fuente=500` mostró que el recall puede subir mucho sin que el
    NDCG lo acompañe.
-5. **Features ponderadas por recencia** (última fecha / últimas N
+6. **Features ponderadas por recencia** (última fecha / últimas N
    interacciones) de las señales que hoy poolean todo el historial
    parejo (autor, editorial, co-lectura, `sim_resumen_historial`) — la
    forma correcta de aprovechar la señal temporal en estos datos, dado
-   que un modelo secuencial no aplica. Va *después* de (1)-(3): es un
-   factor de eficiencia de ranking, no de recall.
-6. **Revisar el refit de etapa 1 en `submit.py`**: hoy fitea ALS/
+   que un modelo secuencial no aplica. Va *después* de las fuentes de
+   candidatos: es un factor de eficiencia de ranking, no de recall.
+7. **Revisar el refit de etapa 1 en `submit.py`**: hoy fitea ALS/
    popularidad sobre `train_candidatos` (sin la interacción más
    reciente de cada usuario, ~10.673 interacciones, la parte más
    informativa) para generar los candidatos finales de producción. La
@@ -429,9 +459,18 @@ para distinguir señal real de ruido en este rango de efectos.
    de entrenar el ranker sobre el split — testeable localmente sin
    leakage (comparar señales fitteadas en `train_candidatos` vs.
    `train_candidatos_full`, evaluando siempre en `test_final`).
-7. **No volver a tunear LightGBM.** 3/3 intentos fallidos, y ahora se
+8. **No volver a tunear LightGBM.** 3/3 intentos fallidos, y ahora se
    entiende por qué: el efecto que se buscaba (~0.0013) está por
    debajo del error estándar no pareado (0.0038) con el que se medía.
+9. **La señal del generador de candidatos se está agotando, no
+   apagando**: las tres fuentes agregadas en esta sesión mostraron
+   recall creciente pero eficiencia de ranking decreciente (autor:
+   0.394→0.445 recall, eficiencia ~0.27→0.258; resumen: 0.445→0.456,
+   eficiencia ~0.258; kNN: 0.456→0.512, eficiencia 0.258→0.232) — vale
+   la pena adaptar `scripts/comparar_features_pareado.py` (o un script
+   nuevo) para poder comparar dos *generadores de candidatos* completos
+   (no solo subconjuntos de `FEATURES` sobre el mismo contexto) antes
+   de seguir sumando fuentes nuevas a ciegas.
 
 ---
 

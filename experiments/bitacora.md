@@ -2057,3 +2057,95 @@ que el instrumento de medición local (CV de 3 seeds + test pareado).
 
 `"ranker"` (32 features, 5 fuentes de candidatos) pasa a ser el modelo
 de referencia del proyecto.
+
+## 6ª fuente de candidatos: co-lectura ítem-ítem (kNN) — nuevo récord, límite pero consistente
+
+### Objetivo
+
+Siguiente punto de la agenda dejada al cierre de la sesión anterior en
+`decisiones.md`: `score_coleido` (matriz de co-ocurrencia ítem-ítem,
+`cooc = X.T @ X`) hoy solo puntúa candidatos que ya trajo otra fuente
+-- nunca propone candidatos nuevos por sí sola. Sigue siendo una señal
+colaborativa (mismo sesgo hacia libros con suficientes interacciones
+que ALS/popularidad, aunque más suave), pero puede traer libros que ALS
+no trae: dos libros pueden co-leerse mucho sin que ALS los recomiende
+al mismo usuario.
+
+### Implementación
+
+El batch `co_scores_por_usuario` (`X_batch @ cooc`) que ya arma
+`score_coleido` contiene, para cada usuario, el score de co-lectura
+contra **todo el catálogo indexado por ALS** -- no hizo falta ningún
+matmul nuevo. Se agregó, en `generar_candidatos_con_features`, tomar el
+top-`n_por_fuente` de ese mismo cálculo (`heapq.nlargest`, para no
+ordenar el dict completo de un usuario con mucho historial) como
+candidatos nuevos. 3 features de tracking (`score_coleido_candidato`/
+`rank_coleido_candidato`/`en_coleido_candidato`, 32→35), mismo patrón y
+mismos nombres que autor/resumen -- distintas de `score_coleido`, que
+sigue puntuando cualquier candidato sin importar su fuente.
+
+### Resultado: recall sube fuerte, pero con la misma advertencia de `n_por_fuente=500`
+
+| | recall | candidatos/usuario | NDCG@20 (seed=42) | eficiencia (NDCG/recall) |
+|---|---|---|---|---|
+| 5 fuentes (sin kNN) | 0.4559 | 620.5 | 0.117503 | 0.258 |
+| 6 fuentes (+kNN) | 0.5115 | 694.9 | 0.118625 | 0.232 |
+
+Recall +12.2%, pero la eficiencia de ranking baja 10% (menos que el
+-22% de `n_por_fuente=500`, que sí se descartó sin correr el CV
+completo) -- señal de que parte del recall extra no trae información
+distinguible para el ranker, aunque no tanto como en aquel caso. Al no
+ser un "casi no se movió" tan limpio como `n_por_fuente=500`, se decidió
+correr igual el CV completo en vez de descartar solo con este número.
+
+### CV 3 seeds: reproducido el baseline en la MISMA sesión para comparar en igualdad de condiciones
+
+A diferencia de rondas anteriores (donde el baseline salía de una
+corrida de una sesión previa), acá se reprodujo el baseline de 5
+fuentes con `git stash` **en esta misma sesión**, mismo entorno, antes
+de comparar semilla por semilla -- para no depender de que los números
+de `bitacora.md` fueran exactamente reproducibles entre sesiones (lo
+son: seed=42 dio 0.117503, idéntico al ya logueado, confirmando que el
+split es 100% determinístico entre sesiones; solo el entrenamiento de
+LightGBM tiene un ruido de punto flotante mínimo, ~0.0001-0.0006, ver
+`comparar_features_pareado.py`).
+
+Nota operativa: las primeras dos corridas de este baseline terminaron
+`killed` a mitad de camino (una a los ~600s, justo después de terminar
+seed=42; otra casi al arrancar) -- mismo síntoma que el episodio de la
+5ª fuente en que la PC entró en reposo durante una corrida larga. Se
+reintentó con la PC despierta y terminó sin problemas.
+
+| seed | 5 fuentes (baseline) | 6 fuentes (+kNN) | diferencia |
+|---|---|---|---|
+| 42 | 0.117503 | 0.118625 | +0.001122 (+0.95%) |
+| 7 | 0.122518 | 0.124146 | +0.001628 (+1.33%) |
+| 123 | 0.121619 | 0.123179 | +0.001560 (+1.28%) |
+| **media** | **0.120547 ± 0.002674** | **0.121983 ± 0.002949** | **+0.001436 (+1.19%)** |
+
+**Positivo en los 3 seeds**, con magnitudes parecidas entre sí
+(0.0011-0.0016, sin un seed que domine ni ninguno negativo) -- cumple
+el criterio de "positivo en los 3 seeds individualmente" que el
+usuario confirmó esta sesión como suficiente para justificar una
+submission, aunque la mejora promedio (+1.19%) sigue sin superar el
+desvío entre seeds (0.0029). Es la mejora local más chica de todas las
+que se confirmaron así en esta sesión (género macro +1.80%, editorial
++0.92%, señales cruzadas ~0%/casi positivo) -- pero a diferencia de
+señales cruzadas (mixto, un seed casi negativo) o país/franja (negativos
+en 2 de 3), acá los tres seeds apuntan consistentemente en la misma
+dirección y con magnitud similar.
+
+### Confirmación en Kaggle: nuevo récord
+
+Se generó la submission (`ranker_20260901-173000_6a-fuente-coleido-knn.csv`)
+y se confirmó: **0.05262 en Kaggle -- nuevo récord del proyecto**
+(+1.56% sobre 0.05181, +0.00081 absoluto). El salto absoluto es
+mayor al de la ronda anterior (+0.00041 con resumen) pese a que la
+mejora local fue más chica -- otro recordatorio de que la relación
+entre el tamaño del efecto local y el salto puntual en una sola
+submission de Kaggle es ruidosa en las dos direcciones, no solo
+subestimando mejoras reales (como pasó con resumen) sino también
+sobreestimándolas puntualmente.
+
+`"ranker"` (35 features, 6 fuentes de candidatos) pasa a ser el modelo
+de referencia del proyecto.

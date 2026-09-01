@@ -1,9 +1,9 @@
 """Ranker de dos etapas: candidatos de ALS + popularidad por género +
-popularidad global + libros de autores ya leídos, reordenados por un
-`LGBMRanker` (LightGBM, objetivo `lambdarank`) entrenado para combinar
-esas cuatro señales mejor de lo que cada una hace sola, más features
-auxiliares de autor/editorial/año de edición/diversidad de género/
-recencia/co-lectura ítem-ítem/similitud de resumen/popularidad y
+popularidad global + libros de autores ya leídos + similitud de resumen,
+reordenados por un `LGBMRanker` (LightGBM, objetivo `lambdarank`)
+entrenado para combinar esas cinco señales mejor de lo que cada una
+hace sola, más features auxiliares de autor/editorial/año de edición/
+diversidad de género/recencia/co-lectura ítem-ítem/popularidad y
 frecuencia de macro-género/señales cruzadas lector↔libro (género
 declarado del lector, edad del lector al publicarse el libro -- ver
 `calcular_features_auxiliares`).
@@ -77,6 +77,9 @@ FEATURES = [
     "score_autor_candidato",
     "rank_autor_candidato",
     "en_autor_candidato",
+    "score_resumen_candidato",
+    "rank_resumen_candidato",
+    "en_resumen_candidato",
 ]
 
 N_MAX_FEATURES_TFIDF = 20000
@@ -84,6 +87,16 @@ MIN_DF_TFIDF = 2
 MAX_DF_TFIDF = 0.8
 
 SENTINEL_DIAS_DESCONOCIDO = 99999
+
+TAMANO_LOTE_RESUMEN = 500
+"""Usuarios procesados por lote en `_generar_candidatos_por_resumen`.
+Un producto denso `usuarios x libros_con_resumen` (~48.320 libros) para
+TODOS los usuarios a la vez sería demasiado grande -- se procesa en
+lotes de este tamaño (~500 x 48.320 x 8 bytes ~ 194MB por lote,
+liberado antes del siguiente) para acotar el pico de memoria. Mismo
+espíritu que el tope de la fuente de autor y el descarte de
+`n_por_fuente=500`: no repetir un problema de memoria ya visto dos
+veces esta sesión (ver `experiments/bitacora.md`)."""
 
 
 def _calcular_cooccurrencia(matriz_usuario_libro, libros_por_columna: list) -> tuple:
@@ -171,6 +184,65 @@ def _calcular_perfil_texto(interacciones: pd.DataFrame, libros: pd.DataFrame, fi
         "fila_por_libro_texto": fila_por_libro_texto,
         "perfil_usuario_norm": perfil_usuario_norm.tocsr(),
     }
+
+
+def _generar_candidatos_por_resumen(
+    tfidf_norm,
+    perfil_usuario_norm,
+    fila_por_libro_texto: dict,
+    usuarios_con_als: list,
+    filas: np.ndarray,
+    n_por_fuente: int,
+) -> tuple[dict, dict]:
+    """Para cada usuario en `usuarios_con_als`, el top-`n_por_fuente` de
+    libros de **todo el catálogo con resumen** (no solo los candidatos
+    que ya trajeron otras fuentes) más similares a su perfil de lectura
+    (mismo perfil TF-IDF que ya arma `_calcular_perfil_texto` para
+    `sim_resumen_historial`).
+
+    A diferencia de esa feature (que solo puntúa candidatos que ya
+    llegaron de otra fuente), esto busca en todo el catálogo -- la única
+    señal de las 5 fuentes que no depende de cuánta gente más leyó un
+    libro, solo de su contenido. Motivada por medir que los libros
+    objetivo que las otras 4 fuentes fallan en capturar son ~11x menos
+    populares (mediana de interacciones) que los que sí capturan -- ver
+    `experiments/modelo_actual.md`.
+
+    Se procesa en lotes de `TAMANO_LOTE_RESUMEN` usuarios (ver docstring
+    de esa constante) en vez de un solo producto denso
+    `usuarios x libros_con_resumen` -- ya hubo dos problemas de memoria
+    reales esta sesión (fuente de autor sin tope, `n_por_fuente=500`)
+    por materializar de más.
+
+    Devuelve `(ids_top_por_usuario, scores_top_por_usuario)`, ambos
+    `{id_lector: [...]}` en orden de similitud descendente.
+    """
+    ids_top_por_usuario: dict = {}
+    scores_top_por_usuario: dict = {}
+    if tfidf_norm is None or perfil_usuario_norm is None or not usuarios_con_als:
+        return ids_top_por_usuario, scores_top_por_usuario
+
+    libro_por_columna_texto = [None] * len(fila_por_libro_texto)
+    for id_libro, col in fila_por_libro_texto.items():
+        libro_por_columna_texto[col] = id_libro
+
+    tfidf_t = tfidf_norm.T.tocsr()
+    for inicio in range(0, len(usuarios_con_als), TAMANO_LOTE_RESUMEN):
+        usuarios_lote = usuarios_con_als[inicio : inicio + TAMANO_LOTE_RESUMEN]
+        filas_lote = filas[inicio : inicio + TAMANO_LOTE_RESUMEN]
+        similitudes = (perfil_usuario_norm[filas_lote] @ tfidf_t).toarray()
+
+        for i, id_lector in enumerate(usuarios_lote):
+            fila_sim = similitudes[i]
+            n_top = min(n_por_fuente, fila_sim.shape[0])
+            if n_top <= 0 or not fila_sim.any():
+                continue
+            idx_top = np.argpartition(-fila_sim, n_top - 1)[:n_top]
+            idx_top = idx_top[np.argsort(-fila_sim[idx_top])]
+            ids_top_por_usuario[id_lector] = [libro_por_columna_texto[c] for c in idx_top]
+            scores_top_por_usuario[id_lector] = fila_sim[idx_top]
+
+    return ids_top_por_usuario, scores_top_por_usuario
 
 
 def calcular_features_auxiliares(
@@ -378,9 +450,9 @@ def generar_candidatos_con_features(
     n_por_fuente: int = 150,
     n_por_autor: int = 20,
 ) -> pd.DataFrame:
-    """Arma, para cada usuario, la unión de candidatos de las cuatro fuentes
+    """Arma, para cada usuario, la unión de candidatos de las cinco fuentes
     (ALS, popularidad por género, popularidad global, libros de autores ya
-    leídos) con sus features.
+    leídos, similitud de resumen) con sus features.
 
     Reusa las estructuras que ya arman `fit_popularity` (`stats_popularidad`),
     `fit_popularity_por_genero` (`stats_por_genero`) y `genero_preferido_por_usuario`
@@ -405,6 +477,15 @@ def generar_candidatos_con_features(
     `en_autor_candidato` son distintos de `en_autor_leido`/
     `n_libros_autor_leidos` (que miden el historial del usuario con ese
     autor, sin importar qué fuente propuso el candidato).
+
+    La fuente de resumen (ver `_generar_candidatos_por_resumen`): top-
+    `n_por_fuente` libros de todo el catálogo con resumen más similares
+    al perfil de lectura (TF-IDF) del usuario -- a diferencia de las
+    otras 4 fuentes, no depende de cuánta gente más leyó un libro, solo
+    de su contenido. `score_resumen_candidato`/`rank_resumen_candidato`/
+    `en_resumen_candidato` son distintos de `sim_resumen_historial` (que
+    solo puntúa candidatos que ya llegaron de otra fuente, nunca
+    propone candidatos nuevos por sí sola).
 
     `features_auxiliares` es el dict que arma `calcular_features_auxiliares`
     (autor, año de edición, diversidad de género, recencia). Un candidato
@@ -480,6 +561,19 @@ def generar_candidatos_con_features(
         for id_lector, fila_row in zip(usuarios_con_als, co_scores_batch):
             co_scores_por_usuario[id_lector] = dict(zip(fila_row.indices, fila_row.data))
 
+    # Candidatos por similitud de resumen (5ª fuente, ver docstring de
+    # `_generar_candidatos_por_resumen`): busca en TODO el catálogo con
+    # resumen, no solo entre los candidatos que ya trajeron las otras 4
+    # fuentes -- a diferencia de `sim_resumen_historial` (más abajo).
+    ids_resumen_por_usuario, scores_resumen_por_usuario = _generar_candidatos_por_resumen(
+        tfidf_norm,
+        perfil_usuario_norm,
+        fila_por_libro_texto,
+        usuarios_con_als,
+        filas if usuarios_con_als else None,
+        n_por_fuente,
+    )
+
     filas_resultado = []
     for id_lector in usuarios:
         vistos = set(libros_leidos.get(id_lector, set()))
@@ -548,6 +642,16 @@ def generar_candidatos_con_features(
                 c["rank_autor_candidato"] = rank_autor
                 c["en_autor_candidato"] = 1
                 agregados_autor += 1
+
+        for rank_resumen, (id_libro, score) in enumerate(
+            zip(ids_resumen_por_usuario.get(id_lector, []), scores_resumen_por_usuario.get(id_lector, []))
+        ):
+            if id_libro in vistos:
+                continue
+            c = candidatos.setdefault(id_libro, {})
+            c["score_resumen_candidato"] = float(score)
+            c["rank_resumen_candidato"] = rank_resumen
+            c["en_resumen_candidato"] = 1
 
         n_usuario = n_interacciones_por_usuario.get(id_lector, 0)
         autores_leidos = n_libros_autor_leidos_por_usuario.get(id_lector, {})
@@ -646,6 +750,9 @@ def generar_candidatos_con_features(
                     "score_autor_candidato": f.get("score_autor_candidato", 0.0),
                     "rank_autor_candidato": f.get("rank_autor_candidato", n_por_autor),
                     "en_autor_candidato": f.get("en_autor_candidato", 0),
+                    "score_resumen_candidato": f.get("score_resumen_candidato", 0.0),
+                    "rank_resumen_candidato": f.get("rank_resumen_candidato", n_por_fuente),
+                    "en_resumen_candidato": f.get("en_resumen_candidato", 0),
                 }
             )
 
@@ -664,7 +771,7 @@ def armar_dataset_entrenamiento(
     cada usuario en `train_ranker`, columnas `id_lector`/`id_libro`).
 
     Si el libro-etiqueta de un usuario no aparece entre sus candidatos
-    generados (cobertura incompleta de las 4 fuentes), se lo inyecta
+    generados (cobertura incompleta de las 5 fuentes), se lo inyecta
     igual con features "ausente" (mismo sentinel que usa
     `generar_candidatos_con_features`) -- si no, ese usuario no aporta
     ningún positivo y el ranker nunca aprendería de él. `group` es la
@@ -690,6 +797,7 @@ def armar_dataset_entrenamiento(
             fila_faltante["rank_popularidad"] = n_por_fuente
             fila_faltante["rank_genero"] = n_por_fuente
             fila_faltante["rank_autor_candidato"] = n_por_autor
+            fila_faltante["rank_resumen_candidato"] = n_por_fuente
             fila_faltante["dias_desde_ultima_interaccion_usuario"] = SENTINEL_DIAS_DESCONOCIDO
             fila_faltante["id_lector"] = id_lector
             fila_faltante["id_libro"] = libro_objetivo

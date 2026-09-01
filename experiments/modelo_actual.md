@@ -1,4 +1,4 @@
-# Modelo actual: ranker de dos etapas (v3, 29 features)
+# Modelo actual: ranker de dos etapas (v3, 32 features)
 
 Resumen autocontenido del modelo de referencia del proyecto, pensado
 para poder evaluarlo "desde afuera" (¿vale la pena seguir con LightGBM,
@@ -7,19 +7,23 @@ tener que reconstruir el contexto leyendo todo `bitacora.md`. No repite
 el *por qué* de cada decisión — eso está en `decisiones.md`/`bitacora.md`
 — acá solo describe *qué* es el modelo tal como está hoy en el código.
 
-Récord actual: **0.05140 en Kaggle** (NDCG@20), confirmado
-2026-08-31. Código: `src/recsys/models/ranker.py`.
+Récord confirmado en Kaggle: **0.05140** (NDCG@20, con 29 features/4
+fuentes de candidatos, 2026-08-31). La 5ª fuente (similitud de resumen,
+32 features) está confirmada en CV local -- positivo en los 3 seeds,
++2.6% -- pero **pendiente de confirmar en Kaggle**. Código:
+`src/recsys/models/ranker.py`.
 
 ## Idea básica: candidatos + reranking
 
 No es un solo modelo, son dos etapas:
 
-1. **Generación de candidatos**: cuatro fuentes separadas (un modelo de
+1. **Generación de candidatos**: cinco fuentes separadas (un modelo de
    filtrado colaborativo + dos baselines de popularidad + libros de
-   autores ya leídos) proponen, cada una, hasta 150 libros por usuario
-   (`n_por_fuente=150` en el código). Se unen sin duplicar.
+   autores ya leídos + similitud de resumen) proponen, cada una, hasta
+   150 libros por usuario (`n_por_fuente=150` en el código). Se unen
+   sin duplicar.
 2. **Reranking**: un `LGBMRanker` (LightGBM, gradient boosted trees)
-   toma la unión de esos candidatos, cada uno con 29 features
+   toma la unión de esos candidatos, cada uno con 32 features
    (incluyendo el score/ranking que le dio cada fuente de la etapa 1),
    y aprende a reordenarlos mejor de lo que cualquier fuente individual
    hace sola.
@@ -84,8 +88,22 @@ más leyó -- sin este tope, usuarios con cientos de autores leídos
 llegaban a más de 5.000 candidatos de esta fuente sola (problema real
 de memoria encontrado al implementarla, no solo teórico).
 
-**Total de candidatos por usuario**: unión de las 4 fuentes (media
-~486, hasta ~600 para usuarios pesados) — cada candidato queda marcado
+### Similitud de resumen (5ª fuente, agregada 2026-08-31)
+
+Para cada usuario, el top-`n_por_fuente` (150) de libros de **todo el
+catálogo con resumen** (~48.320 libros) más similares a su perfil de
+lectura (TF-IDF, mismo perfil que ya arma `_calcular_perfil_texto` para
+`sim_resumen_historial`). A diferencia de las otras 4 fuentes, no
+depende en absoluto de cuánta gente más leyó un libro, solo de su
+contenido -- motivada por medir (co-diseñado con el usuario, tras
+preguntar cuán importante era recomendar libros "raros") que los
+targets que las otras 4 fuentes fallan en capturar son ~11x menos
+populares (mediana 21 vs. 231 interacciones en todo el dataset) que
+los que sí capturan. Procesada en lotes (`TAMANO_LOTE_RESUMEN=500`)
+para no materializar un producto denso usuarios×libros de una sola vez.
+
+**Total de candidatos por usuario**: unión de las 5 fuentes (media
+~620, hasta ~730 para usuarios pesados) — cada candidato queda marcado
 con `en_<fuente>` (1/0) y su `score_<fuente>`/`rank_<fuente>` si esa
 fuente lo propuso, `0`/sentinel si no.
 
@@ -144,7 +162,7 @@ memoriza en vez de aprender a combinar señales). Por eso:
 - `test_final`: hold-out aislado para medir NDCG@20 del pipeline
   completo (solo en evaluación local, no existe en producción).
 
-## Features (29 en total)
+## Features (32 en total)
 
 Catálogo completo con el detalle de cada una en `experiments/features.md`.
 Resumen agrupado:
@@ -175,12 +193,18 @@ Resumen agrupado:
 - **Resumen/texto** (1): `sim_resumen_historial` (TF-IDF + coseno).
 - **Macro-género** (2): `popularidad_genero_macro_candidato`,
   `frecuencia_genero_macro_usuario` (10 familias de dominio, pooled).
-- **Señales cruzadas lector↔libro** (3, ronda más reciente):
+- **Señales cruzadas lector↔libro** (3):
   `popularidad_genero_lector_candidato` (popularidad segmentada por
   género *declarado* del lector — Mujer/Hombre/desconocido, no el
   género literario), `frecuencia_genero_macro_por_genero_lector`
   (afinidad de *cohorte* por macro-género, no historial individual),
   `edad_lector_al_publicarse` (`anio_edicion − nacimiento`).
+- **Candidatos por similitud de resumen** (3, ronda más reciente):
+  `score_resumen_candidato`, `rank_resumen_candidato`,
+  `en_resumen_candidato` -- distintas de `sim_resumen_historial`, que
+  nunca propone candidatos nuevos por sí sola. Mismo patrón que autor:
+  test pareado da 0.67 sigma, no significativo por sí solas -- la
+  mejora viene de los candidatos.
 
 Todas se calculan **solo con `train_candidatos`**, salvo la metadata
 estática del libro (autor/editorial/año/resumen, que no depende del
@@ -193,6 +217,7 @@ split).
 | ALS solo | 0.094406 ± 0.001359 | 0.03864 (mejor config ALS confirmada) |
 | Ranker (26 features, 3 fuentes de candidatos) | 0.109735 ± 0.003719 | 0.04855 |
 | Ranker (29 features, 4 fuentes -- +autor ya leído) | 0.117495 ± 0.002562 | **0.05140 (récord actual)** |
+| Ranker (32 features, 5 fuentes -- +similitud de resumen) | 0.120547 ± 0.002674 | pendiente de confirmar |
 
 La 4ª fuente (autor) dio la mejora más grande y mejor validada de la
 sesión: recall del set de candidatos 0.394→0.445 (medido con
@@ -365,19 +390,19 @@ para distinguir señal real de ruido en este rango de efectos.
    ganancia de recall se traduce en NDCG** -- ayuda si los candidatos
    nuevos traen señal distinguible (como autor), no solo más volumen de
    las mismas fuentes. Ver `decisiones.md` sección 12 y `bitacora.md`.
-3. **Contenido en vez de más popularidad/colaborativo**: las 4 fuentes
-   actuales están todas sesgadas hacia libros populares/bien conectados
-   en mayor o menor medida -- incluso ALS, pese a ser "personalizado",
-   modela mal los libros con pocas interacciones en una matriz 99.91%
-   dispersa. Candidato sin probar: usar `sim_resumen_historial`
-   (similitud TF-IDF de resúmenes, hoy solo *feature*) como **fuente**
-   de candidatos -- análogo a lo que pasó con autor, y la única idea en
-   danza que no depende en absoluto de cuántos otros lectores leyeron
-   un libro, solo de su contenido. Complemento/alternativa: item-item
-   kNN como 5ª fuente (`cooc`, ya calculado para `score_coleido`) --
-   sigue siendo colaborativo (mismo sesgo hacia libros con suficientes
-   interacciones, aunque menor que popularidad pura), pero trae
-   candidatos que ALS no trae.
+3. ~~**Contenido en vez de más popularidad/colaborativo**~~
+   **✅ HECHO, CV positivo, pendiente Kaggle (2026-08-31)**: se midió
+   primero cuán importante era (co-diseñado con el usuario): los
+   targets que fallan las otras 4 fuentes son ~11x menos populares que
+   los que sí se capturan. Se implementó `sim_resumen_historial` como
+   **fuente** (no solo feature) -- recall 0.445→0.456 (+2.4%), CV
+   positivo en los 3 seeds (+2.6% promedio, más chico que autor pero
+   por encima del ruido). Ver `decisiones.md` sección 13 y `bitacora.md`.
+   Complemento/alternativa que queda sin probar: item-item kNN como 6ª
+   fuente (`cooc`, ya calculado para `score_coleido`) -- sigue siendo
+   colaborativo (mismo sesgo hacia libros con suficientes interacciones,
+   aunque menor que popularidad pura), pero trae candidatos que ALS no
+   trae.
 4. **Decidir sobre etapa 1 con recall del set de candidatos, no con
    NDCG del pipeline completo** — se mide en 17-76s por variante (vs.
    ~300s de contexto completo), sin gastar submissions. Pero medir

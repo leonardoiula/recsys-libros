@@ -1973,3 +1973,70 @@ ventana de las fuentes existentes agrega, en cambio, sobre todo
 *distractores* de las mismas fuentes que ya venían aportando poco en
 ese rango (libros populares/de género que el usuario no leyó por buenas
 razones), sin agregar una señal cualitativamente nueva.
+
+
+## 5ª fuente de candidatos: similitud de resumen (contenido, no popularidad)
+
+### Objetivo
+
+Retomar la charla sobre el sesgo hacia popularidad de las 4 fuentes
+actuales (ALS, popularidad global, popularidad por género, autor ya
+leído -- todas sesgadas hacia libros bien conectados en mayor o menor
+medida, incluso ALS por cómo se degradan sus embeddings con pocas
+interacciones en una matriz 99.91% dispersa). Antes de implementar, se
+midió con el usuario cuán importante es esto: los libros objetivo que
+las 4 fuentes fallan en capturar son ~11x menos populares (mediana 21
+interacciones en todo el dataset) que los que sí capturan (mediana
+231) -- 28.7% de los faltantes tiene ≤5 interacciones (vs 4.3% de los
+capturados). Confirma que vale la pena atacarlo.
+
+### Implementación
+
+`sim_resumen_historial` (similitud coseno TF-IDF, ya existente como
+*feature*) nunca proponía candidatos nuevos por sí sola -- solo
+puntuaba candidatos que ya habían llegado de otra fuente. Se agregó
+`_generar_candidatos_por_resumen`: para cada usuario, el top-`n_por_fuente`
+de **todo el catálogo con resumen** (~48.320 libros) más similar a su
+perfil de lectura. Procesado en **lotes** (`TAMANO_LOTE_RESUMEN=500`)
+para no materializar un producto denso usuarios×libros de una sola vez
+-- precaución aprendida de los dos problemas de memoria reales de esta
+sesión (autor sin tope, `n_por_fuente=500`). 3 features nuevas
+(`score_resumen_candidato`/`rank_resumen_candidato`/`en_resumen_candidato`,
+29→32), con nombres deliberadamente distintos de `sim_resumen_historial`.
+
+### Anomalía de rendimiento (resuelta: no era un bug)
+
+Corriendo el CV, seed=7 tardó ~2.9 horas contra los ~10 minutos
+esperados. Se sospechó inicialmente paginación de memoria (el cálculo
+por lotes de la similitud TF-IDF es la parte más pesada del pipeline),
+pero la cuenta no cerraba (194MB por lote, muy por debajo de la memoria
+libre de la máquina). **La causa real: la PC entró en reposo** durante
+esa corrida (confirmado por el usuario) -- nada que ver con el código.
+Reintentado con la máquina despierta: seed=123 tardó 603s, normal.
+Lección: no asumir causas de rendimiento sin confirmar la causa real
+-- la hipótesis de memoria era plausible pero incorrecta.
+
+### Resultado: positivo pero más modesto que la fuente de autor
+
+| | recall | candidatos/usuario | NDCG@20 (seed=42) |
+|---|---|---|---|
+| 4 fuentes (sin resumen) | 0.4450 | 486 | 0.114810 |
+| 5 fuentes (+resumen) | 0.4559 | 620.5 | 0.117503 |
+
+CV 3 seeds: 0.120547±0.002674 vs 0.117495±0.002562 de las 29 features
+-- **positivo en los 3 seeds** (+0.00269/+0.00476/+0.00171, media
++2.6%). Test pareado (mismo patrón que autor): las 3 features de
+tracking no aportan por sí solas (0.67 sigma) -- la mejora viene de los
+candidatos nuevos, no de las features, consistente con lo que ya se
+había visto.
+
+Es una mejora más chica que la de autor (+7.1%), pero el mecanismo es
+distinto y complementario: en vez de ampliar la cobertura hacia libros
+de un autor conocido, amplía hacia libros temáticamente afines sin
+importar su popularidad -- exactamente la dirección que sugería el
+análisis de rareza de los targets faltantes.
+
+### Decisión
+
+Se generó la submission para confirmar en Kaggle -- ver próxima entrada
+de `log.csv` para el resultado real.

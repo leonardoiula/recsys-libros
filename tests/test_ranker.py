@@ -754,6 +754,102 @@ def test_generar_candidatos_sentinel_cuando_no_hay_fuente_autor():
     assert fila["score_autor_candidato"] == 0.0
 
 
+def test_generar_candidatos_incluye_fuente_resumen():
+    # perfil de u1 = [1.0, 0.0]; "p"/"q"/"r" con similitud decreciente
+    # (0.9/0.5/0.1). stats_popularidad usa un id distinto ("zzz") para
+    # no contaminar la fuente de popularidad global con estos libros.
+    modelo = _ModeloALSFalso({0: ([], [])})
+    matriz = np.zeros((1, 1))
+    tfidf_norm = sp.csr_matrix(np.array([[0.9, 0.1], [0.5, 0.5], [0.1, 0.9]]))
+    aux = {
+        **_features_auxiliares_vacias(),
+        "tfidf_norm": tfidf_norm,
+        "fila_por_libro_texto": {"p": 0, "q": 1, "r": 2},
+        "perfil_usuario_norm": sp.csr_matrix(np.array([[1.0, 0.0]])),
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=_stats_popularidad(["zzz"], [1.0]),
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=2,  # solo top-2 por similitud: "p" y "q" -- "r" queda afuera
+    )
+
+    libros_desde_resumen = set(candidatos[candidatos["en_resumen_candidato"] == 1]["id_libro"])
+    assert libros_desde_resumen == {"p", "q"}
+    fila_p = candidatos[candidatos["id_libro"] == "p"].iloc[0]
+    fila_q = candidatos[candidatos["id_libro"] == "q"].iloc[0]
+    assert fila_p["rank_resumen_candidato"] == 0  # mayor similitud
+    assert fila_p["score_resumen_candidato"] == pytest.approx(0.9)
+    assert fila_q["rank_resumen_candidato"] == 1
+    assert fila_q["score_resumen_candidato"] == pytest.approx(0.5)
+
+
+def test_generar_candidatos_fuente_resumen_filtra_libros_leidos():
+    modelo = _ModeloALSFalso({0: ([], [])})
+    matriz = np.zeros((1, 1))
+    tfidf_norm = sp.csr_matrix(np.array([[0.9, 0.1]]))
+    aux = {
+        **_features_auxiliares_vacias(),
+        "tfidf_norm": tfidf_norm,
+        "fila_por_libro_texto": {"p": 0},
+        "perfil_usuario_norm": sp.csr_matrix(np.array([[1.0, 0.0]])),
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=_stats_popularidad(["zzz"], [1.0]),
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={"u1": {"p"}},  # "p" ya leido -- se filtra de TODAS las fuentes
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    assert "p" not in set(candidatos["id_libro"])
+
+
+def test_generar_candidatos_sentinel_cuando_no_hay_fuente_resumen():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    # sin tfidf_norm/perfil_usuario_norm (ver _features_auxiliares_vacias)
+    aux = _features_auxiliares_vacias()
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    fila = candidatos.iloc[0]
+    assert fila["en_resumen_candidato"] == 0
+    assert fila["rank_resumen_candidato"] == 150
+    assert fila["score_resumen_candidato"] == 0.0
+
+
 def test_armar_dataset_marca_el_positivo_y_arma_group():
     candidatos_df = pd.DataFrame(
         {
@@ -789,6 +885,7 @@ def test_armar_dataset_inyecta_positivo_faltante():
     fila_inyectada = X[y == 1].iloc[0]
     assert fila_inyectada["rank_als"] == 150  # sentinel
     assert fila_inyectada["rank_autor_candidato"] == 20  # sentinel (default n_por_autor)
+    assert fila_inyectada["rank_resumen_candidato"] == 150  # sentinel (n_por_fuente)
 
 
 def test_armar_dataset_usuario_sin_candidatos_igual_aporta_el_positivo():

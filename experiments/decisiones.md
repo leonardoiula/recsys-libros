@@ -15,34 +15,26 @@ la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 Estado actual: `"ranker"` (v3, ALS+género+popularidad+autor/año/diversidad/
 recencia+co-lectura+editorial+resumen+popularidad/frecuencia de
 macro-género+tamaño de catálogo de editorial+señales cruzadas lector↔libro
-**+4ª fuente de candidatos por autor ya leído** → LightGBM, 29 features,
-hiperparámetros conservadores) es el modelo de referencia del proyecto,
-con **0.05140 confirmado en Kaggle** (récord actual). Ideas concretas
-para la próxima sesión, en orden sugerido (ver
-`experiments/modelo_actual.md` para el detalle completo):
+**+4ª fuente de autor ya leído+5ª fuente de similitud de resumen** →
+LightGBM, 32 features, hiperparámetros conservadores) es el modelo de
+referencia del proyecto. Récord confirmado en Kaggle: **0.05140** (con
+29 features/4 fuentes) — la 5ª fuente (resumen) está confirmada en CV
+local (positivo en los 3 seeds) pero **pendiente de confirmar en
+Kaggle**. Ideas concretas para la próxima sesión, en orden sugerido
+(ver `experiments/modelo_actual.md` para el detalle completo):
 
 1. **Seguir atacando el generador de candidatos, no el reranking** —
    confirmado con evidencia real esta sesión: la 4ª fuente (autor) dio
-   la mejora más grande (+5.9% en Kaggle) y el test pareado mostró que
-   vino de los candidatos, no de features nuevas. Pero **no todo lo que
-   sube el recall ayuda**: subir `n_por_fuente` a 500 también subió el
-   recall (+30%) y el NDCG no acompañó (ver resuelto abajo) -- la
-   ganancia depende de si los candidatos nuevos traen una señal
-   *distinguible*, no solo más volumen de las mismas fuentes.
-2. **Contenido en vez de más popularidad/colaborativo**: las 4 fuentes
-   actuales (ALS, popularidad global, popularidad por género, autor)
-   están todas sesgadas hacia libros populares/bien conectados en mayor
-   o menor medida (ALS también, pese a ser "personalizado" -- los
-   libros con pocas interacciones tienen un embedding mal estimado en
-   una matriz 99.91% dispersa). Candidato sin probar: usar
-   `sim_resumen_historial` (similitud TF-IDF de resúmenes, hoy solo
-   *feature*) como **fuente** de candidatos -- análogo a lo que pasó
-   con autor, y la única de las ideas en danza que no depende en
-   absoluto de qué tan popular es un libro entre otros lectores, sino
-   del contenido del libro en sí. Alternativa/complemento: item-item
-   kNN como 5ª fuente (`cooc`, ya calculado para `score_coleido`) --
-   sigue siendo colaborativo, con el mismo sesgo hacia libros con
-   suficientes interacciones, aunque menor que popularidad pura.
+   la mejora más grande (+5.9% en Kaggle), la 5ª (resumen) dio una
+   mejora más modesta pero real (+2.6% local, pendiente Kaggle). Pero
+   **no todo lo que sube el recall ayuda**: subir `n_por_fuente` a 500
+   también subió el recall (+30%) y el NDCG no acompañó (ver resuelto
+   abajo) -- la ganancia depende de si los candidatos nuevos traen una
+   señal *distinguible*, no solo más volumen de las mismas fuentes.
+2. **Item-item kNN como 6ª fuente** (`cooc`, ya calculado para
+   `score_coleido`) -- sigue siendo colaborativo, con el mismo sesgo
+   hacia libros con suficientes interacciones (aunque menor que
+   popularidad pura), pero trae candidatos que ALS no trae.
 3. **Usar `scripts/recall_candidatos.py` para decidir sobre etapa 1**
    (barato, ~5-8 min) **antes** de correr el CV completo (~20-25 min) —
    pero medir siempre los dos números (recall Y NDCG en un seed), no
@@ -50,12 +42,20 @@ para la próxima sesión, en orden sugerido (ver
    mucho sin que el NDCG lo acompañe.
 4. **Usar `scripts/comparar_features_pareado.py` como criterio
    principal** para decidir si algo nuevo es señal real, no el desvío
-   entre 3 seeds — confirmado esta sesión que tiene ~5x más poder
-   estadístico, y que aisló correctamente que la mejora de la 4ª fuente
-   viene de los candidatos, no de las features de tracking.
+   entre 3 seeds — confirmado esta sesión (2 veces: autor y resumen)
+   que tiene ~5x más poder estadístico.
 5. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
    abajo).
+
+**Resuelto:** 5ª fuente de candidatos por similitud de resumen
+(29→32 features) -- co-diseñada con el usuario tras preguntar cuán
+importante era recomendar libros "raros" (se midió: los targets que
+fallan las otras 4 fuentes son ~11x menos populares que los que sí se
+capturan). CV 3 seeds positivo en los 3 (+2.6% promedio), más chico que
+autor pero por encima del ruido. Pendiente confirmar en Kaggle. Ver
+sección 13 y `bitacora.md`, sección "5ª fuente de candidatos: similitud
+de resumen".
 
 **Resuelto:** subir `n_por_fuente` de 150 a 500 -- recall del set de
 candidatos +30% (0.445→0.578), pero la eficiencia de ranking bajó
@@ -261,6 +261,14 @@ catálogo de editorial" para las dos rondas más recientes.
 | Topear el total de candidatos de esta fuente a `n_por_fuente` (150), priorizando los autores más leídos | ✅ **resuelto -- problema real de memoria encontrado en la verificación** | Sin tope, usuarios con cientos de autores leídos llegaban a 5.304 candidatos de esta fuente sola -- una corrida completa se cortó (`killed`, sin traceback). Con el tope: recall baja levemente (0.473→0.445) pero sigue muy por encima del original, y el pipeline corre de forma estable. |
 | `score_autor_candidato`/`rank_autor_candidato`/`en_autor_candidato` (3 features nuevas, 26→29) | 🔄 **mantenidas, pero test pareado dice que no aportan por sí solas** | Comparando el mismo pool de candidatos con vs. sin estas 3 features (test pareado, seed=42): diferencia +0.0004, 0.44 sigma, no significativa -- el ranker ya aprovechaba casi toda la mejora con features existentes (`en_autor_leido`, `n_libros_autor_leidos`, etc.). La mejora real viene de los candidatos, no de las features. Se mantienen igual (no restan, documentan la fuente explícitamente). |
 | Subir `n_por_fuente` de 150 a 500 (next step #2 del análisis de paradigma) | ❌ **descartado -- recall sube, NDCG no acompaña** | Recall del set de candidatos: 0.445→0.578 (+30%), pero la eficiencia de ranking (NDCG/recall) bajó de 0.258 a 0.20 -- con ~3x más candidatos por usuario la tarea de rankear se vuelve más difícil, casi cancelando la ganancia. NDCG@20 (un solo seed, alcanza para descartar): 0.114810→0.115601 (+0.7%, ruido). Costo de cómputo casi 2x. No se corrió el CV completo de 3 seeds -- el método "recall primero, CV completo solo si vale la pena" (diseñado esta sesión) evitó gastar ese tiempo. `n_por_fuente` se mantiene en 150. Ver `bitacora.md`, sección "n_por_fuente=150→500: recall sube fuerte, NDCG no acompaña". |
+
+## 13. 5ª fuente de candidatos: similitud de resumen (ronda 2026-08-31, parte 4)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| Agregar una 5ª fuente de candidatos por similitud de resumen (contenido, no popularidad/colaborativo) | 🔄 **positivo en CV, pendiente de confirmar en Kaggle** | Motivada por medir (co-diseñado con el usuario, quien preguntó cuán importante era recomendar libros "raros"): los targets que las 4 fuentes anteriores fallan en capturar son ~11x menos populares (mediana 21 vs 231 interacciones) que los que sí capturan. Es la única de las 5 fuentes que no depende de cuánta gente más leyó un libro. Recall: 0.445→0.456 (+2.4%). CV 3 seeds: 0.120547±0.002674 vs 0.117495±0.002562 de las 29 features -- positivo en los 3 seeds (+0.00269/+0.00476/+0.00171, media +2.6%), más chico que autor pero por encima del ruido calibrado esta sesión. Ver `bitacora.md`, sección "5ª fuente de candidatos: similitud de resumen". |
+| Procesar en lotes (`TAMANO_LOTE_RESUMEN=500`) para no materializar un producto denso usuarios×libros de una sola vez | ✅ **precaución aplicada preventivamente** | Tras dos problemas de memoria reales esta sesión (autor sin tope, `n_por_fuente=500`). En la práctica no hubo problema de memoria en esta ronda -- la única anomalía de rendimiento (seed=7 tardó ~2.9hs) fue por la PC entrando en reposo, no por memoria/código (ver `bitacora.md`). |
+| `score_resumen_candidato`/`rank_resumen_candidato`/`en_resumen_candidato` (3 features nuevas, 29→32) | 🔄 **mantenidas, pero test pareado dice que no aportan por sí solas** | Mismo patrón que autor: test pareado (seed=42) da 0.67 sigma, no significativo -- se solapan con `sim_resumen_historial`, ya existente. La mejora real viene de los candidatos. |
 
 ---
 

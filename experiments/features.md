@@ -1,6 +1,6 @@
 # Catálogo de features del ranker
 
-Lista única y legible de las 29 features que usa `"ranker"` (`FEATURES`
+Lista única y legible de las 32 features que usa `"ranker"` (`FEATURES`
 en `src/recsys/models/ranker.py`), para revisar de un vistazo qué hay y
 pensar qué falta o vale la pena mejorar. El detalle de *por qué* se
 agregó cada una, los resultados de validación cruzada y de Kaggle están
@@ -49,6 +49,26 @@ candidatos nuevos por sí sola.
 | `score_autor_candidato` | Score de popularidad global del candidato (mismo score que `score_popularidad`) — reusado acá para rankear dentro del catálogo de cada autor. | `0.0` |
 | `rank_autor_candidato` | Posición del candidato dentro del top-`n_por_autor` de *ese autor específico* (0 = el más popular sin leer). | `n_por_autor` (justo afuera de la ventana de esta fuente) |
 | `en_autor_candidato` | 1/0 — ¿esta fuente propuso el candidato? Distinto de `en_autor_leido` (que mide historial del usuario con el autor, sin importar qué fuente trajo el candidato). | `0` |
+
+## Candidatos por similitud de resumen (5ª fuente — ver `modelo_actual.md`, sección "Recomendación: ¿cambiar de paradigma?")
+
+Para cada usuario, el top-`n_por_fuente` de libros de **todo el
+catálogo con resumen** (~48.320 libros) más similares a su perfil de
+lectura (TF-IDF, mismo perfil que arma `_calcular_perfil_texto` para
+`sim_resumen_historial`, ver más abajo). Motivada por medir que los
+libros objetivo que las otras 4 fuentes fallan en capturar son ~11x
+menos populares (mediana de interacciones) que los que sí capturan —
+la única de las 5 fuentes que no depende de cuánta gente más leyó un
+libro, solo de su contenido. Se procesa en lotes de usuarios
+(`TAMANO_LOTE_RESUMEN`) para no materializar un producto denso
+usuarios×libros completo de una sola vez (ver docstring de esa
+constante en `ranker.py`).
+
+| Feature | Qué mide | Si falta |
+|---|---|---|
+| `score_resumen_candidato` | Similitud coseno TF-IDF entre el resumen del candidato y el perfil de lectura del usuario (mismo cálculo que `sim_resumen_historial`, pero buscando en todo el catálogo, no solo entre los candidatos que ya trajeron otras fuentes). | `0.0` |
+| `rank_resumen_candidato` | Posición del candidato dentro del top-`n_por_fuente` por similitud (0 = más similar). | `n_por_fuente` (justo afuera de la ventana de esta fuente) |
+| `en_resumen_candidato` | 1/0 — ¿esta fuente propuso el candidato? Distinto de `sim_resumen_historial` (que nunca propone candidatos nuevos por sí sola, solo puntúa los que ya llegaron de otra fuente). | `0` |
 
 ## Candidatos de popularidad por género preferido del usuario
 

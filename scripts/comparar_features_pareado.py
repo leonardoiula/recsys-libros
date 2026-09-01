@@ -54,21 +54,22 @@ N_POR_FUENTE = 150
 SEED = 42
 N_BOOTSTRAP = 2000
 
-# Comparación activa: las 29 features actuales (incluye la 4a fuente de
-# candidatos por autor) vs. esas mismas 29 sin las 3 features de esa
-# fuente -- para confirmar con rigor la 4a fuente de candidatos por
-# autor (ver experiments/modelo_actual.md, "Recomendación: ¿cambiar de
-# paradigma?"). OJO: esto solo compara las FEATURES del ranker, no la
-# generación de candidatos en sí -- la fuente de autor igual aporta
-# candidatos nuevos en ambos casos (A y B comparten el mismo contexto,
-# incluida la unión de las 4 fuentes); lo que se aísla acá es si el
-# ranker aprende algo de los 3 campos score/rank/en_autor_candidato,
-# no si el recall extra ayuda (eso ya lo mide `recall_candidatos.py`).
+# Comparación activa: las 32 features actuales (incluye la 5a fuente de
+# candidatos por similitud de resumen) vs. esas mismas 32 sin las 3
+# features de esa fuente -- para confirmar con rigor la 5a fuente (ver
+# experiments/modelo_actual.md, "Recomendación: ¿cambiar de paradigma?").
+# OJO: esto solo compara las FEATURES del ranker, no la generación de
+# candidatos en sí -- la fuente de resumen igual aporta candidatos
+# nuevos en ambos casos (A y B comparten el mismo contexto, incluida la
+# unión de las 5 fuentes); lo que se aísla acá es si el ranker aprende
+# algo de los 3 campos score/rank/en_resumen_candidato -- que se solapan
+# con sim_resumen_historial, ya presente en ambos -- no si el recall
+# extra ayuda (eso ya lo mide `recall_candidatos.py` + el CV de 3 seeds).
 FEATURES_A = R.FEATURES
 FEATURES_EXCLUIR_EN_B = [
-    "score_autor_candidato",
-    "rank_autor_candidato",
-    "en_autor_candidato",
+    "score_resumen_candidato",
+    "rank_resumen_candidato",
+    "en_resumen_candidato",
 ]
 FEATURES_B = [f for f in R.FEATURES if f not in FEATURES_EXCLUIR_EN_B]
 

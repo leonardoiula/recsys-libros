@@ -2149,3 +2149,98 @@ sobreestimándolas puntualmente.
 
 `"ranker"` (35 features, 6 fuentes de candidatos) pasa a ser el modelo
 de referencia del proyecto.
+
+## Embeddings semánticos (sentence-transformers) para el perfil de contenido — descartado
+
+### Objetivo
+
+Curiosidad del usuario después de discutir TF-IDF vs. embeddings de un
+LLM en abstracto: TF-IDF hace matching léxico exacto, así que dos
+resúmenes que dicen lo mismo con palabras distintas ("asesinato en una
+mansión inglesa" / "crimen en una casa señorial") quedan lejos en ese
+espacio pese a ser semánticamente casi iguales. La hipótesis era que un
+embedding semántico capturaría esa similitud, y que eso ayudaría
+justo a la 5ª fuente de candidatos (similitud de resumen), que se
+agregó para traer libros ~11x menos populares que las otras 4 fuentes
+fallan en capturar -- el caso de uso donde el vocabulario exacto varía
+más.
+
+Se armó como experimento controlado, no como reemplazo directo: pedido
+explícito del usuario de un enfoque "contenido y económico" -- un
+modelo de `sentence-transformers` local (`paraphrase-multilingual-MiniLM-L12-v2`,
+384 dimensiones, multilingüe/español, corre en CPU), sin API paga ni
+dependencia de red en tiempo de inferencia, evitando el problema de
+reproducibilidad de un proveedor externo que puede cambiar de modelo
+entre corridas.
+
+### Implementación
+
+Función hermana de `_calcular_perfil_texto` (`_calcular_perfil_texto_embeddings`),
+con la misma interfaz de salida (`tfidf_norm`/`fila_por_libro_texto`/
+`perfil_usuario_norm`, embeddings envueltos en `sp.csr_matrix`) -- todo
+lo que consume esas matrices (`_generar_candidatos_por_resumen`, el
+cálculo de `sim_resumen_historial`) funcionó sin ningún cambio, porque
+solo hacen matmul/producto interno sin asumir de dónde salió el vector.
+Un parámetro `metodo_texto="tfidf"|"embeddings"` opt-in en
+`calcular_features_auxiliares`/`preparar_pipeline`, default sin cambio
+de comportamiento. Embeddings cacheados a disco (`data/cache/`,
+gitignoreado) porque codificar ~48k resúmenes con un transformer tiene
+costo real, a diferencia de fittear TF-IDF.
+
+### Resultado: recall prácticamente igual, NDCG levemente peor -- no se justifica
+
+Un solo seed (42) alcanzó para descartar (mismo criterio que
+`n_por_fuente=500`: recall primero, CV completo solo si vale la pena):
+
+| | TF-IDF | Embeddings |
+|---|---|---|
+| Recall del set de candidatos | 0.5115 | 0.5099 |
+| NDCG@20 | 0.118625 | 0.116862 |
+| Tiempo de armado del contexto | 805s | 2412s (incluye descarga del modelo + codificar ~48k resúmenes en CPU, ~18 min) |
+
+El dato más importante es el recall: casi no cambió (0.5115→0.5099,
+-0.3%), lo que significa que los embeddings traen candidatos casi
+idénticos a los de TF-IDF -- contradice de entrada la hipótesis de que
+iban a surgir candidatos *distintos* por captar sinónimos/parafraseo.
+
+Test pareado por usuario (8.904 usuarios, mismo split que TF-IDF
+porque el split no depende de `metodo_texto`):
+
+```
+diferencia media pareada (embeddings - tfidf): -0.001763
+SE pareado: 0.001014   -> -1.74 sigma
+bootstrap 95% CI: [-0.003725, +0.000247]
+P(embeddings > tfidf) = 0.0375
+usuarios donde cambia el NDCG: 15.0% (mejora 658, empeora 680)
+```
+
+No cruza el umbral estricto de 2 sigma, pero el intervalo de confianza
+es casi enteramente negativo y en 96 de cada 100 remuestreos bootstrap
+TF-IDF ganó -- evidencia débil pero consistentemente en contra, no a
+favor. No cumple ni el criterio mínimo del proyecto para pensar en
+correr el CV completo de 3 seeds (positivo en un seed), así que no se
+gastó ese tiempo ni una submission de Kaggle.
+
+### Reflexión: por qué probablemente no ayudó
+
+Sin confirmar con más experimentos (queda como hipótesis, no como
+hallazgo): un modelo de embeddings de propósito general sobre resúmenes
+cortos parece capturar similitud de *tema/género* en un sentido amplio,
+más difusa que el matching léxico específico (nombres propios,
+escenarios, vocabulario puntual de la trama) que parece ser la señal
+que efectivamente funciona en `sim_resumen_historial`. Si el "próximo
+libro" de un usuario tiende a compartir vocabulario concreto con lo que
+ya leyó (misma saga, mismo autor con estilo reconocible, mismo
+subgénero con jerga propia) más que un tema general, TF-IDF explota
+justo esa especificidad y un embedding semántico la difumina al
+promediar hacia una representación más genérica.
+
+Código revertido en su totalidad (`ranker.py`, `pyproject.toml`,
+`.gitignore`, dependencia `sentence-transformers`) después del
+resultado -- a diferencia de país/franja de nacimiento (que se dejaron
+sin usar en el código "por si sirve con otro enfoque"), acá no quedó
+nada en el repo. Si se retoma la idea en el futuro, un camino más
+prometedor que "reemplazar TF-IDF" sería agregarlo como *feature
+adicional* (no como reemplazo) o probar con un modelo de embeddings
+más grande/afinado al dominio literario -- ninguno de los dos se probó
+esta ronda.

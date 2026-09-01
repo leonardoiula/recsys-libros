@@ -571,6 +571,16 @@ mejor todavía — pero no es requisito excluyente.
   embedding — esa metadata ya está en las features del ranker, donde
   LightGBM la usa con más libertad. Alto costo de implementación, poca
   ganancia esperada.
+- **Embeddings semánticos (`sentence-transformers`, local) en vez de
+  TF-IDF** para el perfil de contenido (`sim_resumen_historial` + 5ª
+  fuente de candidatos): recall del set de candidatos prácticamente
+  igual (0.5115→0.5099) y NDCG@20 levemente peor (seed 42:
+  0.118625→0.116862, test pareado −1.74 sigma) — no cumple ni el
+  mínimo para pensar en un CV completo. El recall casi sin cambios es
+  la pista clave: los embeddings casi no traen candidatos distintos a
+  los de TF-IDF, contra la hipótesis de que iban a capturar
+  parafraseo/sinónimos. Ver `experiments/decisiones.md` sección 15 y
+  `bitacora.md` para el detalle y la hipótesis de por qué.
 
 ## Próximos pasos (agenda completa en `decisiones.md`)
 

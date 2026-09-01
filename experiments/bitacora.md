@@ -2036,7 +2036,24 @@ de un autor conocido, amplía hacia libros temáticamente afines sin
 importar su popularidad -- exactamente la dirección que sugería el
 análisis de rareza de los targets faltantes.
 
-### Decisión
+### Confirmación en Kaggle: mejora real, pero difícil de ver en una sola muestra
 
-Se generó la submission para confirmar en Kaggle -- ver próxima entrada
-de `log.csv` para el resultado real.
+Se generó la submission y se confirmó: **0.05181 en Kaggle -- nuevo
+récord del proyecto** (+0.8% sobre 0.05140, +0.00041 absoluto). El
+salto absoluto es del mismo orden que el error estándar de una sola
+submission (~0.0065, calculado antes en esta sesión con la muestra de
+832 usuarios de `ejemplo.csv`) -- no alcanza, por sí solo, para
+confirmar con certeza estadística que esta ronda específica mejoró
+Kaggle. Pero a diferencia del episodio de señales cruzadas (donde la
+evidencia *local* ya era límite, "casi positivo en los 3 seeds"), acá
+la evidencia local es sólida (positivo en los 3 seeds por márgenes
+0.0017-0.0048, claramente por encima del ruido local calibrado, +
+mecanismo confirmado con el test pareado). La lectura más razonable:
+la mejora real (~+2.6% local) probablemente sigue ahí, pero esta
+muestra puntual de Kaggle (una sola submission, ruidosa) la subestima
+-- no es evidencia de que la mejora local haya sido ruido, solo de que
+el instrumento de confirmación (una submission) tiene menos resolución
+que el instrumento de medición local (CV de 3 seeds + test pareado).
+
+`"ranker"` (32 features, 5 fuentes de candidatos) pasa a ser el modelo
+de referencia del proyecto.

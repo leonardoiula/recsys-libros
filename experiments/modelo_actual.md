@@ -7,11 +7,15 @@ tener que reconstruir el contexto leyendo todo `bitacora.md`. No repite
 el *por qué* de cada decisión — eso está en `decisiones.md`/`bitacora.md`
 — acá solo describe *qué* es el modelo tal como está hoy en el código.
 
-Récord confirmado en Kaggle: **0.05140** (NDCG@20, con 29 features/4
-fuentes de candidatos, 2026-08-31). La 5ª fuente (similitud de resumen,
-32 features) está confirmada en CV local -- positivo en los 3 seeds,
-+2.6% -- pero **pendiente de confirmar en Kaggle**. Código:
-`src/recsys/models/ranker.py`.
+Récord confirmado en Kaggle: **0.05181** (NDCG@20, con 32 features/5
+fuentes de candidatos, 2026-08-31). Código: `src/recsys/models/ranker.py`.
+Ojo: el salto de esta última ronda en Kaggle (+0.8%, +0.00041 absoluto)
+es del orden del error estándar de una sola submission (~0.0065) --
+la evidencia local es más sólida (CV positivo en los 3 seeds, +2.6%,
+test pareado que confirma el mecanismo) que lo que una sola muestra de
+Kaggle puede confirmar por sí sola. Se adopta igual porque es la mejor
+config confirmada hasta ahora y la evidencia local es fuerte, no
+porque el número de Kaggle por sí solo sea concluyente.
 
 ## Idea básica: candidatos + reranking
 
@@ -217,7 +221,7 @@ split).
 | ALS solo | 0.094406 ± 0.001359 | 0.03864 (mejor config ALS confirmada) |
 | Ranker (26 features, 3 fuentes de candidatos) | 0.109735 ± 0.003719 | 0.04855 |
 | Ranker (29 features, 4 fuentes -- +autor ya leído) | 0.117495 ± 0.002562 | **0.05140 (récord actual)** |
-| Ranker (32 features, 5 fuentes -- +similitud de resumen) | 0.120547 ± 0.002674 | pendiente de confirmar |
+| Ranker (32 features, 5 fuentes -- +similitud de resumen) | 0.120547 ± 0.002674 | **0.05181 (récord actual)** |
 
 La 4ª fuente (autor) dio la mejora más grande y mejor validada de la
 sesión: recall del set de candidatos 0.394→0.445 (medido con
@@ -391,13 +395,15 @@ para distinguir señal real de ruido en este rango de efectos.
    nuevos traen señal distinguible (como autor), no solo más volumen de
    las mismas fuentes. Ver `decisiones.md` sección 12 y `bitacora.md`.
 3. ~~**Contenido en vez de más popularidad/colaborativo**~~
-   **✅ HECHO, CV positivo, pendiente Kaggle (2026-08-31)**: se midió
-   primero cuán importante era (co-diseñado con el usuario): los
-   targets que fallan las otras 4 fuentes son ~11x menos populares que
-   los que sí se capturan. Se implementó `sim_resumen_historial` como
-   **fuente** (no solo feature) -- recall 0.445→0.456 (+2.4%), CV
-   positivo en los 3 seeds (+2.6% promedio, más chico que autor pero
-   por encima del ruido). Ver `decisiones.md` sección 13 y `bitacora.md`.
+   **✅ HECHO Y CONFIRMADO EN KAGGLE (2026-08-31)**: se midió primero
+   cuán importante era (co-diseñado con el usuario): los targets que
+   fallan las otras 4 fuentes son ~11x menos populares que los que sí
+   se capturan. Se implementó `sim_resumen_historial` como **fuente**
+   (no solo feature) -- recall 0.445→0.456 (+2.4%), CV positivo en los
+   3 seeds (+2.6% promedio). **0.05181 en Kaggle, +0.8%** sobre el
+   récord anterior (0.05140) -- salto absoluto del orden del ruido de
+   una submission, pero la evidencia local es sólida. Ver
+   `decisiones.md` sección 13 y `bitacora.md`.
    Complemento/alternativa que queda sin probar: item-item kNN como 6ª
    fuente (`cooc`, ya calculado para `score_coleido`) -- sigue siendo
    colaborativo (mismo sesgo hacia libros con suficientes interacciones,

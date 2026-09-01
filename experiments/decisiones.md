@@ -17,16 +17,14 @@ recencia+co-lectura+editorial+resumen+popularidad/frecuencia de
 macro-género+tamaño de catálogo de editorial+señales cruzadas lector↔libro
 **+4ª fuente de autor ya leído+5ª fuente de similitud de resumen** →
 LightGBM, 32 features, hiperparámetros conservadores) es el modelo de
-referencia del proyecto. Récord confirmado en Kaggle: **0.05140** (con
-29 features/4 fuentes) — la 5ª fuente (resumen) está confirmada en CV
-local (positivo en los 3 seeds) pero **pendiente de confirmar en
-Kaggle**. Ideas concretas para la próxima sesión, en orden sugerido
-(ver `experiments/modelo_actual.md` para el detalle completo):
+referencia del proyecto, con **0.05181 confirmado en Kaggle** (récord
+actual). Ideas concretas para la próxima sesión, en orden sugerido (ver
+`experiments/modelo_actual.md` para el detalle completo):
 
 1. **Seguir atacando el generador de candidatos, no el reranking** —
    confirmado con evidencia real esta sesión: la 4ª fuente (autor) dio
    la mejora más grande (+5.9% en Kaggle), la 5ª (resumen) dio una
-   mejora más modesta pero real (+2.6% local, pendiente Kaggle). Pero
+   mejora más modesta pero real (+0.8% en Kaggle, +2.6% local). Pero
    **no todo lo que sube el recall ayuda**: subir `n_por_fuente` a 500
    también subió el recall (+30%) y el NDCG no acompañó (ver resuelto
    abajo) -- la ganancia depende de si los candidatos nuevos traen una
@@ -46,14 +44,18 @@ Kaggle**. Ideas concretas para la próxima sesión, en orden sugerido
    que tiene ~5x más poder estadístico.
 5. **Investigar más a fondo la brecha local-vs-Kaggle** — sigue sin
    resolverse del todo (ver sección de split y validación local, más
-   abajo).
+   abajo); el episodio de esta ronda (mejora local sólida, +2.6% en 3
+   seeds, pero un salto en Kaggle del orden del ruido de una sola
+   submission) es otro data point de esta brecha.
 
 **Resuelto:** 5ª fuente de candidatos por similitud de resumen
 (29→32 features) -- co-diseñada con el usuario tras preguntar cuán
 importante era recomendar libros "raros" (se midió: los targets que
 fallan las otras 4 fuentes son ~11x menos populares que los que sí se
 capturan). CV 3 seeds positivo en los 3 (+2.6% promedio), más chico que
-autor pero por encima del ruido. Pendiente confirmar en Kaggle. Ver
+autor pero por encima del ruido. **Confirmado en Kaggle: 0.05181,
+nuevo récord** (+0.8% sobre 0.05140) -- el salto absoluto es del orden
+del ruido de una submission, pero la evidencia local es sólida. Ver
 sección 13 y `bitacora.md`, sección "5ª fuente de candidatos: similitud
 de resumen".
 
@@ -266,7 +268,7 @@ catálogo de editorial" para las dos rondas más recientes.
 
 | Decisión | Estado sugerido | Detalle |
 |---|---|---|
-| Agregar una 5ª fuente de candidatos por similitud de resumen (contenido, no popularidad/colaborativo) | 🔄 **positivo en CV, pendiente de confirmar en Kaggle** | Motivada por medir (co-diseñado con el usuario, quien preguntó cuán importante era recomendar libros "raros"): los targets que las 4 fuentes anteriores fallan en capturar son ~11x menos populares (mediana 21 vs 231 interacciones) que los que sí capturan. Es la única de las 5 fuentes que no depende de cuánta gente más leyó un libro. Recall: 0.445→0.456 (+2.4%). CV 3 seeds: 0.120547±0.002674 vs 0.117495±0.002562 de las 29 features -- positivo en los 3 seeds (+0.00269/+0.00476/+0.00171, media +2.6%), más chico que autor pero por encima del ruido calibrado esta sesión. Ver `bitacora.md`, sección "5ª fuente de candidatos: similitud de resumen". |
+| Agregar una 5ª fuente de candidatos por similitud de resumen (contenido, no popularidad/colaborativo) | ✅ **confirmado en Kaggle -- nuevo récord del proyecto** | Motivada por medir (co-diseñado con el usuario, quien preguntó cuán importante era recomendar libros "raros"): los targets que las 4 fuentes anteriores fallan en capturar son ~11x menos populares (mediana 21 vs 231 interacciones) que los que sí capturan. Es la única de las 5 fuentes que no depende de cuánta gente más leyó un libro. Recall: 0.445→0.456 (+2.4%). CV 3 seeds: 0.120547±0.002674 vs 0.117495±0.002562 de las 29 features -- positivo en los 3 seeds (+0.00269/+0.00476/+0.00171, media +2.6%), más chico que autor pero por encima del ruido calibrado esta sesión. **0.05181 en Kaggle, +0.8% sobre 0.05140** -- el salto absoluto (0.00041) es del orden del error estándar de una submission (~0.0065), pero la evidencia local es sólida (a diferencia de señales cruzadas, donde ya era límite localmente) -- se interpreta como mejora real subestimada por el ruido de esta muestra puntual, no como que la mejora local fuera ruido. `"ranker"` (32 features, 5 fuentes) pasa a ser el modelo de referencia. Ver `bitacora.md`, sección "5ª fuente de candidatos: similitud de resumen". |
 | Procesar en lotes (`TAMANO_LOTE_RESUMEN=500`) para no materializar un producto denso usuarios×libros de una sola vez | ✅ **precaución aplicada preventivamente** | Tras dos problemas de memoria reales esta sesión (autor sin tope, `n_por_fuente=500`). En la práctica no hubo problema de memoria en esta ronda -- la única anomalía de rendimiento (seed=7 tardó ~2.9hs) fue por la PC entrando en reposo, no por memoria/código (ver `bitacora.md`). |
 | `score_resumen_candidato`/`rank_resumen_candidato`/`en_resumen_candidato` (3 features nuevas, 29→32) | 🔄 **mantenidas, pero test pareado dice que no aportan por sí solas** | Mismo patrón que autor: test pareado (seed=42) da 0.67 sigma, no significativo -- se solapan con `sim_resumen_historial`, ya existente. La mejora real viene de los candidatos. |
 

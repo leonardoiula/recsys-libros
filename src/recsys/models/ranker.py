@@ -1,12 +1,12 @@
 """Ranker de dos etapas: candidatos de ALS + popularidad por género +
-popularidad global + libros de autores ya leídos + similitud de resumen,
-reordenados por un `LGBMRanker` (LightGBM, objetivo `lambdarank`)
-entrenado para combinar esas cinco señales mejor de lo que cada una
-hace sola, más features auxiliares de autor/editorial/año de edición/
-diversidad de género/recencia/co-lectura ítem-ítem/popularidad y
-frecuencia de macro-género/señales cruzadas lector↔libro (género
-declarado del lector, edad del lector al publicarse el libro -- ver
-`calcular_features_auxiliares`).
+popularidad global + libros de autores ya leídos + similitud de resumen +
+co-lectura ítem-ítem (kNN), reordenados por un `LGBMRanker` (LightGBM,
+objetivo `lambdarank`) entrenado para combinar esas seis señales mejor
+de lo que cada una hace sola, más features auxiliares de autor/
+editorial/año de edición/diversidad de género/recencia/co-lectura
+ítem-ítem/popularidad y frecuencia de macro-género/señales cruzadas
+lector↔libro (género declarado del lector, edad del lector al
+publicarse el libro -- ver `calcular_features_auxiliares`).
 
 Un ranker que usa el score de otros modelos como *features* necesita que
 esos scores salgan de datos que el ranker no vio como etiqueta -- si no,
@@ -24,6 +24,8 @@ local pero empeoró el score real de Kaggle, ver `experiments/bitacora.md`.
 """
 
 from __future__ import annotations
+
+import heapq
 
 import lightgbm as lgb
 import numpy as np
@@ -80,6 +82,9 @@ FEATURES = [
     "score_resumen_candidato",
     "rank_resumen_candidato",
     "en_resumen_candidato",
+    "score_coleido_candidato",
+    "rank_coleido_candidato",
+    "en_coleido_candidato",
 ]
 
 N_MAX_FEATURES_TFIDF = 20000
@@ -202,7 +207,7 @@ def _generar_candidatos_por_resumen(
 
     A diferencia de esa feature (que solo puntúa candidatos que ya
     llegaron de otra fuente), esto busca en todo el catálogo -- la única
-    señal de las 5 fuentes que no depende de cuánta gente más leyó un
+    señal de las 6 fuentes que no depende de cuánta gente más leyó un
     libro, solo de su contenido. Motivada por medir que los libros
     objetivo que las otras 4 fuentes fallan en capturar son ~11x menos
     populares (mediana de interacciones) que los que sí capturan -- ver
@@ -450,9 +455,9 @@ def generar_candidatos_con_features(
     n_por_fuente: int = 150,
     n_por_autor: int = 20,
 ) -> pd.DataFrame:
-    """Arma, para cada usuario, la unión de candidatos de las cinco fuentes
+    """Arma, para cada usuario, la unión de candidatos de las seis fuentes
     (ALS, popularidad por género, popularidad global, libros de autores ya
-    leídos, similitud de resumen) con sus features.
+    leídos, similitud de resumen, co-lectura ítem-ítem) con sus features.
 
     Reusa las estructuras que ya arman `fit_popularity` (`stats_popularidad`),
     `fit_popularity_por_genero` (`stats_por_genero`) y `genero_preferido_por_usuario`
@@ -486,6 +491,22 @@ def generar_candidatos_con_features(
     `en_resumen_candidato` son distintos de `sim_resumen_historial` (que
     solo puntúa candidatos que ya llegaron de otra fuente, nunca
     propone candidatos nuevos por sí sola).
+
+    La fuente de co-lectura ítem-ítem (6ª fuente): el mismo cálculo que
+    ya arma `score_coleido` (`co_scores_por_usuario`, el batch
+    `X_batch @ cooc` sobre la matriz de co-ocurrencia de
+    `_calcular_cooccurrencia`) trae, para cada usuario, un score de
+    co-lectura contra **todo el catálogo indexado por ALS** -- hasta
+    ahora solo se usaba para puntuar candidatos que ya habían llegado de
+    otra fuente. Acá se toma además el top-`n_por_fuente` de ese mismo
+    cálculo como candidatos nuevos (excluyendo `vistos`), igual que las
+    demás fuentes. `score_coleido_candidato`/`rank_coleido_candidato`/
+    `en_coleido_candidato` son distintos de `score_coleido` (que sigue
+    puntuando cualquier candidato, sin importar su fuente) -- mismo
+    patrón que autor/resumen: la feature de tracking documenta qué
+    fuente propuso el candidato, no reemplaza a la feature existente.
+    Hereda la misma limitación que ALS y co-lectura hoy: solo alcanza a
+    usuarios con fila en la matriz de ALS (`usuarios_con_als`).
 
     `features_auxiliares` es el dict que arma `calcular_features_auxiliares`
     (autor, año de edición, diversidad de género, recencia). Un candidato
@@ -653,6 +674,25 @@ def generar_candidatos_con_features(
             c["rank_resumen_candidato"] = rank_resumen
             c["en_resumen_candidato"] = 1
 
+        # Candidatos por co-lectura ítem-ítem (6ª fuente, ver docstring):
+        # mismo score que ya arma `co_scores_por_usuario` para
+        # `score_coleido` (batch `X_batch @ cooc`), pero acá se toma el
+        # top-n_por_fuente de TODO ese cálculo como candidatos nuevos, no
+        # solo para puntuar lo que ya trajo otra fuente. `heapq.nlargest`
+        # evita ordenar el dict completo (puede tener miles de entradas
+        # para usuarios con mucho historial) cuando solo hace falta el
+        # top-n_por_fuente.
+        co_scores_usuario = co_scores_por_usuario.get(id_lector, {})
+        top_coleido = heapq.nlargest(n_por_fuente, co_scores_usuario.items(), key=lambda kv: kv[1])
+        for rank_coleido, (columna_candidato, score) in enumerate(top_coleido):
+            id_libro = libros_por_columna[columna_candidato]
+            if id_libro in vistos:
+                continue
+            c = candidatos.setdefault(id_libro, {})
+            c["score_coleido_candidato"] = float(score)
+            c["rank_coleido_candidato"] = rank_coleido
+            c["en_coleido_candidato"] = 1
+
         n_usuario = n_interacciones_por_usuario.get(id_lector, 0)
         autores_leidos = n_libros_autor_leidos_por_usuario.get(id_lector, {})
         editoriales_leidas = n_libros_editorial_leidos_por_usuario.get(id_lector, {})
@@ -661,7 +701,6 @@ def generar_candidatos_con_features(
         dias_desde_ultima = dias_desde_ultima_interaccion_por_usuario.get(
             id_lector, SENTINEL_DIAS_DESCONOCIDO
         )
-        co_scores_usuario = co_scores_por_usuario.get(id_lector, {})
         frecuencias_genero_macro_usuario = frecuencia_genero_macro_por_usuario.get(id_lector, {})
         genero_lector_usuario = genero_lector_por_lector.get(id_lector)
         score_por_libro_genero_lector_usuario = score_por_libro_por_genero_lector.get(genero_lector_usuario, {})
@@ -753,6 +792,9 @@ def generar_candidatos_con_features(
                     "score_resumen_candidato": f.get("score_resumen_candidato", 0.0),
                     "rank_resumen_candidato": f.get("rank_resumen_candidato", n_por_fuente),
                     "en_resumen_candidato": f.get("en_resumen_candidato", 0),
+                    "score_coleido_candidato": f.get("score_coleido_candidato", 0.0),
+                    "rank_coleido_candidato": f.get("rank_coleido_candidato", n_por_fuente),
+                    "en_coleido_candidato": f.get("en_coleido_candidato", 0),
                 }
             )
 
@@ -771,7 +813,7 @@ def armar_dataset_entrenamiento(
     cada usuario en `train_ranker`, columnas `id_lector`/`id_libro`).
 
     Si el libro-etiqueta de un usuario no aparece entre sus candidatos
-    generados (cobertura incompleta de las 5 fuentes), se lo inyecta
+    generados (cobertura incompleta de las 6 fuentes), se lo inyecta
     igual con features "ausente" (mismo sentinel que usa
     `generar_candidatos_con_features`) -- si no, ese usuario no aporta
     ningún positivo y el ranker nunca aprendería de él. `group` es la
@@ -798,6 +840,7 @@ def armar_dataset_entrenamiento(
             fila_faltante["rank_genero"] = n_por_fuente
             fila_faltante["rank_autor_candidato"] = n_por_autor
             fila_faltante["rank_resumen_candidato"] = n_por_fuente
+            fila_faltante["rank_coleido_candidato"] = n_por_fuente
             fila_faltante["dias_desde_ultima_interaccion_usuario"] = SENTINEL_DIAS_DESCONOCIDO
             fila_faltante["id_lector"] = id_lector
             fila_faltante["id_libro"] = libro_objetivo

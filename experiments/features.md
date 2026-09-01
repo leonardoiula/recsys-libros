@@ -1,6 +1,6 @@
 # Catálogo de features del ranker
 
-Lista única y legible de las 32 features que usa `"ranker"` (`FEATURES`
+Lista única y legible de las 35 features que usa `"ranker"` (`FEATURES`
 en `src/recsys/models/ranker.py`), para revisar de un vistazo qué hay y
 pensar qué falta o vale la pena mejorar. El detalle de *por qué* se
 agregó cada una, los resultados de validación cruzada y de Kaggle están
@@ -69,6 +69,27 @@ constante en `ranker.py`).
 | `score_resumen_candidato` | Similitud coseno TF-IDF entre el resumen del candidato y el perfil de lectura del usuario (mismo cálculo que `sim_resumen_historial`, pero buscando en todo el catálogo, no solo entre los candidatos que ya trajeron otras fuentes). | `0.0` |
 | `rank_resumen_candidato` | Posición del candidato dentro del top-`n_por_fuente` por similitud (0 = más similar). | `n_por_fuente` (justo afuera de la ventana de esta fuente) |
 | `en_resumen_candidato` | 1/0 — ¿esta fuente propuso el candidato? Distinto de `sim_resumen_historial` (que nunca propone candidatos nuevos por sí sola, solo puntúa los que ya llegaron de otra fuente). | `0` |
+
+## Candidatos por co-lectura ítem-ítem (6ª fuente — ver `decisiones.md`)
+
+Para cada usuario, el top-`n_por_fuente` de libros de **todo el
+catálogo indexado por ALS** con mayor score de co-lectura contra su
+historial (mismo cálculo `co_scores_por_usuario`, batch
+`X_batch @ cooc`, que ya arma `score_coleido` más abajo — ver
+`_calcular_cooccurrencia` en `ranker.py`). A diferencia de esa feature
+(que solo puntúa candidatos que ya llegaron de otra fuente), esto busca
+en todo el catálogo de ALS. Sigue siendo una señal colaborativa (mismo
+sesgo hacia libros con suficientes interacciones que ALS/popularidad,
+aunque más suave), pero trae candidatos que ALS no trae — dos libros
+pueden co-leerse mucho sin que ALS los recomiende al mismo usuario.
+Hereda la misma limitación que ALS/co-lectura: solo alcanza a usuarios
+con fila en la matriz (`usuarios_con_als`).
+
+| Feature | Qué mide | Si falta |
+|---|---|---|
+| `score_coleido_candidato` | Score de co-lectura del candidato contra el historial del usuario (mismo cálculo que `score_coleido`). | `0.0` |
+| `rank_coleido_candidato` | Posición del candidato dentro del top-`n_por_fuente` por co-lectura (0 = más co-leído). | `n_por_fuente` (justo afuera de la ventana de esta fuente) |
+| `en_coleido_candidato` | 1/0 — ¿esta fuente propuso el candidato? Distinto de `score_coleido` (que puntúa cualquier candidato, sin importar su fuente). | `0` |
 
 ## Candidatos de popularidad por género preferido del usuario
 

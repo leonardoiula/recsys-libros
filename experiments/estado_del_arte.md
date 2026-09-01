@@ -22,6 +22,115 @@ resumen, img_src)`. Volumen: 461.408 interacciones, 11.285 lectores
 (10.673 con actividad), 128.743 libros en catálogo (48.137 con al menos
 una interacción). La matriz usuario-libro tiene **99.91% de sparsity**.
 
+## Glosario: qué es ALS, qué es LightGBM, qué es "el ranker"
+
+El resto del documento usa estos tres nombres todo el tiempo. Si ya
+sabés qué son, saltate esta sección.
+
+### ALS (*Alternating Least Squares*) — filtrado colaborativo
+
+El punto de partida del filtrado colaborativo es la matriz
+**usuario×libro**: una fila por lector, una columna por libro, y en la
+celda `(u, i)` cuánto le gustó el libro `i` al lector `u` (acá, el
+rating 1-10; ver la sección de ALS más abajo). Es una matriz enorme y
+casi vacía — 99.91% de las celdas son cero.
+
+ALS **factoriza** esa matriz: busca dos matrices mucho más chicas,
+`U` (un vector de 128 números por usuario) y `V` (un vector de 128
+números por libro), tales que el producto interno entre el vector del
+usuario `u` y el del libro `i` aproxime la celda observada `(u, i)`.
+Esos vectores son los *embeddings*: cada
+usuario y cada libro quedan ubicados en un mismo espacio latente de 128
+dimensiones, aprendido de los datos (nadie define qué significa cada
+dimensión). La gracia es que el producto `U · Vᵀ` está definido para
+**todas** las celdas, incluidas las 99.91% vacías — ahí es donde salen
+las recomendaciones: los libros que el usuario no leyó pero cuyo
+embedding cae cerca del suyo.
+
+El "*alternating*" es el algoritmo de optimización. Minimizar el error
+sobre `U` y `V` **a la vez** es un problema no convexo (el término
+`u·v` es un producto de dos incógnitas), pero si se **fija** una de las
+dos, el problema sobre la otra es una regresión de mínimos cuadrados
+regularizada común y corriente, con solución en forma cerrada — un
+sistema lineal por fila. Entonces se alterna: fijar `V` y resolver
+todos los `u`, fijar `U` y resolver todos los `v`, repetir
+(`iterations=20`). Cada paso baja el error de forma garantizada y es
+paralelizable por fila, que es lo que hace a ALS escalable y el
+baseline estándar de filtrado colaborativo desde hace ~15 años (la
+variante para feedback implícito con pesos de confianza es
+Hu/Koren/Volinsky 2008, que es la que implementa la librería
+`implicit`).
+
+**Rol concreto acá**: ALS es **una de las 6 fuentes de candidatos**, no
+el modelo final. Aporta su top-150 por usuario, y además su
+infraestructura se reusa para otras piezas: la matriz sparse y los
+índices `fila_por_usuario`/`libros_por_columna` que devuelve `fit_als`
+son los mismos que usan la co-lectura ítem-ítem y el perfil TF-IDF.
+Limitación heredada: solo alcanza a usuarios con fila en esa matriz —
+un usuario sin historial en `train_candidatos` no recibe candidatos de
+ALS (ni de co-lectura, ni de resumen), y cae al fallback de
+popularidad.
+
+### LightGBM y `LGBMRanker` (`lambdarank`) — la etapa de reranking
+
+**LightGBM** es un framework de *gradient boosted decision trees*: un
+ensamble de árboles de decisión entrenados en secuencia, donde cada
+árbol nuevo se ajusta al error que dejaron los anteriores. Comparado
+con una red neuronal, es lo que mejor funciona "de fábrica" sobre datos
+**tabulares heterogéneos** como los de acá: 35 columnas con escalas
+completamente distintas (un rank entero de 0 a 150, una similitud
+coseno en [0,1], un conteo de interacciones, un flag 0/1), sin
+normalizar nada, capturando no-linealidades e interacciones entre
+features sin que haya que declararlas.
+
+`LGBMRanker` con `objective="lambdarank"` es la variante de
+**learning-to-rank**, y es la parte menos obvia: **no predice un valor
+absoluto ni clasifica binario**. Se entrena con los ejemplos agrupados
+(el parámetro `group` de `fit`: acá, un grupo = todos los candidatos de
+un mismo usuario) y lo que optimiza es el **orden dentro de cada
+grupo**. LambdaRank hace eso ponderando el gradiente de cada par de
+candidatos por cuánto cambiaría la métrica de ranking (NDCG) si se
+intercambiaran las posiciones de ese par — una aproximación
+diferenciable de NDCG, que como métrica es escalonada y no derivable.
+Consecuencia práctica: el número que devuelve `.predict()` **no tiene
+escala interpretable** (no es una probabilidad ni un rating estimado),
+solo sirve para ordenar candidatos del mismo usuario entre sí.
+
+**Rol concreto acá**: es la **etapa 2**. Recibe la unión de candidatos
+de las 6 fuentes con sus 35 features y aprende a combinarlas — en vez
+de decidir a mano cómo pesar "ALS lo puso 3ro" contra "es de un autor
+que ya leyó" contra "su resumen se parece a lo que viene leyendo".
+
+### "El ranker": ojo, el nombre se usa para dos cosas
+
+Vale la pena aclararlo porque es una fuente real de confusión al leer
+el resto de la documentación del proyecto:
+
+| Cuando se dice… | Puede significar… |
+|---|---|
+| **el ranker** / `--model ranker` / `models/ranker.py` / "récord del ranker" | El **modelo completo del proyecto**: el pipeline de dos etapas entero (6 fuentes de candidatos + reranking). Es el sentido más frecuente. |
+| **el ranker** / `fit_ranker` / `modelo_ranker` / "el ranker aprende a…" | Solo la **segunda etapa**: el `LGBMRanker` de LightGBM que reordena. |
+
+En este documento se intenta decir "**el ranker**" (o "el pipeline")
+para el primer sentido y "**el `LGBMRanker`**" para el segundo, pero en
+`bitacora.md` y en los docstrings del código los dos usos conviven.
+Regla práctica para desambiguar: si la frase habla de candidatos,
+fuentes o del score de Kaggle, es el pipeline; si habla de features,
+`feature_importances_`, `num_leaves` o `lambdarank`, es el LightGBM.
+
+### Por qué dos etapas ("retrieval + ranking")
+
+El patrón estándar de sistemas de recomendación de producción, y la
+razón es de costo: calcular 35 features y correr LightGBM sobre los
+128.743 libros del catálogo × cada usuario es inviable, mientras que
+hacerlo sobre ~695 candidatos por usuario es barato. La etapa 1 usa
+modelos rápidos y aproximados para bajar el catálogo a un puñado de
+candidatos; la etapa 2 gasta el modelo caro y preciso solo ahí. El
+corolario incómodo, y el hallazgo central de este proyecto: **la etapa
+1 fija un techo duro** — si el libro que el usuario efectivamente iba a
+leer no está entre los candidatos, no hay reranking que lo recupere
+(hoy ese techo, el *recall* del set de candidatos, es 0.512).
+
 ## Récord actual
 
 **0.05262 de NDCG@20 en Kaggle** (2026-09-01), con el modelo
@@ -72,6 +181,83 @@ no un reemplazo.
 
 Total de candidatos por usuario: unión de las 6 fuentes, media ~695
 (hasta ~820 para usuarios pesados).
+
+### El flujo completo, de los datos crudos al top-20
+
+Cómo se construye la lista de 20 libros de un usuario (flujo de
+*inferencia*, el de `submit.py --model ranker`):
+
+```mermaid
+flowchart TD
+    subgraph crudos["data/raw/data.db"]
+        INT[("interacciones<br/>461.408")]
+        LIB[("libros<br/>128.743")]
+        LEC[("lectores<br/>11.285")]
+    end
+
+    INT --> SPLIT["split_train_val (n_val=1)<br/>leave-one-out temporal"]
+    SPLIT --> TC["train_candidatos<br/>fitea TODAS las señales de etapa 1"]
+    SPLIT -.-> TR["train_ranker<br/>etiquetas: el libro que leyó después"]
+
+    TC --> FIT["fit_als · fit_popularity · fit_popularity_por_genero<br/>calcular_features_auxiliares:<br/>co-ocurrencia ítem-ítem, TF-IDF de resúmenes, macro-género,<br/>autor / editorial / año / recencia / señales del lector"]
+    LIB --> FIT
+    LEC --> FIT
+
+    FIT --> E1
+
+    subgraph E1["ETAPA 1 — candidatos (hasta 150 por fuente y usuario)"]
+        direction LR
+        C1["1 · ALS<br/>colaborativo"]
+        C2["2 · Popularidad<br/>global"]
+        C3["3 · Popularidad del<br/>género preferido"]
+        C4["4 · Autores ya<br/>leídos (≤20 c/u)"]
+        C5["5 · Similitud de<br/>resumen TF-IDF"]
+        C6["6 · Co-lectura<br/>ítem-ítem (kNN)"]
+    end
+
+    C1 --> UNION
+    C2 --> UNION
+    C3 --> UNION
+    C4 --> UNION
+    C5 --> UNION
+    C6 --> UNION
+
+    UNION["UNIÓN deduplicada · ~695 candidatos/usuario<br/>se descartan los libros que el usuario ya leyó<br/>cada candidato queda marcado con qué fuente(s) lo propusieron"]
+    UNION --> FEATS["35 features por candidato<br/>score_* / rank_* / en_* de cada fuente (18)<br/>+ autor, editorial, año, macro-género, co-lectura,<br/>texto, volumen y señales cruzadas lector↔libro (17)"]
+
+    TR -.-> DS["armar_dataset_entrenamiento<br/>y=1 para el libro real, group = candidatos del usuario"]
+    FEATS -.-> DS
+    DS -.-> LGBMFIT["fit_ranker: LGBMRanker (lambdarank)"]
+    LGBMFIT -.-> SCORE
+
+    FEATS --> SCORE["ETAPA 2 — LGBMRanker.predict<br/>un score por candidato"]
+    SCORE --> ORD["ordenar por score descendente"]
+    ORD --> TOP["TOP-20 final<br/>fallback a popularidad global si faltan candidatos"]
+    TOP --> CSV[/"csv de entrega: id_lector,id_libro<br/>el orden de las filas ES el ranking"/]
+```
+
+Las flechas punteadas son el **entrenamiento** del `LGBMRanker`, que
+pasa una sola vez por corrida; las llenas son el camino que recorre
+cada usuario a la hora de recomendarle. Ojo con dos cosas que el
+diagrama comprime:
+
+- **Etapa 1 y features son una sola función**
+  (`generar_candidatos_con_features`): las 6 fuentes llenan un dict de
+  candidatos por usuario y recién después, sobre esa unión, se calculan
+  las 35 columnas. Se dibuja separado porque son dos decisiones
+  distintas (qué candidatos traer vs. cómo describirlos), pero no son
+  dos pasadas sobre los datos. Esa función se llama **dos veces** por
+  corrida — una para los usuarios con los que se entrena el
+  `LGBMRanker` y otra para los usuarios a los que hay que recomendarles
+  — y es, lejos, la parte más cara del pipeline (~130s cada llamada).
+- **En evaluación local el split tiene tres niveles, no dos** (ver más
+  abajo): se parte una vez más para reservar un `test_final` con el que
+  medir NDCG@20. En producción ese tercer tramo no existe — no hay un
+  "futuro" que esconder, es la entrega real —, así que `submit.py`
+  corta en `train_candidatos`/`train_ranker` y genera los candidatos
+  finales con las mismas señales de etapa 1 que se usaron para entrenar
+  el `LGBMRanker` (los libros ya leídos sí se filtran con **todos** los
+  datos, incluida la última interacción).
 
 ## Modelos e hiperparámetros
 
@@ -163,6 +349,130 @@ vienen de ninguna fuente en particular:
 Todas se calculan **solo con el tramo de entrenamiento** (nunca con
 datos que el ranker vea como etiqueta), excepto la metadata estática
 del libro (autor/editorial/año/resumen), que no depende del split.
+
+### Importancia de features medida (seed 42, una sola corrida)
+
+`scripts/evaluate_ranker.py` imprime `feature_importances_` en cada
+corrida, pero el número nunca había quedado en un documento. Esto es la
+foto del modelo actual de 35 features (seed 42: ALS 0.092851, ranker
+**0.118625** — consistente con la CV de 3 seeds, 0.121983 ± 0.002949).
+
+**Antes de leer la tabla, tres advertencias:**
+
+1. **Es una sola corrida, no un promedio de 3 seeds ni una medición con
+   desvío.** Sirve para orientarse, no para decidir. Este proyecto ya
+   se comió el costo de sobre-interpretar un número sin desvío (ver
+   `modelo_actual.md`, "Hallazgo incómodo"): las diferencias chicas
+   dentro de esta tabla no son evidencia de nada.
+2. **Hay dos medidas de importancia y acá divergen fuerte.** `split` =
+   en cuántos nodos del ensamble se usó la feature (es lo que devuelve
+   `feature_importances_` por default y lo que se venía mirando en el
+   proyecto). `gain` = cuánta reducción de pérdida acumuló. `gain`
+   premia mucho a las features que caen cerca de la raíz de los
+   árboles (ahí hay más datos por nodo), así que concentra; `split` es
+   más plano.
+3. **Importancia ≠ contribución al NDCG.** Una feature muy usada puede
+   estar sirviendo para segmentar, no para ordenar (ver la lectura de
+   abajo). Para saber si una feature aporta al resultado, el
+   instrumento del proyecto es el test pareado por usuario, no esta
+   tabla.
+
+Ordenada por `gain`:
+
+| # | Feature | % gain | splits | % split |
+|---|---|---|---|---|
+| 1 | `n_interacciones_usuario` | 61.36% | 469 | 7.82% |
+| 2 | `rank_als` | 16.62% | 344 | 5.73% |
+| 3 | `n_libros_editorial_catalogo` | 4.93% | 223 | 3.72% |
+| 4 | `score_als` | 1.98% | 313 | 5.22% |
+| 5 | `rank_coleido_candidato` | 1.89% | 284 | 4.73% |
+| 6 | `rank_autor_candidato` | 1.81% | 236 | 3.93% |
+| 7 | `n_interacciones_libro` | 1.66% | 361 | 6.02% |
+| 8 | `en_autor_leido` | 1.63% | 92 | 1.53% |
+| 9 | `anio_edicion_dif` | 1.08% | 508 | 8.47% |
+| 10 | `dias_desde_ultima_interaccion_usuario` | 0.92% | 442 | 7.37% |
+| 11 | `frecuencia_genero_macro_usuario` | 0.68% | 319 | 5.32% |
+| 12 | `score_autor_candidato` | 0.63% | 148 | 2.47% |
+| 13 | `n_generos_distintos_usuario` | 0.56% | 145 | 2.42% |
+| 14 | `score_coleido` | 0.56% | 236 | 3.93% |
+| 15 | `popularidad_genero_macro_candidato` | 0.48% | 260 | 4.33% |
+| 16 | `sim_resumen_historial` | 0.48% | 310 | 5.17% |
+| 17 | `n_libros_autor_leidos` | 0.39% | 177 | 2.95% |
+| 18 | `popularidad_genero_lector_candidato` | 0.33% | 231 | 3.85% |
+| 19 | `score_coleido_candidato` | 0.32% | 124 | 2.07% |
+| 20 | `score_resumen_candidato` | 0.30% | 71 | 1.18% |
+| 21 | `frecuencia_genero_macro_por_genero_lector` | 0.29% | 151 | 2.52% |
+| 22 | `rank_resumen_candidato` | 0.25% | 66 | 1.10% |
+| 23 | `en_editorial_leida` | 0.22% | 46 | 0.77% |
+| 24 | `n_libros_editorial_leidos` | 0.17% | 142 | 2.37% |
+| 25 | `edad_lector_al_publicarse` | 0.17% | 129 | 2.15% |
+| 26 | `rank_genero` | 0.09% | 61 | 1.02% |
+| 27 | `score_popularidad` | 0.09% | 35 | 0.58% |
+| 28 | `score_genero` | 0.07% | 62 | 1.03% |
+| 29 | `rank_popularidad` | 0.02% | 15 | 0.25% |
+| 30-35 | `en_als`, `en_popularidad`, `en_genero`, `en_autor_candidato`, `en_resumen_candidato`, `en_coleido_candidato` | **0.00%** | **0** | **0.00%** |
+
+**Cómo se lee esto:**
+
+- **`n_interacciones_usuario` domina el `gain` (61%) pero no está
+  ordenando nada.** Es una feature **constante dentro del grupo de un
+  usuario**: todos sus candidatos tienen el mismo valor, así que por sí
+  sola no puede cambiar el orden entre ellos. Lo que hace es
+  **segmentar**: parte el árbol por nivel de actividad del lector y
+  deja que las ramas de abajo pesen distinto al resto de las features
+  para un usuario con 5 interacciones que para uno con 300. Lo mismo
+  vale, más abajo, para `dias_desde_ultima_interaccion_usuario` y
+  `n_generos_distintos_usuario`. Que caiga en la raíz de casi todos los
+  árboles explica también por qué acapara el `gain`.
+- **ALS sigue siendo la columna vertebral del orden**: `rank_als` +
+  `score_als` = 18.6% del `gain`, y son la primera señal
+  *candidato-dependiente* de la tabla. Coherente con el resto del
+  documento.
+- **Las fuentes nuevas entran alto y por el `rank`, no por el
+  `score`**: `rank_coleido_candidato` (5º) y `rank_autor_candidato`
+  (6º) le ganan holgadamente a sus `score_*` respectivos (19º y 12º).
+  Tiene sentido: los scores de esas fuentes están en escalas raras
+  (conteos de co-lectura, popularidad global reciclada) mientras que la
+  posición dentro de la fuente ya viene normalizada.
+- **Sorpresa: `n_libros_editorial_catalogo` es 3ro por `gain`.** Es la
+  feature de editorial que es propiedad *del libro* (cuántos títulos
+  tiene esa editorial en todo el catálogo), no del historial del
+  usuario — probablemente funciona como proxy de "editorial grande y
+  establecida". No hay que confundirla con
+  `en_editorial_leida`/`n_libros_editorial_leidos`, que sí quedan al
+  fondo (23ª y 24ª).
+- **Popularidad global y por género están casi al final**
+  (`rank_popularidad` es la última con uso distinto de cero, 0.02%).
+  Siguen siendo valiosas como *fuentes de candidatos* — que es para lo
+  que están —, pero como señal de orden las tapan por completo ALS y
+  co-lectura.
+
+**El hallazgo más concreto: las 6 features `en_*` de fuente no se usan
+nunca.** `en_als`, `en_popularidad`, `en_genero`,
+`en_autor_candidato`, `en_resumen_candidato` y `en_coleido_candidato`
+tienen **exactamente 0 splits** — LightGBM no las mira en ningún nodo.
+La explicación es que son redundantes: "la fuente X propuso este
+candidato" es exactamente `rank_X < n_por_fuente`, y el árbol prefiere
+partir por el `rank_*`, que dice lo mismo *y además gradúa*. Como una
+feature con 0 splits no contribuye al score, sacarlas dejaría el modelo
+de 35 a 29 features sin cambiar las predicciones de esta corrida. Es
+una observación, no una decisión tomada — habría que confirmar que el
+patrón se repite en los 3 seeds antes de tocar nada. **Ojo con no
+confundirlas** con `en_autor_leido` (8ª por `gain`, bien usada) y
+`en_editorial_leida`: esas dos miden el *historial del usuario*, no de
+dónde vino el candidato.
+
+**Contra lo que decían las rondas anteriores** (`decisiones.md`,
+`bitacora.md`, sobre bases de 23-29 features y mirando `split`):
+
+- ✅ Se sostiene que **`en_editorial_leida` es de las señales más
+  flojas** (23ª de 35 por `gain`, 27ª por `split`).
+- ⚠️ **No se sostiene** que `score_coleido` y `sim_resumen_historial`
+  estén "en el grupo de mayor peso": con 35 features quedan en el medio
+  de la tabla (11ª y 8ª por `split`, 14ª y 16ª por `gain`). No es
+  necesariamente una contradicción — ahora compiten con las features
+  que trajeron las fuentes 4/5/6, que en buena medida capturan la misma
+  señal —, pero conviene dejar de citar esa afirmación como vigente.
 
 ## Cómo se valida localmente
 

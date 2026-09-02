@@ -581,6 +581,17 @@ mejor todavía — pero no es requisito excluyente.
   los de TF-IDF, contra la hipótesis de que iban a capturar
   parafraseo/sinónimos. Ver `experiments/decisiones.md` sección 15 y
   `bitacora.md` para el detalle y la hipótesis de por qué.
+- **7ª fuente de candidatos por editorial ya leída** (mirror exacto de
+  la 4ª fuente, autor): medido primero que 50.6% de los targets son de
+  una editorial ya leída (24% sin ser también de autor ya leído, no
+  redundante en el papel) — una oportunidad más grande que la que
+  justificó autor. Implementada igual, pero el recall casi no se movió
+  (0.5115→0.5167, +1.0%, muy por debajo del 24pp teórico) y el NDCG@20
+  quedó dentro del ruido (0.118625→0.118847). Hipótesis: a diferencia
+  de autor (catálogos chicos), el catálogo de una editorial es disperso
+  y sus libros más populares ya los traían ALS/popularidad global — la
+  fuente sumó candidatos mayormente redundantes, no nuevos. Ver
+  `experiments/decisiones.md` sección 16 y `bitacora.md`.
 
 ## Próximos pasos (agenda completa en `decisiones.md`)
 

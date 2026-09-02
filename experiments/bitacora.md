@@ -2244,3 +2244,90 @@ prometedor que "reemplazar TF-IDF" sería agregarlo como *feature
 adicional* (no como reemplazo) o probar con un modelo de embeddings
 más grande/afinado al dominio literario -- ninguno de los dos se probó
 esta ronda.
+
+## 7ª fuente de candidatos: libros de editoriales ya leídas — descartado
+
+### Objetivo
+
+Retomar la agenda de atacar el generador de candidatos (el cuello de
+botella identificado en `modelo_actual.md`). Antes de implementar,
+midiendo con el mismo método que justificó la 4ª fuente (autor): qué
+fracción de los targets de validación (seed=42, 8.904 targets) ya está
+cubierta por una señal de historial.
+
+```
+targets de una editorial ya leida:            0.5063 (4508)
+targets de un autor ya leido (control):        0.3187 (2838)
+targets de editorial Y autor ya leidos:        0.2664 (2372)
+targets de editorial ya leida pero NO autor:   0.2399 (2136)
+```
+
+50.6% de los targets son de una editorial ya leída -- más que el 31.9%
+de autor (control, cercano al 28.6% documentado en la ronda de autor,
+pequeña diferencia de metodología de medición). 24% son de editorial ya
+leída **sin** ser también de autor ya leído -- en el papel, no es señal
+redundante con la 4ª fuente. Reforzaba la hipótesis que
+`n_libros_editorial_catalogo` (tamaño del catálogo de la editorial) ya
+fuera la 3ª feature más importante por `gain` en `feature_importances_`
+(ver `estado_del_arte.md`).
+
+### Implementación
+
+Mirror exacto de la fuente de autor (`generar_candidatos_con_features`
+en `ranker.py`): para cada editorial que el usuario ya leyó
+(`n_libros_editorial_leidos_por_usuario`, ya calculado en
+`calcular_features_auxiliares`), hasta `n_por_editorial=20` libros sin
+leer de esa editorial, rankeados por popularidad global. 3 features
+nuevas (`score_editorial_candidato`/`rank_editorial_candidato`/
+`en_editorial_candidato`, 35→38), mismo tope total a `n_por_fuente`
+priorizando las editoriales más leídas (mismo fix de memoria que ya
+hizo falta para autor). 5 tests nuevos mirror de los de autor, suite
+completa en verde (85/85).
+
+### Resultado: recall casi no sube, muy por debajo de la oportunidad teórica
+
+Chequeo de recall (`scripts/recall_candidatos.py`, seed=42 -- mismo
+criterio que descartó `n_por_fuente=500` sin correr el CV completo):
+
+| | 6 fuentes (baseline) | 7 fuentes (+editorial) |
+|---|---|---|
+| Recall del set de candidatos | 0.5115 | 0.5167 (+1.0%) |
+| NDCG@20 | 0.118625 | 0.118847 (+0.19%) |
+| Eficiencia de ranking (NDCG/recall) | 0.2319 | 0.2300 (-0.8%) |
+| Candidatos por usuario (media) | ~695-758 | 758.2 |
+
+El recall subió apenas 1%, muy por debajo del 24pp de oportunidad
+teórica medida arriba -- la brecha entre "oportunidad medida" y "recall
+real" es la señal más importante acá. El NDCG (+0.19%) está muy por
+debajo incluso del error estándar pareado (~0.0008) que usa el
+proyecto para distinguir señal de ruido -- no cumple ni el mínimo para
+pensar en correr el CV completo de 3 seeds, así que no se gastó ese
+tiempo ni una submission de Kaggle.
+
+### Reflexión: por qué la oportunidad teórica no se tradujo en recall
+
+Sin confirmar con más experimentos (hipótesis, no hallazgo): a
+diferencia de autor (catálogos chicos -- el top-20 por popularidad
+global de un autor cubre casi todo lo que escribió), una editorial
+tiene un catálogo mucho más disperso (`decisiones.md` sección 8: 2.762
+editoriales entre libros con interacción, 91% con menos de 20 libros,
+pero con una cola de editoriales grandes con cientos). El 50.6%/24pp
+medido es el techo si *todos* los libros sin leer de esas editoriales
+fueran candidatos -- la versión real, rankeada por popularidad global
+y con tope, probablemente termina proponiendo sobre todo libros
+generalmente populares que ALS/popularidad global **ya traían** por su
+cuenta, no candidatos genuinamente nuevos que capturen el target
+específico (que puede ser un libro menos popular dentro del catálogo
+de esa editorial). Lección para la próxima vez que se mida una
+oportunidad de este tipo: el % de targets cubiertos por una señal de
+historial es el techo si el catálogo relevante es chico y concentrado
+(como autor), pero sobreestima mucho el recall real cuando el catálogo
+es disperso y la fuente rankea por popularidad general (como
+editorial) -- convendría, antes de implementar, revisar también qué
+tan grande es la cola de cada editorial ya leída, no solo el % de
+targets.
+
+Código revertido en su totalidad (`ranker.py`, `submit.py`,
+`tests/test_ranker.py`, `experiments/features.md`) tras el resultado --
+mismo criterio que el experimento de embeddings, no queda nada en el
+repo salvo esta entrada.

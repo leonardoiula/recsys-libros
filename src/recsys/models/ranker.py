@@ -25,7 +25,10 @@ local pero empeoró el score real de Kaggle, ver `experiments/bitacora.md`.
 
 from __future__ import annotations
 
+import hashlib
 import heapq
+import pickle
+from pathlib import Path
 
 import lightgbm as lgb
 import numpy as np
@@ -34,7 +37,7 @@ import scipy.sparse as sp
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from recsys.data import libros_leidos_por_usuario, split_train_val
-from recsys.evaluation import evaluar_ndcg_personalizado
+from recsys.evaluation import evaluar_ndcg_personalizado, ndcg_at_k
 from recsys.models.als import fit_als
 from recsys.models.als import recomendar_por_usuario as _recomendar_als
 from recsys.models.popularity import fit_popularity
@@ -87,11 +90,21 @@ FEATURES = [
     "en_coleido_candidato",
 ]
 
+FUENTES_CANDIDATOS = frozenset({"als", "popularidad", "genero", "autor", "resumen", "coleido"})
+"""Nombres válidos de fuente para el parámetro `fuentes_activas` de
+`generar_candidatos_con_features`/`preparar_pipeline`/`preparar_pipeline_cacheado`.
+Permite apagar una fuente entera (no solo sus features de tracking) para comparar
+generadores de candidatos completos -- ver `scripts/comparar_generadores_pareado.py`."""
+
 N_MAX_FEATURES_TFIDF = 20000
 MIN_DF_TFIDF = 2
 MAX_DF_TFIDF = 0.8
 
 SENTINEL_DIAS_DESCONOCIDO = 99999
+
+CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "cache"
+"""Directorio default de `preparar_pipeline_cacheado` -- no se commitea (ver
+`.gitignore`), mismo criterio que `outputs/`."""
 
 TAMANO_LOTE_RESUMEN = 500
 """Usuarios procesados por lote en `_generar_candidatos_por_resumen`.
@@ -454,6 +467,7 @@ def generar_candidatos_con_features(
     features_auxiliares: dict,
     n_por_fuente: int = 150,
     n_por_autor: int = 20,
+    fuentes_activas: frozenset[str] | None = None,
 ) -> pd.DataFrame:
     """Arma, para cada usuario, la unión de candidatos de las seis fuentes
     (ALS, popularidad por género, popularidad global, libros de autores ya
@@ -515,9 +529,26 @@ def generar_candidatos_con_features(
     conteos/diferencias, `SENTINEL_DIAS_DESCONOCIDO` para recencia) -- no
     se imputa a ciegas.
 
+    `fuentes_activas` (default `None` = las 6) restringe qué fuentes proponen
+    candidatos NUEVOS -- ver `FUENTES_CANDIDATOS`. Apaga solo el bloque que agrega
+    candidatos de esa fuente, no las features "de historial" que ya existían antes
+    de que esa fuente propusiera candidatos (`score_coleido`/`sim_resumen_historial`
+    se siguen calculando para cualquier candidato, venga de donde venga, igual que
+    hoy) -- pensado para comparar generadores de candidatos completos manteniendo
+    todo lo demás igual (mismo split/seed, mismas features auxiliares). Ver
+    `scripts/comparar_generadores_pareado.py`.
+
     Devuelve un DataFrame largo con columnas `id_lector`, `id_libro` +
     `FEATURES`.
     """
+    if fuentes_activas is None:
+        fuentes_activas = FUENTES_CANDIDATOS
+    elif not fuentes_activas <= FUENTES_CANDIDATOS:
+        raise ValueError(
+            f"fuentes_activas contiene valores inválidos: {sorted(fuentes_activas - FUENTES_CANDIDATOS)}"
+            f" -- válidas: {sorted(FUENTES_CANDIDATOS)}"
+        )
+
     autor_por_libro = features_auxiliares["autor_por_libro"]
     anio_edicion_por_libro = features_auxiliares["anio_edicion_por_libro"]
     n_libros_autor_leidos_por_usuario = features_auxiliares["n_libros_autor_leidos_por_usuario"]
@@ -560,10 +591,13 @@ def generar_candidatos_con_features(
             lista.append(id_libro)
 
     usuarios_con_als = [u for u in usuarios if u in fila_por_usuario]
+    # `filas` se calcula sin importar qué fuentes estén activas -- co-lectura y
+    # resumen la reusan igual que ALS (misma indexación de la matriz de ALS).
+    filas = np.array([fila_por_usuario[u] for u in usuarios_con_als]) if usuarios_con_als else None
+
     ids_items_als: dict = {}
     scores_als: dict = {}
-    if usuarios_con_als:
-        filas = np.array([fila_por_usuario[u] for u in usuarios_con_als])
+    if usuarios_con_als and "als" in fuentes_activas:
         ids_items, scores = modelo_als.recommend(
             filas, matriz_usuario_libro[filas], N=n_por_fuente, filter_already_liked_items=True
         )
@@ -574,7 +608,9 @@ def generar_candidatos_con_features(
     # Co-lectura: acotado a los mismos usuarios_con_als (misma fila que ALS)
     # y a un matmul disperso sobre ese batch -- nunca sobre los ~10k
     # usuarios completos, para no explotar en memoria (ver docstring de
-    # `_calcular_cooccurrencia`).
+    # `_calcular_cooccurrencia`). Se calcula SIEMPRE que haya `cooc` (sin
+    # importar si "coleido" está en `fuentes_activas`): alimenta la feature
+    # `score_coleido` de candidatos de cualquier fuente, no solo los propios.
     co_scores_por_usuario: dict = {}
     if usuarios_con_als and cooc is not None:
         X_batch = sp.csr_matrix(matriz_usuario_libro[filas] > 0, dtype=np.int32)
@@ -586,14 +622,16 @@ def generar_candidatos_con_features(
     # `_generar_candidatos_por_resumen`): busca en TODO el catálogo con
     # resumen, no solo entre los candidatos que ya trajeron las otras 4
     # fuentes -- a diferencia de `sim_resumen_historial` (más abajo).
-    ids_resumen_por_usuario, scores_resumen_por_usuario = _generar_candidatos_por_resumen(
-        tfidf_norm,
-        perfil_usuario_norm,
-        fila_por_libro_texto,
-        usuarios_con_als,
-        filas if usuarios_con_als else None,
-        n_por_fuente,
-    )
+    ids_resumen_por_usuario, scores_resumen_por_usuario = ({}, {})
+    if usuarios_con_als and "resumen" in fuentes_activas:
+        ids_resumen_por_usuario, scores_resumen_por_usuario = _generar_candidatos_por_resumen(
+            tfidf_norm,
+            perfil_usuario_norm,
+            fila_por_libro_texto,
+            usuarios_con_als,
+            filas,
+            n_por_fuente,
+        )
 
     filas_resultado = []
     for id_lector in usuarios:
@@ -610,20 +648,21 @@ def generar_candidatos_con_features(
             c["rank_als"] = rank
             c["en_als"] = 1
 
-        agregados = 0
-        for id_libro in ranking_global_ids:
-            if agregados >= n_por_fuente:
-                break
-            if id_libro in vistos:
-                continue
-            c = candidatos.setdefault(id_libro, {})
-            c["score_popularidad"] = score_popularidad_por_libro[id_libro]
-            c["rank_popularidad"] = rank_popularidad_por_libro[id_libro]
-            c["en_popularidad"] = 1
-            agregados += 1
+        if "popularidad" in fuentes_activas:
+            agregados = 0
+            for id_libro in ranking_global_ids:
+                if agregados >= n_por_fuente:
+                    break
+                if id_libro in vistos:
+                    continue
+                c = candidatos.setdefault(id_libro, {})
+                c["score_popularidad"] = score_popularidad_por_libro[id_libro]
+                c["rank_popularidad"] = rank_popularidad_por_libro[id_libro]
+                c["en_popularidad"] = 1
+                agregados += 1
 
         genero = genero_por_usuario.get(id_lector)
-        if genero is not None and genero in stats_por_genero:
+        if genero is not None and genero in stats_por_genero and "genero" in fuentes_activas:
             tabla_genero = stats_por_genero[genero]
             agregados = 0
             for rank, (id_libro, score) in enumerate(
@@ -647,22 +686,23 @@ def generar_candidatos_con_features(
         # Se prioriza a los autores que MÁS leyó el usuario (no el orden
         # arbitrario del dict) hasta `n_por_fuente` candidatos en total,
         # mismo criterio de ventana que las otras 3 fuentes.
-        autores_leidos_conteo = n_libros_autor_leidos_por_usuario.get(id_lector, {})
-        autores_ordenados = sorted(autores_leidos_conteo, key=lambda a: -autores_leidos_conteo[a])
-        agregados_autor = 0
-        for autor in autores_ordenados:
-            if agregados_autor >= n_por_fuente:
-                break
-            for rank_autor, id_libro in enumerate(libros_por_autor_ordenados.get(autor, [])):
+        if "autor" in fuentes_activas:
+            autores_leidos_conteo = n_libros_autor_leidos_por_usuario.get(id_lector, {})
+            autores_ordenados = sorted(autores_leidos_conteo, key=lambda a: -autores_leidos_conteo[a])
+            agregados_autor = 0
+            for autor in autores_ordenados:
                 if agregados_autor >= n_por_fuente:
                     break
-                if id_libro in vistos:
-                    continue
-                c = candidatos.setdefault(id_libro, {})
-                c["score_autor_candidato"] = score_popularidad_por_libro.get(id_libro, 0.0)
-                c["rank_autor_candidato"] = rank_autor
-                c["en_autor_candidato"] = 1
-                agregados_autor += 1
+                for rank_autor, id_libro in enumerate(libros_por_autor_ordenados.get(autor, [])):
+                    if agregados_autor >= n_por_fuente:
+                        break
+                    if id_libro in vistos:
+                        continue
+                    c = candidatos.setdefault(id_libro, {})
+                    c["score_autor_candidato"] = score_popularidad_por_libro.get(id_libro, 0.0)
+                    c["rank_autor_candidato"] = rank_autor
+                    c["en_autor_candidato"] = 1
+                    agregados_autor += 1
 
         for rank_resumen, (id_libro, score) in enumerate(
             zip(ids_resumen_por_usuario.get(id_lector, []), scores_resumen_por_usuario.get(id_lector, []))
@@ -683,15 +723,16 @@ def generar_candidatos_con_features(
         # para usuarios con mucho historial) cuando solo hace falta el
         # top-n_por_fuente.
         co_scores_usuario = co_scores_por_usuario.get(id_lector, {})
-        top_coleido = heapq.nlargest(n_por_fuente, co_scores_usuario.items(), key=lambda kv: kv[1])
-        for rank_coleido, (columna_candidato, score) in enumerate(top_coleido):
-            id_libro = libros_por_columna[columna_candidato]
-            if id_libro in vistos:
-                continue
-            c = candidatos.setdefault(id_libro, {})
-            c["score_coleido_candidato"] = float(score)
-            c["rank_coleido_candidato"] = rank_coleido
-            c["en_coleido_candidato"] = 1
+        if "coleido" in fuentes_activas:
+            top_coleido = heapq.nlargest(n_por_fuente, co_scores_usuario.items(), key=lambda kv: kv[1])
+            for rank_coleido, (columna_candidato, score) in enumerate(top_coleido):
+                id_libro = libros_por_columna[columna_candidato]
+                if id_libro in vistos:
+                    continue
+                c = candidatos.setdefault(id_libro, {})
+                c["score_coleido_candidato"] = float(score)
+                c["rank_coleido_candidato"] = rank_coleido
+                c["en_coleido_candidato"] = 1
 
         n_usuario = n_interacciones_por_usuario.get(id_lector, 0)
         autores_leidos = n_libros_autor_leidos_por_usuario.get(id_lector, {})
@@ -934,6 +975,7 @@ def preparar_pipeline(
     n_por_fuente: int = 150,
     n_por_autor: int = 20,
     k: int = 20,
+    fuentes_activas: frozenset[str] | None = None,
 ) -> dict:
     """Arma todo lo que necesita el pipeline del ranker para un seed,
     **excepto** entrenar el `LGBMRanker` en sí -- eso queda para
@@ -964,6 +1006,10 @@ def preparar_pipeline(
     `libros_leidos_hasta_ranker`, `usuarios_test`, `test_final` (para
     calcular NDCG@k), `ndcg_als` (score de ALS solo -- tampoco depende de
     `lgbm_params`, se calcula acá una sola vez) y `k`.
+
+    `fuentes_activas` (default `None` = las 6) se pasa tal cual a las dos
+    llamadas de `generar_candidatos_con_features` -- ver docstring de esa
+    función y `FUENTES_CANDIDATOS`.
     """
     train_candidatos_full, test_final = split_train_val(interacciones, n_val=1, seed=seed)
     train_candidatos, train_ranker = split_train_val(train_candidatos_full, n_val=1, seed=seed + 1000)
@@ -991,6 +1037,7 @@ def preparar_pipeline(
         features_auxiliares=features_auxiliares,
         n_por_fuente=n_por_fuente,
         n_por_autor=n_por_autor,
+        fuentes_activas=fuentes_activas,
     )
 
     usuarios_ranker = train_ranker["id_lector"].unique().tolist()
@@ -1104,3 +1151,165 @@ def evaluar_pipeline(
         interacciones, libros, lectores, seed, n_por_fuente=n_por_fuente, n_por_autor=n_por_autor, k=k
     )
     return evaluar_con_params(contexto, lgbm_params)
+
+
+def preparar_pipeline_cacheado(
+    interacciones: pd.DataFrame,
+    libros: pd.DataFrame,
+    lectores: pd.DataFrame,
+    seed: int,
+    n_por_fuente: int = 150,
+    n_por_autor: int = 20,
+    k: int = 20,
+    fuentes_activas: frozenset[str] | None = None,
+    cache_dir: str | Path | None = None,
+) -> dict:
+    """Wrapper de `preparar_pipeline` que cachea el contexto resultante a
+    disco (`pickle`), para no repetir los ~280-300s de fit de ALS/
+    popularidad/género + `calcular_features_auxiliares` (TF-IDF/co-lectura/
+    macro-género) + `generar_candidatos_con_features` cada vez que se
+    quiere repetir o ajustar una comparación sobre el mismo seed/config --
+    ver `scripts/comparar_features_pareado.py`, `scripts/recall_candidatos.py`,
+    `scripts/comparar_generadores_pareado.py`.
+
+    La clave de caché combina `seed`/`n_por_fuente`/`n_por_autor`/`k`/
+    `fuentes_activas` con un hash corto del *código fuente* de este módulo
+    (`ranker.py`): cualquier cambio en la lógica de generación de
+    candidatos/features invalida el caché automáticamente, sin depender de
+    acordarse de bumpear una versión a mano. También incluye la cantidad de
+    filas de `interacciones`/`libros`/`lectores` como red de seguridad
+    barata -- OJO: esto NO detecta un reemplazo de `data/raw/data.db` con
+    datos de igual tamaño pero contenido distinto; en ese caso hay que
+    borrar `cache_dir` a mano.
+
+    Antes de picklear, las columnas `id_lector`/`id_libro` de
+    `candidatos_test`/`test_final` se convierten a `category` (ver
+    `_comprimir_para_cache`): sin esto, un `pickle.dump` directo del
+    contexto pesaba **3-4 GB** (medido con `n_por_fuente=150` -- millones de
+    filas de candidatos con esos dos strings repetidos sin deduplicar) y
+    tardaba más en recargarse de lo que tardaba recalcular. `category`
+    deduplica cada string único una sola vez; el contexto que devuelve esta
+    función (en cache-hit o cache-miss) queda idéntico al que devolvería
+    `preparar_pipeline` directamente -- la conversión es un detalle interno
+    del cacheo, no algo que le importe al resto del pipeline.
+
+    `cache_dir` default `CACHE_DIR` (`data/cache/`, gitignored).
+    """
+    cache_dir = Path(cache_dir) if cache_dir is not None else CACHE_DIR
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    hash_codigo = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+    fuentes_label = "todas" if fuentes_activas is None else "+".join(sorted(fuentes_activas))
+    nombre = (
+        f"ranker_ctx_seed{seed}_nf{n_por_fuente}_na{n_por_autor}_k{k}"
+        f"_fuentes-{fuentes_label}"
+        f"_n{len(interacciones)}-{len(libros)}-{len(lectores)}"
+        f"_{hash_codigo}.pkl"
+    )
+    ruta = cache_dir / nombre
+
+    if ruta.exists():
+        with open(ruta, "rb") as f:
+            return _descomprimir_de_cache(pickle.load(f))
+
+    contexto = preparar_pipeline(
+        interacciones,
+        libros,
+        lectores,
+        seed,
+        n_por_fuente=n_por_fuente,
+        n_por_autor=n_por_autor,
+        k=k,
+        fuentes_activas=fuentes_activas,
+    )
+    with open(ruta, "wb") as f:
+        pickle.dump(_comprimir_para_cache(contexto), f, protocol=pickle.HIGHEST_PROTOCOL)
+    return contexto
+
+
+_COLUMNAS_ID_CACHE = ("id_lector", "id_libro")
+_CLAVES_DATAFRAME_CACHE = ("candidatos_test", "test_final")
+
+
+def _comprimir_para_cache(contexto: dict) -> dict:
+    """Copia `contexto` convirtiendo `id_lector`/`id_libro` de
+    `candidatos_test`/`test_final` a `category` -- ver docstring de
+    `preparar_pipeline_cacheado` para el porqué. No modifica el `contexto`
+    original (el que se devuelve al llamador en un cache-miss sigue con
+    los dtypes normales)."""
+    comprimido = dict(contexto)
+    for clave in _CLAVES_DATAFRAME_CACHE:
+        df = comprimido.get(clave)
+        if df is None:
+            continue
+        columnas = [c for c in _COLUMNAS_ID_CACHE if c in df.columns]
+        if columnas:
+            comprimido[clave] = df.astype({c: "category" for c in columnas})
+    return comprimido
+
+
+def _descomprimir_de_cache(contexto: dict) -> dict:
+    """Inverso de `_comprimir_para_cache`, aplicado tras `pickle.load` --
+    devuelve `id_lector`/`id_libro` a su dtype normal (string) para que el
+    contexto se comporte igual venga de un cache-hit o de un cálculo
+    fresco."""
+    for clave in _CLAVES_DATAFRAME_CACHE:
+        df = contexto.get(clave)
+        if df is None:
+            continue
+        columnas = [c for c in _COLUMNAS_ID_CACHE if c in df.columns and isinstance(df[c].dtype, pd.CategoricalDtype)]
+        if columnas:
+            contexto[clave] = df.astype({c: "str" for c in columnas})
+    return contexto
+
+
+def ndcg_por_usuario(ctx: dict, features: list[str] | None = None) -> dict:
+    """Entrena un `LGBMRanker` sobre `features` (subconjunto de columnas de
+    `ctx["X"]`, default: todas) y devuelve NDCG@k por usuario de
+    `ctx["usuarios_test"]` -- SIN promediar, para poder comparar dos
+    configuraciones (dos subconjuntos de `FEATURES`, o dos generadores de
+    candidatos con distinto `fuentes_activas`) con un test PAREADO por
+    usuario en vez de comparar promedios independientes -- mucho más poder
+    estadístico (ver `scripts/comparar_features_pareado.py`,
+    `scripts/comparar_generadores_pareado.py`).
+
+    `ctx` es el dict que arma `preparar_pipeline`/`preparar_pipeline_cacheado`.
+    """
+    features = list(ctx["X"].columns) if features is None else features
+    modelo = fit_ranker(ctx["X"][features], ctx["y"], ctx["group"])
+    candidatos_por_usuario = {u: g for u, g in ctx["candidatos_test"].groupby("id_lector", sort=False)}
+    relevantes_por_usuario = ctx["test_final"].groupby("id_lector")["id_libro"].agg(set).to_dict()
+    libros_leidos = ctx["libros_leidos_hasta_ranker"]
+    ranking_global = ctx["ranking_global"]
+    k = ctx["k"]
+
+    resultado = {}
+    for id_lector in ctx["usuarios_test"]:
+        grupo = candidatos_por_usuario.get(id_lector)
+        if grupo is None or len(grupo) == 0:
+            recomendados = []
+        else:
+            scores = modelo.predict(grupo[features])
+            recomendados = list(grupo["id_libro"].to_numpy()[np.argsort(-scores)][:k])
+        if len(recomendados) < k:
+            vistos = set(libros_leidos.get(id_lector, set())) | set(recomendados)
+            extra = [libro for libro in ranking_global if libro not in vistos]
+            recomendados = recomendados + extra[: k - len(recomendados)]
+        resultado[id_lector] = ndcg_at_k(recomendados, relevantes_por_usuario.get(id_lector, set()), k)
+    return resultado
+
+
+def recall_de_candidatos(ctx: dict) -> float:
+    """Fracción de usuarios de `ctx["test_final"]` cuyo libro objetivo está
+    entre los candidatos de `ctx["candidatos_test"]` -- el TECHO absoluto
+    de NDCG@k que puede lograr el reranking con ese set de candidatos
+    (ver `scripts/recall_candidatos.py`, que tenía esta misma lógica
+    inline)."""
+    candidatos_por_usuario = ctx["candidatos_test"].groupby("id_lector")["id_libro"].agg(set).to_dict()
+    test_final = ctx["test_final"]
+    hits = sum(
+        1
+        for _, fila in test_final.iterrows()
+        if fila["id_libro"] in candidatos_por_usuario.get(fila["id_lector"], set())
+    )
+    return hits / len(test_final)

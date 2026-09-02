@@ -12,3 +12,7 @@ wheels/
 # Datos y outputs pesados (ver CLAUDE.md)
 data/raw/data.db
 outputs/
+
+# Caché de contexto del ranker (preparar_pipeline_cacheado, ver ranker.py) --
+# se regenera solo, no tiene sentido versionarlo
+data/cache/

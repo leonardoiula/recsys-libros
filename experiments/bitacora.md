@@ -2331,3 +2331,143 @@ Código revertido en su totalidad (`ranker.py`, `submit.py`,
 `tests/test_ranker.py`, `experiments/features.md`) tras el resultado --
 mismo criterio que el experimento de embeddings, no queda nada en el
 repo salvo esta entrada.
+
+---
+
+## Infraestructura: caché de contexto + comparación de generadores de candidatos completos
+
+### Objetivo
+
+Dos ítems que habían quedado pendientes de rondas anteriores (ver
+`decisiones.md`, sección "Para retomar"): (1) `comparar_features_pareado.py`
+solo puede aislar si el ranker aprovecha las *features de tracking* de una
+fuente nueva (ej. `score_coleido_candidato`), pero nunca aisló con el poder
+estadístico del test pareado si la fuente *en sí* (los candidatos nuevos
+que trae) mueve el NDCG -- quedó anotado explícitamente tras la ronda de
+la 6ª fuente (co-lectura ítem-ítem/kNN), confirmada en Kaggle con el
+criterio de "positivo en los 3 seeds" que en el pasado confirmó casos que
+después resultaron ruido. (2) Cachear `preparar_pipeline` a disco por
+seed, para que comparar dos generadores completos (que necesitan dos
+contextos distintos, no uno compartido como la comparación de features)
+no implique recalcular ~300s por configuración cada vez que se repite o
+ajusta un experimento.
+
+### Diseño
+
+**`fuentes_activas`** (nuevo parámetro de `generar_candidatos_con_features`/
+`preparar_pipeline`, `FUENTES_CANDIDATOS = {"als", "popularidad", "genero",
+"autor", "resumen", "coleido"}`): apaga solo el bloque que agrega
+candidatos NUEVOS de una fuente, sin tocar las features "de historial" que
+ya existían antes de que esa fuente propusiera candidatos -- `score_coleido`/
+`sim_resumen_historial` se siguen calculando para cualquier candidato,
+venga de donde venga, con `fuentes_activas` en lo que sea. Con
+`fuentes_activas=None` (default) el comportamiento es idéntico al actual,
+sin regresión para nada que ya usara estas funciones.
+
+**`preparar_pipeline_cacheado`**: wrapper de `preparar_pipeline` que
+cachea el contexto resultante en `data/cache/` (pickle, gitignored). La
+clave combina `seed`/`n_por_fuente`/`n_por_autor`/`k`/`fuentes_activas`
+con un hash del código fuente de `ranker.py` (invalida el caché solo con
+tocar la lógica de candidatos/features, sin depender de acordarse de
+bumpear una versión a mano) y el tamaño de las tres tablas de entrada.
+
+**`scripts/comparar_generadores_pareado.py`** (nuevo): mismo aparato
+estadístico que `comparar_features_pareado.py` (diferencia media pareada,
+SE pareado, bootstrap 95% CI), pero arma DOS contextos por seed (uno por
+`fuentes_activas`) en vez de uno compartido, y reporta `recall_de_candidatos`
+de cada uno además del NDCG pareado -- `decisiones.md` insiste en mirar
+los dos números juntos. `ndcg_por_usuario`/`recall_de_candidatos` se
+extrajeron de los scripts existentes a `ranker.py` como funciones públicas
+reusables (antes vivían duplicadas/inline).
+
+### Problema encontrado y corregido: el caché sin comprimir pesaba 3-4 GB
+
+Un primer `pickle.dump` directo del contexto completo (sin ningún
+tratamiento especial) generó archivos de **3.3 y 3.7 GB** para las dos
+configuraciones de una sola corrida (`n_por_fuente=150`) -- `candidatos_test`
+tiene millones de filas con `id_lector`/`id_libro` repetidos miles de
+veces sin deduplicar (cada fila es un candidato de un usuario, y el mismo
+libro popular aparece como candidato de miles de usuarios distintos). Una
+segunda corrida para probar que el caché aceleraba las cosas se colgó
+recargando esos pickles -- deserializar millones de objetos `str` de
+Python individuales es lento independientemente de la compresión.
+
+Corregido con `_comprimir_para_cache`/`_descomprimir_de_cache`: las
+columnas `id_lector`/`id_libro` de `candidatos_test`/`test_final` se
+convierten a `category` (dtype de códigos enteros + tabla de valores
+únicos) antes de picklear, y se revierten a `str` después de cargar --
+el contexto que devuelve `preparar_pipeline_cacheado` es idéntico venga de
+un cache-hit o de un cálculo fresco. Test dedicado
+(`tests/test_cache_pipeline.py::test_comprimir_para_cache_reduce_tamano_en_disco`)
+sobre datos sintéticos con la forma real (200k filas, ids repetidos):
+más de 2x de reducción: la ganancia real esperada en datos reales es
+mayor (`category` deduplica también la codificación de posición interna
+del `BlockManager` de pandas, ver el script de medición ad-hoc con datos
+reales que se corrió en esta sesión, sección siguiente).
+
+### Pendiente: no se pudo confirmar el tamaño/velocidad final del caché sobre datos reales en esta sesión
+
+Se intentó medir el tamaño exacto del pickle comprimido con el contexto
+real completo (`n_por_fuente=150`) varias veces, lanzado tanto directo en
+background como en foreground con auto-promoción a background al superar
+el timeout de la herramienta -- las cinco corridas terminaron con estado
+`killed` por la infraestructura de esta sesión (no por un error del
+código: los procesos no imprimían ninguna traza de excepción, simplemente
+dejaban de aparecer) excepto la primerísima corrida completa de
+`comparar_generadores_pareado.py` (ver resultado real más abajo), que sí
+terminó bien tras ~22 minutos. No se identificó la causa exacta -- parece
+un problema de esta sesión/entorno con procesos Python largos lanzados en
+segundo plano en Windows, no algo reproducible de forma determinística
+(la primera corrida completa, más larga que varios de los intentos
+fallidos posteriores, sí terminó bien). La corrección del caché quedó
+validada con el test de arriba (datos sintéticos con la misma forma) y
+con la suite completa en verde, pero **no hay un número medido de
+tamaño/velocidad de caché contra el contexto real de producción** -- si
+se retoma esto, correrlo directamente en una terminal fuera de este
+entorno (`uv run python scripts/recall_candidatos.py`, dos veces seguidas,
+comparando el tiempo de la segunda corrida) para confirmarlo.
+
+### Resultado real: primer uso del test pareado sobre generadores completos
+
+La única corrida que sí completó (antes de la corrección del caché,
+`fuentes_activas=None` vs. `FUENTES_CANDIDATOS - {"coleido"}`, seed=42)
+valida retroactivamente la 6ª fuente (co-lectura ítem-ítem/kNN) con más
+rigor del que se tenía al confirmarla en Kaggle:
+
+| | 6 fuentes (todas) | 5 fuentes (sin kNN) |
+|---|---|---|
+| Recall de candidatos | 0.5115 | 0.4559 |
+| NDCG@20 | 0.118625 | 0.117503 |
+
+Ambos números son **idénticos** a los ya logueados en `log.csv` para esa
+ronda (reproducidos con `git stash` en su momento) -- confirma que el
+nuevo mecanismo de `fuentes_activas` reproduce exactamente el
+comportamiento que antes había que lograr revirtiendo código a mano.
+
+Test pareado por usuario (8.904 usuarios de test):
+
+| | valor |
+|---|---|
+| Diferencia media pareada | +0.001121 |
+| SE pareado | 0.000830 |
+| Sigma | 1.35 |
+| Bootstrap 95% CI | [-0.000506, +0.002759] |
+| P(diferencia > 0) | 0.9105 |
+
+El CI roza el cero (no cruza el umbral estricto de 2 sigma que se viene
+usando como "confirmado"), pero es sustancialmente más fuerte que los
+tres casos límite de rondas anteriores que la re-auditoría de
+`modelo_actual.md` mostró que eran estadísticamente indistinguibles de
+ruido (género macro 0.3σ, editorial 0.3σ, señales cruzadas 0.04σ) --
+1.35σ y P(mejora)=91% es una lectura razonablemente consistente con que
+la 6ª fuente aporta señal real, no solo ruido, aunque sin alcanzar
+significancia estricta por sí sola. Coherente con que ya se había
+confirmado en Kaggle (+1.56%, récord actual 0.05262).
+
+### Próximos pasos
+
+- **Confirmar el tamaño/velocidad del caché contra el contexto real**
+  fuera de este entorno (ver arriba).
+- El test pareado de generadores queda disponible para las próximas
+  fuentes de candidatos que se agreguen -- correrlo antes de gastar una
+  submission, no solo mirar recall + CV de 3 seeds.

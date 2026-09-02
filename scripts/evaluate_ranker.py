@@ -3,11 +3,13 @@ popularidad -> LightGBM) contra ALS solo.
 
 Uso: uv run python scripts/evaluate_ranker.py
 
-Para cada seed en `SEEDS`, corre `ranker.evaluar_pipeline` (split de
-**tres niveles** -- evita que el ranker vea, como features, scores
+Para cada seed en `SEEDS`, arma el contexto con `ranker.preparar_pipeline_cacheado`
+(split de **tres niveles** -- evita que el ranker vea, como features, scores
 calculados con la misma etiqueta que tiene que predecir -- ver docstring
-de `ranker.py`), con los hiperparámetros conservadores por default de
-`fit_ranker` (`lgbm_params=None`).
+de `ranker.py`; cachea a disco para no repetir el armado si se vuelve a
+correr sobre el mismo seed/config) y lo evalúa con `ranker.evaluar_con_params`,
+con los hiperparámetros conservadores por default de `fit_ranker`
+(`lgbm_params=None`).
 
 Se evalúa sobre varios seeds (no uno solo) a propósito: un sweep de ALS
 sobre un único split mejoró el NDCG local +11.5% pero empeoró el score
@@ -25,7 +27,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from recsys.data import load_interacciones, load_lectores, load_libros
 from recsys.evaluation import evaluar_multisplit
-from recsys.models.ranker import FEATURES, evaluar_pipeline
+from recsys.models.ranker import (
+    FEATURES,
+    evaluar_con_params,
+    preparar_pipeline_cacheado,
+)
 
 K = 20
 N_POR_FUENTE = 150
@@ -40,9 +46,8 @@ def main() -> None:
     resultados_por_seed = {}
     for seed in SEEDS:
         t0 = time.time()
-        resultados_por_seed[seed] = evaluar_pipeline(
-            interacciones, libros, lectores, seed, n_por_fuente=N_POR_FUENTE, k=K
-        )
+        ctx = preparar_pipeline_cacheado(interacciones, libros, lectores, seed, n_por_fuente=N_POR_FUENTE, k=K)
+        resultados_por_seed[seed] = evaluar_con_params(ctx, None)
         r = resultados_por_seed[seed]
         print(f"seed={seed}: ALS={r['ndcg_als']:.6f}  ranker={r['ndcg_ranker']:.6f}  ({time.time()-t0:.1f}s)")
         modelo_ranker = r.get("modelo_ranker")

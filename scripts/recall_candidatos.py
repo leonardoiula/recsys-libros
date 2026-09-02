@@ -30,7 +30,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from recsys.data import load_interacciones, load_lectores, load_libros
-from recsys.models.ranker import FEATURES, evaluar_con_params, preparar_pipeline
+from recsys.models.ranker import (
+    FEATURES,
+    evaluar_con_params,
+    preparar_pipeline_cacheado,
+    recall_de_candidatos,
+)
 
 K = 20
 N_POR_FUENTE = 150
@@ -43,22 +48,15 @@ def main() -> None:
     lectores = load_lectores()
 
     t0 = time.time()
-    ctx = preparar_pipeline(interacciones, libros, lectores, SEED, n_por_fuente=N_POR_FUENTE, k=K)
+    ctx = preparar_pipeline_cacheado(interacciones, libros, lectores, SEED, n_por_fuente=N_POR_FUENTE, k=K)
     print(f"contexto listo en {time.time()-t0:.0f}s", flush=True)
 
     candidatos = ctx["candidatos_test"]
     test_final = ctx["test_final"]
 
-    candidatos_por_usuario = candidatos.groupby("id_lector")["id_libro"].agg(set).to_dict()
     tamanos = candidatos.groupby("id_lector").size()
-
-    hits = sum(
-        1
-        for _, fila in test_final.iterrows()
-        if fila["id_libro"] in candidatos_por_usuario.get(fila["id_lector"], set())
-    )
     total = len(test_final)
-    recall = hits / total
+    recall = recall_de_candidatos(ctx)
 
     print(f"\nusuarios en test_final: {total}")
     print(f"candidatos por usuario: media={tamanos.mean():.1f} min={tamanos.min()} max={tamanos.max()}")

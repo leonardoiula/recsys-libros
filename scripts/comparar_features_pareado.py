@@ -46,7 +46,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from recsys.data import load_interacciones, load_lectores, load_libros
-from recsys.evaluation import ndcg_at_k
 from recsys.models import ranker as R
 
 K = 20
@@ -74,44 +73,17 @@ FEATURES_EXCLUIR_EN_B = [
 FEATURES_B = [f for f in R.FEATURES if f not in FEATURES_EXCLUIR_EN_B]
 
 
-def _ndcg_por_usuario(ctx: dict, features: list) -> dict:
-    """Entrena un `LGBMRanker` sobre `features` (subconjunto de las
-    columnas ya armadas en `ctx["X"]`) y devuelve NDCG@k por usuario de
-    `ctx["usuarios_test"]` -- no el promedio, para poder parear después.
-    """
-    modelo = R.fit_ranker(ctx["X"][features], ctx["y"], ctx["group"])
-    candidatos_por_usuario = {u: g for u, g in ctx["candidatos_test"].groupby("id_lector", sort=False)}
-    relevantes_por_usuario = ctx["test_final"].groupby("id_lector")["id_libro"].agg(set).to_dict()
-    libros_leidos = ctx["libros_leidos_hasta_ranker"]
-    ranking_global = ctx["ranking_global"]
-
-    resultado = {}
-    for id_lector in ctx["usuarios_test"]:
-        grupo = candidatos_por_usuario.get(id_lector)
-        if grupo is None or len(grupo) == 0:
-            recomendados = []
-        else:
-            scores = modelo.predict(grupo[features])
-            recomendados = list(grupo["id_libro"].to_numpy()[np.argsort(-scores)][:K])
-        if len(recomendados) < K:
-            vistos = set(libros_leidos.get(id_lector, set())) | set(recomendados)
-            extra = [libro for libro in ranking_global if libro not in vistos]
-            recomendados = recomendados + extra[: K - len(recomendados)]
-        resultado[id_lector] = ndcg_at_k(recomendados, relevantes_por_usuario.get(id_lector, set()), K)
-    return resultado
-
-
 def main() -> None:
     interacciones = load_interacciones()
     libros = load_libros()
     lectores = load_lectores()
 
     t0 = time.time()
-    ctx = R.preparar_pipeline(interacciones, libros, lectores, SEED, n_por_fuente=N_POR_FUENTE, k=K)
+    ctx = R.preparar_pipeline_cacheado(interacciones, libros, lectores, SEED, n_por_fuente=N_POR_FUENTE, k=K)
     print(f"contexto listo en {time.time()-t0:.0f}s", flush=True)
 
-    ndcg_a = _ndcg_por_usuario(ctx, FEATURES_A)
-    ndcg_b = _ndcg_por_usuario(ctx, FEATURES_B)
+    ndcg_a = R.ndcg_por_usuario(ctx, FEATURES_A)
+    ndcg_b = R.ndcg_por_usuario(ctx, FEATURES_B)
     print(f"listo en {time.time()-t0:.0f}s", flush=True)
 
     usuarios = ctx["usuarios_test"]

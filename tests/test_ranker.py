@@ -14,10 +14,12 @@ import scipy.sparse as sp
 from recsys.models.popularity_segmentada import MACRO_GENERO_DEFAULT
 from recsys.models.ranker import (
     FEATURES,
+    FUENTES_CANDIDATOS,
     SENTINEL_DIAS_DESCONOCIDO,
     armar_dataset_entrenamiento,
     calcular_features_auxiliares,
     generar_candidatos_con_features,
+    recall_de_candidatos,
 )
 
 
@@ -896,3 +898,108 @@ def test_armar_dataset_usuario_sin_candidatos_igual_aporta_el_positivo():
 
     assert group == [1]
     assert y.tolist() == [1]
+
+
+def test_fuentes_activas_invalidas_levanta_valueerror():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+
+    with pytest.raises(ValueError):
+        generar_candidatos_con_features(
+            usuarios=["u1"],
+            modelo_als=modelo,
+            matriz_usuario_libro=matriz,
+            fila_por_usuario={"u1": 0},
+            libros_por_columna=["a"],
+            stats_popularidad=_stats_popularidad(["a"], [5.0]),
+            stats_por_genero={},
+            genero_por_usuario={},
+            libros_leidos={},
+            n_interacciones_por_usuario={},
+            features_auxiliares=_features_auxiliares_vacias(),
+            n_por_fuente=150,
+            fuentes_activas=frozenset({"als", "esto_no_existe"}),
+        )
+
+
+def test_fuentes_activas_desactiva_als_sin_afectar_otras_fuentes():
+    modelo = _ModeloALSFalso({0: ([0], [0.9])})  # candidato propuesto por ALS: "a"
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["b"], [5.0])
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=_features_auxiliares_vacias(),
+        n_por_fuente=150,
+        fuentes_activas=FUENTES_CANDIDATOS - {"als"},
+    )
+
+    # "a" (solo propuesto por ALS) no aparece con ALS desactivado; "b" (via
+    # popularidad, que sigue activa) si aparece
+    assert "a" not in set(candidatos["id_libro"])
+    assert "b" in set(candidatos["id_libro"])
+
+
+def test_fuentes_activas_desactiva_coleido_sin_afectar_score_coleido_de_otras_fuentes():
+    # u1 leyo solo "a" (columna 0). cooc: a-b=3, a-c=5, b-c=0. "b" llega via
+    # popularidad, "c" solo podria llegar via la fuente de co-lectura.
+    modelo = _ModeloALSFalso({0: ([], [])})
+    matriz = np.array([[1, 0, 0]])
+    libros_por_columna = ["a", "b", "c"]
+    cooc = sp.csr_matrix(np.array([[0, 3, 5], [3, 0, 0], [5, 0, 0]]))
+    aux = {**_features_auxiliares_vacias(), "cooc": cooc, "columna_por_libro": {"a": 0, "b": 1, "c": 2}}
+    stats_pop = _stats_popularidad(["b"], [9.0])
+
+    kwargs = {
+        "usuarios": ["u1"],
+        "modelo_als": modelo,
+        "matriz_usuario_libro": matriz,
+        "fila_por_usuario": {"u1": 0},
+        "libros_por_columna": libros_por_columna,
+        "stats_popularidad": stats_pop,
+        "stats_por_genero": {},
+        "genero_por_usuario": {},
+        "libros_leidos": {},
+        "n_interacciones_por_usuario": {},
+        "features_auxiliares": aux,
+        "n_por_fuente": 1,  # top-1 de cada fuente: coleido solo agrega "c" (mayor score)
+    }
+
+    con_coleido = generar_candidatos_con_features(**kwargs, fuentes_activas=None)
+    sin_coleido = generar_candidatos_con_features(**kwargs, fuentes_activas=FUENTES_CANDIDATOS - {"coleido"})
+
+    # con coleido activo: "c" entra via esa fuente
+    assert "c" in set(con_coleido["id_libro"])
+    fila_c = con_coleido[con_coleido["id_libro"] == "c"].iloc[0]
+    assert fila_c["en_coleido_candidato"] == 1
+    assert fila_c["score_coleido"] == pytest.approx(5.0)
+
+    # con coleido desactivado: "c" no aparece (ninguna otra fuente lo propone)
+    assert "c" not in set(sin_coleido["id_libro"])
+    # pero "b" (via popularidad, que sigue activa) sigue con su
+    # score_coleido calculado -- esa feature no depende de "coleido" en
+    # fuentes_activas, solo el bloque que agrega candidatos NUEVOS por esa via
+    fila_b = sin_coleido[sin_coleido["id_libro"] == "b"].iloc[0]
+    assert fila_b["en_coleido_candidato"] == 0
+    assert fila_b["score_coleido"] == pytest.approx(3.0)
+
+
+def test_recall_de_candidatos():
+    ctx = {
+        "candidatos_test": pd.DataFrame(
+            {"id_lector": ["u1", "u1", "u2"], "id_libro": ["a", "b", "c"]}
+        ),
+        "test_final": pd.DataFrame({"id_lector": ["u1", "u2"], "id_libro": ["a", "z"]}),
+    }
+    # u1: el objetivo "a" SI esta entre sus candidatos {a, b}
+    # u2: el objetivo "z" NO esta entre sus candidatos {c}
+    assert recall_de_candidatos(ctx) == pytest.approx(0.5)

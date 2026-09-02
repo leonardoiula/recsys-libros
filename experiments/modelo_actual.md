@@ -1,4 +1,4 @@
-# Modelo actual: ranker de dos etapas (v3, 35 features)
+# Modelo actual: ranker de dos etapas (v3, 39 features)
 
 Resumen autocontenido del modelo de referencia del proyecto, pensado
 para poder evaluarlo "desde afuera" (¿vale la pena seguir con LightGBM,
@@ -7,16 +7,27 @@ tener que reconstruir el contexto leyendo todo `bitacora.md`. No repite
 el *por qué* de cada decisión — eso está en `decisiones.md`/`bitacora.md`
 — acá solo describe *qué* es el modelo tal como está hoy en el código.
 
-Récord confirmado en Kaggle: **0.05262** (NDCG@20, con 35 features/6
-fuentes de candidatos, 2026-09-01). Código: `src/recsys/models/ranker.py`.
-La ronda más reciente (6ª fuente, co-lectura ítem-ítem/kNN) fue la
-mejora local más chica de las tres fuentes agregadas esta sesión
-(+1.19% local, CV positivo en los 3 seeds pero sin superar el desvío
-entre seeds) y sin embargo dio el salto de Kaggle más grande en
-términos relativos de las tres (+1.56%, +0.00081 absoluto) -- al revés
-de la ronda anterior (resumen), donde Kaggle subestimó una mejora local
-más sólida. Confirma que el ruido de una sola submission pega en las
-dos direcciones, no solo subestimando mejoras reales.
+Récord confirmado en Kaggle: **0.06149** (NDCG@20, con 39 features/6
+fuentes de candidatos + refit de etapa 1 sobre todos los datos,
+2026-09-02) -- **+16.9% sobre el récord anterior** (0.05262),
+probablemente la mejora de una sola ronda más grande de todo el
+proyecto. Código: `src/recsys/models/ranker.py`. La ronda combinó dos
+cambios en una sola submission (no se puede aislar el efecto individual
+de cada uno en Kaggle real, solo localmente):
+
+1. **4 features ponderadas por recencia** (autor/editorial/co-lectura/
+   resumen, `peso = 1/log2(rank+2)` por posición desde la interacción
+   más reciente del usuario, co-diseñado con el usuario) -- test pareado:
+   +0.007802, **5.96σ**, la señal más fuerte medida en el proyecto con
+   este método.
+2. **Refit de etapa 1** (ALS/popularidad/género/features auxiliares)
+   sobre todos los datos disponibles para generar los candidatos finales,
+   en vez de reusar el fit usado para entrenar el ranker -- CV 3 seeds:
+   **+12.3%, positivo en los 3 seeds**, la mejora más grande y menos
+   ambigua de la sesión.
+
+Ver `experiments/decisiones.md` secciones 18-19 y `bitacora.md`,
+secciones "Ítem 1"/"Ítem 2 de los pendientes", para el detalle completo.
 
 ## Idea básica: candidatos + reranking
 
@@ -240,9 +251,10 @@ split).
 |---|---|---|
 | ALS solo | 0.094406 ± 0.001359 | 0.03864 (mejor config ALS confirmada) |
 | Ranker (26 features, 3 fuentes de candidatos) | 0.109735 ± 0.003719 | 0.04855 |
-| Ranker (29 features, 4 fuentes -- +autor ya leído) | 0.117495 ± 0.002562 | **0.05140 (récord actual)** |
+| Ranker (29 features, 4 fuentes -- +autor ya leído) | 0.117495 ± 0.002562 | **0.05140** |
 | Ranker (32 features, 5 fuentes -- +similitud de resumen) | 0.120547 ± 0.002674 | 0.05181 |
-| Ranker (35 features, 6 fuentes -- +co-lectura ítem-ítem/kNN) | 0.121983 ± 0.002949 | **0.05262 (récord actual)** |
+| Ranker (35 features, 6 fuentes -- +co-lectura ítem-ítem/kNN) | 0.121983 ± 0.002949 | 0.05262 |
+| Ranker (39 features -- +recencia, +refit de etapa 1) | 0.143336 ± 0.002896 (con `n_por_fuente=75`, no 150 -- no comparable en absoluto contra las filas de arriba) | **0.06149 (récord actual, +16.9%)** |
 
 La 4ª fuente (autor) dio la mejora más grande y mejor validada de la
 sesión: recall del set de candidatos 0.394→0.445 (medido con
@@ -454,8 +466,10 @@ para distinguir señal real de ruido en este rango de efectos.
    con el usuario, mismo descuento que `ndcg_at_k`). 4 features nuevas
    (39 en total). Test pareado (`n_por_fuente=75` por una limitación de
    memoria de esa sesión, ver `bitacora.md`): diferencia +0.007802,
-   **5.96σ**, la señal más fuerte medida en el proyecto con este método
-   -- pendiente de confirmar en Kaggle. Ver `decisiones.md` sección 18.
+   **5.96σ**, la señal más fuerte medida en el proyecto con este método.
+   **CONFIRMADO EN KAGGLE** (junto con el ítem 7 en una sola submission,
+   ver esa fila): 0.06149, +16.9% -- nuevo récord del proyecto. Ver
+   `decisiones.md` sección 18.
 7. ~~**Revisar el refit de etapa 1 en `submit.py`**: hoy fitea ALS/
    popularidad sobre `train_candidatos` (sin la interacción más
    reciente de cada usuario, ~10.673 interacciones, la parte más
@@ -467,7 +481,10 @@ para distinguir señal real de ruido en este rango de efectos.
    encima del desvío entre seeds -- la mejora más grande y menos ambigua
    de la sesión. `submit.py` actualizado para refitear sobre
    `interacciones` completo antes de generar los candidatos finales.
-   Pendiente de confirmar en Kaggle. Ver `decisiones.md` sección 19.
+   **CONFIRMADO EN KAGGLE** (junto con el ítem 6 en una sola submission):
+   **0.06149, +16.9% sobre el récord anterior (0.05262)** -- la mejora de
+   una sola ronda más grande de todo el proyecto. Ver `decisiones.md`
+   sección 19.
 8. **No volver a tunear LightGBM.** 3/3 intentos fallidos, y ahora se
    entiende por qué: el efecto que se buscaba (~0.0013) está por
    debajo del error estándar no pareado (0.0038) con el que se medía.

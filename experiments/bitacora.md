@@ -2591,11 +2591,18 @@ versiones "de siempre" en los 3 seeds. Las 4 features nuevas quedan en
 `FEATURES` (ya están wireadas a `submit.py` porque ese módulo importa la
 lista compartida).
 
+### Confirmado en Kaggle
+
+Subida junto con el ítem 2 (refit de etapa 1) en una sola submission:
+**0.06149, nuevo récord del proyecto, +16.9% sobre el récord anterior**
+(0.05262) -- probablemente la mejora de una sola ronda más grande de
+todo el proyecto. Al confirmarse ambos cambios juntos, no se puede
+aislar el efecto individual de este ítem en Kaggle real -- la evidencia
+individual queda en la medición local de más arriba (test pareado,
+5.96σ). Ver fila `2026-09-02` en `experiments/log.csv`.
+
 ### Pendiente
 
-- **Confirmar en Kaggle** -- con una señal así de fuerte y consistente,
-  es el candidato más sólido para la próxima submission del proyecto.
-  Falta el visto bueno del usuario antes de gastarla.
 - **Reproducir la medición con `n_por_fuente=150`** fuera de este entorno
   puntual, para tener un número comparable a los históricos y confirmar
   que el problema de memoria observado esta sesión no era una regresión
@@ -2663,17 +2670,20 @@ para no filtrar la etiqueta), pero ahora REFITEA ALS/popularidad/género/
 features auxiliares sobre `interacciones` completo antes de generar
 `candidatos_finales` -- mismo patrón confirmado localmente.
 
+### Confirmado en Kaggle
+
+Subida junto con el ítem 1 (features de recencia) en una sola
+submission: **0.06149, nuevo récord del proyecto, +16.9% sobre el récord
+anterior** (0.05262, +0.00887 absoluto) -- probablemente la mejora de una
+sola ronda más grande de todo el proyecto, por encima del +15.3% de la
+ronda autor/año/género/recencia. Como los dos cambios se confirmaron
+juntos, no se puede aislar el efecto individual de cada uno en Kaggle
+real con este solo dato -- la evidencia individual de este ítem queda en
+el CV local de 3 seeds de más arriba (+12.3%, positivo en los 3). Ver
+fila `2026-09-02` en `experiments/log.csv`.
+
 ### Pendiente
 
-- **Confirmar en Kaggle** -- junto con el ítem 1 (features de recencia),
-  son los dos candidatos más sólidos para la próxima submission real.
-  Falta el visto bueno del usuario antes de gastarla. Nota: ambos
-  cambios ya están en el código de producción (`ranker.py`/`submit.py`)
-  simultáneamente -- si se sube una submission ahora, confirma el efecto
-  COMBINADO de los dos ítems juntos, no cada uno por separado. Si se
-  quisiera aislar el efecto individual de cada uno en Kaggle, haría falta
-  una submission de cada config por separado (costo: presupuesto de
-  submissions).
 - **Reproducir con `n_por_fuente=150`** fuera de este entorno puntual,
   mismo pendiente que el ítem 1.
 

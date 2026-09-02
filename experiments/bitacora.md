@@ -2823,12 +2823,20 @@ limitación de memoria de la sesión anterior) -- confirma que el
 particionado no cambió el comportamiento del modelo, solo resolvió cómo
 se usa la memoria.
 
+### Confirmado en Kaggle
+
+El usuario subió igual `ranker_20260902-204041_particionado.csv`
+(`n_por_fuente=150`, código particionado) -- **0.06149, idéntico al
+score de la submission anterior** (`n_por_fuente=75`, código sin
+particionar). Confirma de punta a punta, con el número real de Kaggle y
+no solo con el top-1 local, que particionar por lotes es puramente un
+cambio de implementación: mismo modelo, mismo resultado, memoria
+resuelta. No hizo falta gastar el registro de récord en `log.csv` -- es
+la misma fila (`2026-09-02`, 0.06149), ahora confirmada además a
+`n_por_fuente=150`.
+
 ### Pendiente
 
-- No se gastó una submission nueva de Kaggle para esta corrida
-  (`n_por_fuente=150` en vez de 75) -- el csv queda generado por si se
-  decide confirmarlo, pero el récord logueado (0.06149) sigue siendo el
-  de `n_por_fuente=75`.
 - Reproducir las mediciones locales de los ítems 1/2/3 (que habían
   quedado a `n_por_fuente=75` por la limitación de memoria) ahora que el
   problema de raíz está resuelto -- debería poder correr

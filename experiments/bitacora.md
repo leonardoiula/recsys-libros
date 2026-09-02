@@ -2756,3 +2756,81 @@ corresponde.
   puntual para ver el número real de NDCG ponderado de la config actual
   (con las features de recencia + el refit de etapa 1 ya wireados) --
   mismo pendiente de infraestructura que los ítems 1 y 2.
+
+---
+
+## Particionar la generación de candidatos por lotes de usuarios (resuelve el problema de memoria de raíz)
+
+### Objetivo
+
+El usuario notó, después de confirmar el récord de 0.06149, que el
+pipeline llegó a consumir más de 32 GB de RAM -- desproporcionado para
+un dataset de 461K interacciones/~128K libros/~11K lectores (chico para
+cualquier estándar de la industria). El diagnóstico: no es el modelo, es
+la implementación -- `generar_candidatos_con_features` arma la unión de
+candidatos de **todos** los usuarios (~9k-11k) en un único DataFrame
+(hasta ~6M filas) de una sola vez, tanto para entrenar el ranker como
+para puntuar la entrega final, cuando puntuar es una operación sin
+estado por usuario que no necesita tener a toda la población en memoria
+a la vez.
+
+### Implementación
+
+Tres funciones nuevas en `ranker.py`, todas reusando
+`generar_candidatos_con_features`/`armar_dataset_entrenamiento`/
+`recomendar_por_usuario` tal cual (sin tocar su lógica interna -- este
+cambio es puramente de *cuándo* se arma y libera cada pedazo de memoria,
+no de *qué* se calcula):
+
+- `armar_dataset_entrenamiento_por_lotes`: procesa usuarios en lotes de
+  `TAMANO_LOTE_USUARIOS` (1000), descarta el DataFrame crudo de
+  candidatos de cada lote apenas arma `(X_lote, y_lote, group_lote)` --
+  usada tanto en `preparar_pipeline` (`train_ranker`) como en
+  `submit.py` (nunca hace falta el DataFrame crudo después de armar
+  `X`/`y`/`group`).
+- `generar_candidatos_con_features_por_lotes`: mismo patrón, pero para
+  `candidatos_test` (`preparar_pipeline`), que SÍ hace falta después
+  (reusado por `evaluar_con_params`, posiblemente varias veces con
+  distintos hiperparámetros -- ver `scripts/tune_ranker.py`). Al
+  concatenar los lotes, comprime `id_lector`/`id_libro` a `category`
+  (dedupe) para que el resultado reusable quede compacto de fábrica, no
+  solo al picklear -- esto reemplazó a `_comprimir_para_cache`/
+  `_descomprimir_de_cache` (que existían solo para el caché en disco;
+  ahora la compresión es parte normal del resultado, y `preparar_pipeline_cacheado`
+  se simplificó a un pickle/unpickle directo).
+- `recomendar_por_usuario_por_lotes`: mismo patrón para `submit.py`
+  (`candidatos_finales`) -- genera, puntúa y descarta lote a lote, nunca
+  más de un lote de candidatos vivo a la vez.
+
+Equivalencia confirmada con tests dedicados (`tests/test_ranker.py`):
+mismo `X`/`y`/`group`/candidatos fila por fila que la versión sin lotear
+(con `usuarios` en el mismo orden que las etiquetas, cada lote es un
+tramo contiguo de ese orden, así que concatenar los lotes reconstruye
+exactamente el mismo orden).
+
+### Resultado
+
+Con el código particionado, `uv run python -m src.recsys.submit --model
+ranker` corrió **al primer intento con `n_por_fuente=150`** (el default
+de producción, que venía fallando de forma intermitente con
+`ArrayMemoryError` incluso después de las correcciones de dtype de la
+ronda anterior). El csv generado
+(`outputs/submissions/ranker_20260902-204041_particionado.csv`) tiene el
+mismo formato (832 usuarios, 20 filas c/u, sin duplicados) y **coincide
+100% en el top-1 recomendado por usuario** contra la submission ya
+confirmada en Kaggle a 0.06149 (que había usado `n_por_fuente=75` por la
+limitación de memoria de la sesión anterior) -- confirma que el
+particionado no cambió el comportamiento del modelo, solo resolvió cómo
+se usa la memoria.
+
+### Pendiente
+
+- No se gastó una submission nueva de Kaggle para esta corrida
+  (`n_por_fuente=150` en vez de 75) -- el csv queda generado por si se
+  decide confirmarlo, pero el récord logueado (0.06149) sigue siendo el
+  de `n_por_fuente=75`.
+- Reproducir las mediciones locales de los ítems 1/2/3 (que habían
+  quedado a `n_por_fuente=75` por la limitación de memoria) ahora que el
+  problema de raíz está resuelto -- debería poder correr
+  `scripts/evaluate_ranker.py`/`comparar_features_pareado.py`/
+  `comparar_refit_etapa1.py` con el default de 150 sin problemas.

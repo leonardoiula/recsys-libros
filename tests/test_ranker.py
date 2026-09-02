@@ -17,10 +17,14 @@ from recsys.models.ranker import (
     FUENTES_CANDIDATOS,
     SENTINEL_DIAS_DESCONOCIDO,
     armar_dataset_entrenamiento,
+    armar_dataset_entrenamiento_por_lotes,
     calcular_features_auxiliares,
     generar_candidatos_con_features,
+    generar_candidatos_con_features_por_lotes,
     preparar_pipeline,
     recall_de_candidatos,
+    recomendar_por_usuario,
+    recomendar_por_usuario_por_lotes,
 )
 
 
@@ -1250,3 +1254,101 @@ def test_recall_de_candidatos():
     # u1: el objetivo "a" SI esta entre sus candidatos {a, b}
     # u2: el objetivo "z" NO esta entre sus candidatos {c}
     assert recall_de_candidatos(ctx) == pytest.approx(0.5)
+
+
+def _args_candidatos_por_lotes() -> dict:
+    """5 usuarios, 3 libros -- suficiente para forzar varios lotes con
+    `tamano_lote=2` en los tests de equivalencia lote-vs-sin-lotes."""
+    modelo = _ModeloALSFalso(
+        {
+            0: ([0], [0.9]),
+            1: ([1], [0.8]),
+            2: ([2], [0.7]),
+            3: ([0], [0.6]),
+            4: ([1], [0.5]),
+        }
+    )
+    fila_por_usuario = {"u1": 0, "u2": 1, "u3": 2, "u4": 3, "u5": 4}
+    return {
+        "modelo_als": modelo,
+        "matriz_usuario_libro": np.zeros((5, 3)),
+        "fila_por_usuario": fila_por_usuario,
+        "libros_por_columna": ["a", "b", "c"],
+        "stats_popularidad": _stats_popularidad(["a", "b", "c"], [9.0, 5.0, 1.0]),
+        "stats_por_genero": {},
+        "genero_por_usuario": {},
+        "n_interacciones_por_usuario": {},
+        "features_auxiliares": _features_auxiliares_vacias(),
+        "n_por_fuente": 150,
+    }
+
+
+class _ModeloRankerFalso:
+    """Score determinístico (no entrena nada real) para poder comparar
+    resultados lote-vs-sin-lotes sin depender de `lightgbm`."""
+
+    def predict(self, X):
+        return X["score_popularidad"].to_numpy()
+
+
+def test_armar_dataset_entrenamiento_por_lotes_da_lo_mismo_que_sin_lotear():
+    usuarios = ["u1", "u2", "u3", "u4", "u5"]
+    args_candidatos = _args_candidatos_por_lotes()
+    etiquetas_df = pd.DataFrame({"id_lector": usuarios, "id_libro": ["a", "b", "c", "a", "b"]})
+
+    candidatos_todos = generar_candidatos_con_features(usuarios=usuarios, libros_leidos={}, **args_candidatos)
+    X_esperado, y_esperado, group_esperado = armar_dataset_entrenamiento(candidatos_todos, etiquetas_df)
+
+    X, y, group = armar_dataset_entrenamiento_por_lotes(
+        usuarios, etiquetas_df, {}, args_candidatos, tamano_lote=2
+    )
+
+    pd.testing.assert_frame_equal(X.reset_index(drop=True), X_esperado.reset_index(drop=True))
+    pd.testing.assert_series_equal(y.reset_index(drop=True), y_esperado.reset_index(drop=True))
+    assert group == group_esperado
+
+
+def test_generar_candidatos_con_features_por_lotes_da_lo_mismo_que_sin_lotear():
+    usuarios = ["u1", "u2", "u3", "u4", "u5"]
+    args_candidatos = _args_candidatos_por_lotes()
+
+    candidatos_directo = generar_candidatos_con_features(usuarios=usuarios, libros_leidos={}, **args_candidatos)
+    candidatos_lotes = generar_candidatos_con_features_por_lotes(usuarios, {}, args_candidatos, tamano_lote=2)
+
+    # comprimido a category (dedupe) -- ver docstring de la función
+    assert isinstance(candidatos_lotes["id_lector"].dtype, pd.CategoricalDtype)
+    assert isinstance(candidatos_lotes["id_libro"].dtype, pd.CategoricalDtype)
+    pd.testing.assert_frame_equal(
+        candidatos_lotes.reset_index(drop=True),
+        candidatos_directo.reset_index(drop=True),
+        check_dtype=False,
+        check_categorical=False,
+    )
+
+
+def test_recomendar_por_usuario_por_lotes_da_lo_mismo_que_sin_lotear():
+    usuarios = ["u1", "u2", "u3", "u4", "u5"]
+    args_candidatos = _args_candidatos_por_lotes()
+    modelo_ranker = _ModeloRankerFalso()
+
+    candidatos_directo = generar_candidatos_con_features(usuarios=usuarios, libros_leidos={}, **args_candidatos)
+    recs_directo = recomendar_por_usuario(
+        usuarios=usuarios,
+        modelo_ranker=modelo_ranker,
+        candidatos_df=candidatos_directo,
+        ranking_global=["a", "b", "c"],
+        libros_leidos={},
+        k=2,
+    )
+
+    recs_lotes = recomendar_por_usuario_por_lotes(
+        usuarios,
+        modelo_ranker,
+        libros_leidos={},
+        ranking_global=["a", "b", "c"],
+        args_candidatos=args_candidatos,
+        k=2,
+        tamano_lote=2,
+    )
+
+    assert recs_lotes == recs_directo

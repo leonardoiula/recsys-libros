@@ -121,6 +121,16 @@ espíritu que el tope de la fuente de autor y el descarte de
 `n_por_fuente=500`: no repetir un problema de memoria ya visto dos
 veces esta sesión (ver `experiments/bitacora.md`)."""
 
+TAMANO_LOTE_USUARIOS = 1000
+"""Usuarios procesados por lote en `armar_dataset_entrenamiento_por_lotes`/
+`generar_candidatos_con_features_por_lotes`/`recomendar_por_usuario_por_lotes`.
+Con ~9k usuarios y hasta ~820 candidatos cada uno, armar la unión de
+candidatos de TODA la población en un solo DataFrame (hasta ~6M filas)
+llegó a fallar con `ArrayMemoryError` pese a tener RAM de sobra en la
+máquina (fragmentación del proceso, no falta de memoria real -- ver
+`experiments/bitacora.md`). Procesar por lotes de este tamaño acota el
+pico de memoria al tamaño de UN lote, no de la población completa."""
+
 
 def _pesos_por_recencia(interacciones: pd.DataFrame) -> pd.Series:
     """Peso de descuento por posición en el historial de cada usuario:
@@ -1138,6 +1148,119 @@ def recomendar_por_usuario(
     return recomendaciones
 
 
+def armar_dataset_entrenamiento_por_lotes(
+    usuarios: list,
+    etiquetas_df: pd.DataFrame,
+    libros_leidos: dict,
+    args_candidatos: dict,
+    n_por_fuente: int = 150,
+    n_por_autor: int = 20,
+    tamano_lote: int = TAMANO_LOTE_USUARIOS,
+) -> tuple[pd.DataFrame, pd.Series, list]:
+    """Arma `(X, y, group)` igual que encadenar `generar_candidatos_con_features`
+    (con TODOS los `usuarios` de una sola vez) + `armar_dataset_entrenamiento`,
+    pero procesando `usuarios` en lotes de `tamano_lote` -- ver
+    `TAMANO_LOTE_USUARIOS`. Cada lote de candidatos crudos se descarta
+    (`del`) apenas se convierte a `(X_lote, y_lote, group_lote)` -- solo
+    columnas numéricas, mucho más chico -- así que nunca hay más de un
+    lote de candidatos vivo a la vez, en vez de la unión de toda la
+    población (hasta ~6M filas, lo que llegó a fallar con
+    `ArrayMemoryError` pese a tener RAM de sobra en la máquina).
+
+    Mismo resultado fila por fila que la versión sin lotear (`usuarios`
+    en el mismo orden que `etiquetas_df`, cada lote es un tramo contiguo
+    de ese orden) -- confirmado con un test de equivalencia en
+    `tests/test_ranker.py`.
+
+    `args_candidatos` es el mismo dict de kwargs que recibe
+    `generar_candidatos_con_features` (`modelo_als`, `matriz_usuario_libro`,
+    etc.) -- se arma una sola vez en el llamador y se reusa para cada lote.
+    """
+    X_partes: list = []
+    y_partes: list = []
+    group: list = []
+    for inicio in range(0, len(usuarios), tamano_lote):
+        lote = usuarios[inicio : inicio + tamano_lote]
+        candidatos_lote = generar_candidatos_con_features(usuarios=lote, libros_leidos=libros_leidos, **args_candidatos)
+        etiquetas_lote = etiquetas_df[etiquetas_df["id_lector"].isin(lote)]
+        X_lote, y_lote, group_lote = armar_dataset_entrenamiento(
+            candidatos_lote, etiquetas_lote, n_por_fuente=n_por_fuente, n_por_autor=n_por_autor
+        )
+        X_partes.append(X_lote)
+        y_partes.append(y_lote)
+        group.extend(group_lote)
+        del candidatos_lote
+
+    X = pd.concat(X_partes, ignore_index=True) if X_partes else pd.DataFrame(columns=FEATURES)
+    y = pd.concat(y_partes, ignore_index=True) if y_partes else pd.Series(dtype=int)
+    return X, y, group
+
+
+def generar_candidatos_con_features_por_lotes(
+    usuarios: list,
+    libros_leidos: dict,
+    args_candidatos: dict,
+    tamano_lote: int = TAMANO_LOTE_USUARIOS,
+) -> pd.DataFrame:
+    """Arma la unión de candidatos de `usuarios` igual que
+    `generar_candidatos_con_features`, pero procesando por lotes de
+    `tamano_lote` -- acota el pico de memoria durante la construcción
+    (ver `TAMANO_LOTE_USUARIOS`) sin cambiar el resultado.
+
+    A diferencia de `armar_dataset_entrenamiento_por_lotes` (que descarta
+    los candidatos crudos apenas arma `X`/`y`/`group`), acá el DataFrame
+    de candidatos completo SÍ hace falta después (`candidatos_test` en
+    `preparar_pipeline`, reusado por `evaluar_con_params` -- posiblemente
+    varias veces con distintos hiperparámetros, ver `scripts/tune_ranker.py`).
+    Por eso, una vez concatenados todos los lotes, `id_lector`/`id_libro`
+    se convierten a `category` (dedupe -- estas dos columnas repiten el
+    mismo string miles de veces) para que el resultado reusable quede
+    compacto en memoria, no solo al picklear."""
+    partes = [
+        generar_candidatos_con_features(usuarios=usuarios[inicio : inicio + tamano_lote], libros_leidos=libros_leidos, **args_candidatos)
+        for inicio in range(0, len(usuarios), tamano_lote)
+    ]
+    candidatos = (
+        pd.concat(partes, ignore_index=True) if partes else pd.DataFrame(columns=["id_lector", "id_libro"] + FEATURES)
+    )
+    return candidatos.astype({"id_lector": "category", "id_libro": "category"})
+
+
+def recomendar_por_usuario_por_lotes(
+    usuarios: list,
+    modelo_ranker: lgb.LGBMRanker,
+    libros_leidos: dict,
+    ranking_global: list,
+    args_candidatos: dict,
+    k: int,
+    tamano_lote: int = TAMANO_LOTE_USUARIOS,
+) -> dict:
+    """Arma las recomendaciones finales de `usuarios` igual que
+    `recomendar_por_usuario`, pero generando y puntuando los candidatos
+    por lotes de `tamano_lote` en vez de la población completa de una
+    sola vez -- nunca hay más de un lote de candidatos vivo a la vez (ver
+    `TAMANO_LOTE_USUARIOS`). Pensada para `submit.py`: a diferencia de
+    `candidatos_test` en la evaluación local, acá el DataFrame de
+    candidatos no hace falta después de puntuarlo una vez, así que no
+    hay ningún costo en descartarlo lote a lote."""
+    recomendaciones: dict = {}
+    for inicio in range(0, len(usuarios), tamano_lote):
+        lote = usuarios[inicio : inicio + tamano_lote]
+        candidatos_lote = generar_candidatos_con_features(usuarios=lote, libros_leidos=libros_leidos, **args_candidatos)
+        recomendaciones.update(
+            recomendar_por_usuario(
+                usuarios=lote,
+                modelo_ranker=modelo_ranker,
+                candidatos_df=candidatos_lote,
+                ranking_global=ranking_global,
+                libros_leidos=libros_leidos,
+                k=k,
+            )
+        )
+        del candidatos_lote
+    return recomendaciones
+
+
 def preparar_pipeline(
     interacciones: pd.DataFrame,
     libros: pd.DataFrame,
@@ -1225,25 +1348,14 @@ def preparar_pipeline(
     )
 
     usuarios_ranker = train_ranker["id_lector"].unique().tolist()
-    candidatos_train_ranker = generar_candidatos_con_features(
-        usuarios=usuarios_ranker, libros_leidos=libros_leidos_stage1, **args_candidatos
-    )
-    X, y, group = armar_dataset_entrenamiento(
-        candidatos_train_ranker,
+    X, y, group = armar_dataset_entrenamiento_por_lotes(
+        usuarios_ranker,
         train_ranker[["id_lector", "id_libro"]],
+        libros_leidos_stage1,
+        args_candidatos,
         n_por_fuente=n_por_fuente,
         n_por_autor=n_por_autor,
     )
-    # `candidatos_train_ranker` (millones de filas) ya no hace falta -- lo
-    # que importa de acá en más es `X`/`y`/`group` (mucho más chico, solo
-    # columnas numéricas). Liberarlo antes de la segunda llamada, tan
-    # pesada como la primera, a `generar_candidatos_con_features` reduce
-    # el pico de memoria del proceso (encontrado en la práctica: la
-    # segunda llamada llegó a fallar por `ArrayMemoryError` con RAM de
-    # sobra en la máquina -- síntoma de fragmentación, no de falta de
-    # memoria real).
-    del candidatos_train_ranker
-    gc.collect()
 
     libros_leidos_hasta_ranker = libros_leidos_por_usuario(train_candidatos_full)
     usuarios_test = test_final["id_lector"].unique().tolist()
@@ -1290,8 +1402,8 @@ def preparar_pipeline(
         )
         args_candidatos_test = args_candidatos
 
-    candidatos_test = generar_candidatos_con_features(
-        usuarios=usuarios_test, libros_leidos=libros_leidos_hasta_ranker, **args_candidatos_test
+    candidatos_test = generar_candidatos_con_features_por_lotes(
+        usuarios_test, libros_leidos_hasta_ranker, args_candidatos_test
     )
 
     recs_als = _recomendar_als(
@@ -1428,16 +1540,13 @@ def preparar_pipeline_cacheado(
     datos de igual tamaño pero contenido distinto; en ese caso hay que
     borrar `cache_dir` a mano.
 
-    Antes de picklear, las columnas `id_lector`/`id_libro` de
-    `candidatos_test`/`test_final` se convierten a `category` (ver
-    `_comprimir_para_cache`): sin esto, un `pickle.dump` directo del
-    contexto pesaba **3-4 GB** (medido con `n_por_fuente=150` -- millones de
-    filas de candidatos con esos dos strings repetidos sin deduplicar) y
-    tardaba más en recargarse de lo que tardaba recalcular. `category`
-    deduplica cada string único una sola vez; el contexto que devuelve esta
-    función (en cache-hit o cache-miss) queda idéntico al que devolvería
-    `preparar_pipeline` directamente -- la conversión es un detalle interno
-    del cacheo, no algo que le importe al resto del pipeline.
+    `candidatos_test` ya sale de `preparar_pipeline` con `id_lector`/
+    `id_libro` en `category` (ver `generar_candidatos_con_features_por_lotes`)
+    -- antes esta función convertía esas columnas a `category` solo al
+    picklear (un `pickle.dump` directo sin eso llegó a pesar 3-4 GB con
+    `n_por_fuente=150`), pero ahora que la compresión es parte normal del
+    resultado no hace falta ningún paso extra acá: se picklea/despicklea
+    el contexto tal cual.
 
     `cache_dir` default `CACHE_DIR` (`data/cache/`, gitignored).
     """
@@ -1457,7 +1566,7 @@ def preparar_pipeline_cacheado(
 
     if ruta.exists():
         with open(ruta, "rb") as f:
-            return _descomprimir_de_cache(pickle.load(f))
+            return pickle.load(f)
 
     contexto = preparar_pipeline(
         interacciones,
@@ -1471,43 +1580,7 @@ def preparar_pipeline_cacheado(
         refit_para_test=refit_para_test,
     )
     with open(ruta, "wb") as f:
-        pickle.dump(_comprimir_para_cache(contexto), f, protocol=pickle.HIGHEST_PROTOCOL)
-    return contexto
-
-
-_COLUMNAS_ID_CACHE = ("id_lector", "id_libro")
-_CLAVES_DATAFRAME_CACHE = ("candidatos_test", "test_final")
-
-
-def _comprimir_para_cache(contexto: dict) -> dict:
-    """Copia `contexto` convirtiendo `id_lector`/`id_libro` de
-    `candidatos_test`/`test_final` a `category` -- ver docstring de
-    `preparar_pipeline_cacheado` para el porqué. No modifica el `contexto`
-    original (el que se devuelve al llamador en un cache-miss sigue con
-    los dtypes normales)."""
-    comprimido = dict(contexto)
-    for clave in _CLAVES_DATAFRAME_CACHE:
-        df = comprimido.get(clave)
-        if df is None:
-            continue
-        columnas = [c for c in _COLUMNAS_ID_CACHE if c in df.columns]
-        if columnas:
-            comprimido[clave] = df.astype({c: "category" for c in columnas})
-    return comprimido
-
-
-def _descomprimir_de_cache(contexto: dict) -> dict:
-    """Inverso de `_comprimir_para_cache`, aplicado tras `pickle.load` --
-    devuelve `id_lector`/`id_libro` a su dtype normal (string) para que el
-    contexto se comporte igual venga de un cache-hit o de un cálculo
-    fresco."""
-    for clave in _CLAVES_DATAFRAME_CACHE:
-        df = contexto.get(clave)
-        if df is None:
-            continue
-        columnas = [c for c in _COLUMNAS_ID_CACHE if c in df.columns and isinstance(df[c].dtype, pd.CategoricalDtype)]
-        if columnas:
-            contexto[clave] = df.astype({c: "str" for c in columnas})
+        pickle.dump(contexto, f, protocol=pickle.HIGHEST_PROTOCOL)
     return contexto
 
 

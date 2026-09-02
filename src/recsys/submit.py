@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import re
 from datetime import datetime
 from pathlib import Path
@@ -27,12 +28,11 @@ from recsys.models.popularity_segmentada import (
     recomendar_por_usuario,
 )
 from recsys.models.ranker import (
-    armar_dataset_entrenamiento,
+    armar_dataset_entrenamiento_por_lotes,
     calcular_features_auxiliares,
     fit_ranker,
-    generar_candidatos_con_features,
+    recomendar_por_usuario_por_lotes,
 )
-from recsys.models.ranker import recomendar_por_usuario as recomendar_por_usuario_ranker
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 EJEMPLO_PATH = ROOT_DIR / "data" / "raw" / "ejemplo.csv"
@@ -130,6 +130,13 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     interacción más reciente de cada usuario (que antes solo se usaba
     para filtrar libros ya leídos, nunca como señal) aporta bastante. Ver
     `experiments/bitacora.md`.
+
+    Tanto el armado del dataset de entrenamiento como la generación de
+    los candidatos finales van por lotes de usuarios
+    (`armar_dataset_entrenamiento_por_lotes`/`recomendar_por_usuario_por_lotes`,
+    ver `TAMANO_LOTE_USUARIOS` en `ranker.py`) -- generar la unión de
+    candidatos de los ~11k lectores de una sola vez llegó a fallar por
+    `ArrayMemoryError` pese a tener RAM de sobra en la máquina.
     """
     interacciones = load_interacciones()
     libros = load_libros()
@@ -161,16 +168,23 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     )
 
     usuarios_ranker = train_ranker["id_lector"].unique().tolist()
-    candidatos_train_ranker = generar_candidatos_con_features(
-        usuarios=usuarios_ranker, libros_leidos=libros_leidos_stage1, **args_candidatos
-    )
-    X, y, group = armar_dataset_entrenamiento(
-        candidatos_train_ranker,
+    X, y, group = armar_dataset_entrenamiento_por_lotes(
+        usuarios_ranker,
         train_ranker[["id_lector", "id_libro"]],
+        libros_leidos_stage1,
+        args_candidatos,
         n_por_fuente=N_POR_FUENTE_RANKER,
         n_por_autor=N_POR_AUTOR_RANKER,
     )
     modelo_ranker = fit_ranker(X, y, group)
+
+    # La etapa 1 fiteada sobre train_candidatos ya no hace falta -- se
+    # refitea sobre todos los datos más abajo. Liberarla antes evita
+    # tener las dos versiones (cada una con su propia matriz de
+    # co-ocurrencia/TF-IDF) vivas a la vez (mismo ajuste que
+    # `ranker.preparar_pipeline` con `refit_para_test=True`).
+    del args_candidatos, features_auxiliares, matriz, modelo_als, fila_por_usuario, libros_por_columna
+    gc.collect()
 
     # Refit de etapa 1 sobre TODOS los datos (no solo train_candidatos)
     # para generar los candidatos finales -- ver docstring.
@@ -200,15 +214,12 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     )
 
     libros_leidos_completo = libros_leidos_por_usuario(interacciones)
-    candidatos_finales = generar_candidatos_con_features(
-        usuarios=usuarios, libros_leidos=libros_leidos_completo, **args_candidatos_finales
-    )
-    return recomendar_por_usuario_ranker(
-        usuarios=usuarios,
-        modelo_ranker=modelo_ranker,
-        candidatos_df=candidatos_finales,
-        ranking_global=ranking_global,
+    return recomendar_por_usuario_por_lotes(
+        usuarios,
+        modelo_ranker,
         libros_leidos=libros_leidos_completo,
+        ranking_global=ranking_global,
+        args_candidatos=args_candidatos_finales,
         k=k,
     )
 

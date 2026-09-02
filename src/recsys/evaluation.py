@@ -139,3 +139,84 @@ def evaluar_recall_personalizado(
     if not scores:
         return 0.0
     return sum(scores) / len(scores)
+
+
+BINS_ACTIVIDAD_DEFAULT = [0, 2, 5, 10, 20, 50, 100, math.inf]
+"""Cortes de bucket de actividad (cantidad de interacciones en train) para
+`pesos_por_actividad`/`evaluar_ndcg_ponderado_por_actividad`. Elegidos
+para tener granularidad razonable tanto en la validación local (mediana
+~9 interacciones/usuario) como en la población real de `ejemplo.csv`
+(mediana ~74-95), sin fragmentar demasiado ningún extremo."""
+
+
+def pesos_por_actividad(n_interacciones_referencia: pd.Series, bins: list = BINS_ACTIVIDAD_DEFAULT) -> pd.Series:
+    """Distribución (bucket de actividad -> proporción) de
+    `n_interacciones_referencia` -- pensada para usarse con la actividad
+    real de los usuarios que Kaggle efectivamente califica (`ejemplo.csv`,
+    cruzado contra el conteo de interacciones de cada usuario), para
+    reponderar la validación local hacia esa población en vez de la
+    población general activa.
+
+    Esto es un DIAGNÓSTICO, no una corrección: ya se investigó a fondo
+    (`experiments/bitacora.md`, sección "Investigando el sesgo
+    sistemático") que reponderar por actividad no cambia el signo de
+    ninguna comparación -- la brecha local-vs-Kaggle es sobre todo ruido
+    de muestra chica (832 usuarios), no composición de población. Se
+    reporta igual, al lado del promedio sin ponderar, para no tener que
+    rehacer el análisis a mano en cada ronda futura.
+
+    `n_interacciones_referencia` es una `pd.Series` con la cantidad de
+    interacciones en train de cada usuario de referencia -- los usuarios
+    sin historial conocido deben venir ya en 0 (no ausentes), para que
+    cuenten en el bucket más bajo en vez de desaparecer silenciosamente.
+    """
+    bucket = pd.cut(n_interacciones_referencia, bins=bins, right=False)
+    return bucket.value_counts(normalize=True)
+
+
+def evaluar_ndcg_ponderado_por_actividad(
+    val_df: pd.DataFrame,
+    recomendaciones: dict,
+    k: int,
+    n_interacciones_por_usuario: dict,
+    pesos_por_bucket: pd.Series,
+    bins: list = BINS_ACTIVIDAD_DEFAULT,
+) -> float:
+    """NDCG@k de `val_df`, pero agregado por bucket de actividad (misma
+    definición de bucket que `pesos_por_actividad`) y reponderado por
+    `pesos_por_bucket` en vez de promediar parejo sobre toda la población
+    de `val_df` -- para que la validación local se parezca más, en
+    composición de actividad, a la población real que califica Kaggle.
+
+    Buckets de `pesos_por_bucket` sin ningún usuario en `val_df` se
+    ignoran (se renormaliza sobre los buckets que sí tienen datos
+    locales) en vez de contarlos como NDCG 0 -- no hay forma de estimar
+    ese bucket sin usuarios locales que lo representen.
+
+    Mismo diagnóstico reportado que `pesos_por_actividad` -- no cambia
+    ningún criterio de decisión del proyecto.
+    """
+    relevantes_por_usuario = val_df.groupby("id_lector")["id_libro"].agg(set)
+
+    filas = [
+        {
+            "n": n_interacciones_por_usuario.get(id_lector, 0),
+            "ndcg": ndcg_at_k(recomendaciones.get(id_lector, [])[:k], relevantes, k),
+        }
+        for id_lector, relevantes in relevantes_por_usuario.items()
+    ]
+    if not filas:
+        return 0.0
+
+    df = pd.DataFrame(filas)
+    df["bucket"] = pd.cut(df["n"], bins=bins, right=False)
+    ndcg_por_bucket = df.groupby("bucket", observed=True)["ndcg"].mean()
+
+    total_peso = 0.0
+    total_ponderado = 0.0
+    for bucket, peso in pesos_por_bucket.items():
+        if bucket in ndcg_por_bucket.index:
+            total_ponderado += peso * ndcg_por_bucket[bucket]
+            total_peso += peso
+
+    return total_ponderado / total_peso if total_peso else 0.0

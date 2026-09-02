@@ -117,17 +117,19 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     menor desvío entre seeds que ALS) -- ver `scripts/evaluate_ranker.py`
     y `experiments/bitacora.md`.
 
-    Simplificación de producción: no hay un "futuro" para reservar como
-    hold-out final acá (es la entrega real). Se reserva la interacción
-    más reciente de cada usuario (`train_ranker`) como etiqueta para
-    entrenar el ranker, y las señales de etapa 1 (ALS/popularidad/género)
-    se fittean una sola vez sobre lo que queda (`train_candidatos`) y se
-    reusan tal cual tanto para entrenar el ranker como para generar los
-    candidatos finales -- evita el desajuste de entrenar el ranker con
-    scores de un modelo y aplicarlo sobre scores de otro. El costo: los
-    candidatos finales no usan la interacción más reciente de cada
-    usuario como señal (sí se usa para filtrar libros ya leídos, vía
-    `libros_leidos` calculado sobre todos los datos).
+    Las señales de etapa 1 (ALS/popularidad/género/`calcular_features_auxiliares`)
+    se fittean sobre `train_candidatos` para entrenar el ranker (evita que
+    vea, como features, scores calculados con la misma etiqueta que tiene
+    que predecir) pero se REFITEAN sobre `interacciones` completo -- todos
+    los datos disponibles, no hay un "futuro" que reservar acá como en la
+    evaluación local -- para generar los candidatos finales de la
+    submission real. Confirmado localmente antes de wirear acá
+    (`scripts/comparar_refit_etapa1.py`, `ranker.preparar_pipeline(...,
+    refit_para_test=True)`): +12.4% de NDCG@20 en promedio, positivo en
+    los 3 seeds, muy por encima del desvío entre seeds -- refitear con la
+    interacción más reciente de cada usuario (que antes solo se usaba
+    para filtrar libros ya leídos, nunca como señal) aporta bastante. Ver
+    `experiments/bitacora.md`.
     """
     interacciones = load_interacciones()
     libros = load_libros()
@@ -137,7 +139,6 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     libros_leidos_stage1 = libros_leidos_por_usuario(train_candidatos)
     n_interacciones_por_usuario = train_candidatos.groupby("id_lector").size().to_dict()
     stats_popularidad = fit_popularity(train_candidatos)
-    ranking_global = stats_popularidad["id_libro"].tolist()
     stats_por_genero = fit_popularity_por_genero(train_candidatos, libros)
     genero_por_usuario = genero_preferido_por_usuario(train_candidatos, libros)
     modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos)
@@ -171,9 +172,36 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     )
     modelo_ranker = fit_ranker(X, y, group)
 
+    # Refit de etapa 1 sobre TODOS los datos (no solo train_candidatos)
+    # para generar los candidatos finales -- ver docstring.
+    n_interacciones_por_usuario_completo = interacciones.groupby("id_lector").size().to_dict()
+    stats_popularidad_completo = fit_popularity(interacciones)
+    ranking_global = stats_popularidad_completo["id_libro"].tolist()
+    stats_por_genero_completo = fit_popularity_por_genero(interacciones, libros)
+    genero_por_usuario_completo = genero_preferido_por_usuario(interacciones, libros)
+    modelo_als_completo, matriz_completo, fila_por_usuario_completo, libros_por_columna_completo = fit_als(
+        interacciones
+    )
+    features_auxiliares_completo = calcular_features_auxiliares(
+        interacciones, libros, lectores, matriz_completo, fila_por_usuario_completo, libros_por_columna_completo
+    )
+    args_candidatos_finales = dict(
+        modelo_als=modelo_als_completo,
+        matriz_usuario_libro=matriz_completo,
+        fila_por_usuario=fila_por_usuario_completo,
+        libros_por_columna=libros_por_columna_completo,
+        stats_popularidad=stats_popularidad_completo,
+        stats_por_genero=stats_por_genero_completo,
+        genero_por_usuario=genero_por_usuario_completo,
+        n_interacciones_por_usuario=n_interacciones_por_usuario_completo,
+        features_auxiliares=features_auxiliares_completo,
+        n_por_fuente=N_POR_FUENTE_RANKER,
+        n_por_autor=N_POR_AUTOR_RANKER,
+    )
+
     libros_leidos_completo = libros_leidos_por_usuario(interacciones)
     candidatos_finales = generar_candidatos_con_features(
-        usuarios=usuarios, libros_leidos=libros_leidos_completo, **args_candidatos
+        usuarios=usuarios, libros_leidos=libros_leidos_completo, **args_candidatos_finales
     )
     return recomendar_por_usuario_ranker(
         usuarios=usuarios,

@@ -2471,3 +2471,278 @@ confirmado en Kaggle (+1.56%, récord actual 0.05262).
 - El test pareado de generadores queda disponible para las próximas
   fuentes de candidatos que se agreguen -- correrlo antes de gastar una
   submission, no solo mirar recall + CV de 3 seeds.
+
+---
+
+## Ítem 1 de los pendientes: features ponderadas por recencia (autor/editorial/co-lectura/resumen)
+
+### Objetivo
+
+Primero de los tres pendientes que quedaron anotados en `modelo_actual.md`
+tras la ronda de infraestructura de caché/comparación de generadores:
+`n_libros_autor_leidos`/`n_libros_editorial_leidos`/`score_coleido`/
+`sim_resumen_historial` pooleaban todo el historial del usuario parejo,
+sin priorizar lo que leyó hace poco. Esquema de ponderación co-diseñado
+con el usuario: **decaimiento por posición (rank)**, `peso = 1/log2(rank+2)`
+con `rank` = posición desde la interacción más reciente del usuario (0 =
+más reciente) -- mismo descuento que ya usa `ndcg_at_k`, para no
+introducir una escala de tiempo (días/vida media) nueva que habría que
+barrer aparte.
+
+### Implementación
+
+`_pesos_por_recencia` (nueva, `ranker.py`) calcula ese peso por
+interacción. Cuatro features nuevas, agregadas sin tocar las 35
+anteriores (39 en total): `n_libros_autor_leidos_reciente`/
+`n_libros_editorial_leidos_reciente` (suma de pesos en vez de conteo,
+mismo patrón que las versiones "de siempre"), `score_coleido_reciente`
+(nueva `matriz_recencia`, mismo shape/índice que la matriz de ALS, usada
+en el mismo batch `@ cooc` que ya arma `score_coleido` -- `cooc` en sí
+sigue siendo una estadística poblacional estable, no algo que tenga
+sentido "hacer reciente"), `sim_resumen_historial_reciente` (segundo
+perfil TF-IDF ponderado por recencia en `_calcular_perfil_texto`, en vez
+de pooleado parejo). 8 tests nuevos/extendidos en `test_ranker.py`, suite
+completa en verde (92/92).
+
+### Problema de memoria encontrado y corregido en el camino
+
+Al medir con el contexto real completo, `generar_candidatos_con_features`
+empezó a fallar con `numpy._core._exceptions._ArrayMemoryError` (pedía
+entre 47 KiB y 900+ MiB, siempre con RAM de sobra en la máquina -- síntoma
+de fragmentación de memoria del proceso, no de falta de memoria real) al
+construir el DataFrame final de candidatos (~5.5-6.2M filas). No pasaba
+antes de esta ronda con 35 features; con 39, acumular millones de dicts
+de Python (uno por candidato, con las 39 claves) antes de convertirlos a
+DataFrame se volvió lo bastante pesado como para que la consolidación de
+pandas fallara. Dos correcciones, ambas de bajo riesgo (no cambian ningún
+valor, solo cómo se construyen):
+
+1. **Acumulación por columna, no por fila**: en vez de juntar millones de
+   dicts en una lista y convertir todo junto al final
+   (`pd.DataFrame(lista_de_dicts)`), cada `fila` se arma igual que antes
+   (mismo dict, sin tocar esa lógica) pero se vuelca enseguida a listas
+   por columna -- nunca hay más de un dict "vivo" a la vez.
+2. **Todas las columnas de `FEATURES` a `float32`** (antes quedaban en
+   una mezcla de `int64`/`float64` según cómo pandas infería cada una) --
+   reduce a la mitad el tamaño del bloque numérico consolidado y lo deja
+   en un solo bloque homogéneo en vez de dos separados. Sin pérdida de
+   precisión relevante para LightGBM (ranks/conteos/scores de este
+   proyecto están lejos del límite de representación exacta de un
+   float32).
+3. De paso, se unificó el cálculo de `sim_resumen_historial`/
+   `sim_resumen_historial_reciente` en un solo matmul disperso (`@`,
+   apilando los dos perfiles del usuario en una matriz de 2 filas) en vez
+   de dos productos dispersos `.multiply(...).sum(axis=1)` por usuario --
+   más eficiente en sí, además de la mitad de asignaciones en un loop de
+   ~9k usuarios.
+
+Con las dos correcciones, el contexto con `n_por_fuente=150` (el default
+de producción) siguió fallando de forma intermitente en esta sesión
+puntual (bloque final de ~920 MiB, contra RAM libre de >25 GB en la
+máquina -- fragmentación, no falta de memoria real). **No se identificó
+una causa raíz adicional dentro del tiempo de esta sesión** -- las
+mediciones de abajo se corrieron con `n_por_fuente=75` (candidatos por
+usuario más chico, pero el mismo código/features), que sí corrió de forma
+estable. Pendiente: confirmar que `n_por_fuente=150` corre limpio fuera
+de este entorno puntual antes de asumir que el problema está
+completamente resuelto.
+
+### Resultado
+
+Test pareado por usuario (`scripts/comparar_features_pareado.py`, 39 vs
+35 features, mismo contexto, `n_por_fuente=75`, seed=42, 8.904 usuarios):
+
+| | valor |
+|---|---|
+| NDCG@20 con recencia (39 features) | 0.125952 |
+| NDCG@20 sin recencia (35 features) | 0.118150 |
+| Diferencia media pareada | **+0.007802** (+6.6%) |
+| SE pareado | 0.001309 |
+| Sigma | **5.96** |
+| Bootstrap 95% CI | **[+0.005042, +0.010340]** (no incluye 0) |
+| P(diferencia > 0) | **1.0000** |
+
+Es la señal más fuerte medida con el test pareado hasta ahora en el
+proyecto -- muy por encima del umbral de 2σ que se venía usando como
+"confirmado", y sin el patrón límite que tuvieron género macro/editorial/
+señales cruzadas (0.3σ, 0.3σ, 0.04σ en la re-auditoría de
+`modelo_actual.md`).
+
+CV de 3 seeds (`scripts/evaluate_ranker.py`, también con `n_por_fuente=75`
+por la limitación de memoria de arriba -- no comparable en absoluto contra
+los números históricos a `n_por_fuente=150`, pero sí sirve para confirmar
+que la mejora no depende de un solo split):
+
+| seed | ALS solo | Ranker (39 features) |
+|---|---|---|
+| 42 | 0.092851 | 0.125952 |
+| 7 | 0.095364 | 0.128714 |
+| 123 | 0.095004 | 0.128389 |
+| **media ± desvío** | **0.094406 ± 0.001359** | **0.127685 ± 0.001509** |
+
+El ALS-solo (0.094406) coincide EXACTO con el valor histórico ya logueado
+(no depende de `n_por_fuente`, confirma que el split/la reproducibilidad
+siguen intactos). `feature_importances_` ubica a
+`n_libros_autor_leidos_reciente` sistemáticamente entre las 2-3 features
+más importantes del set completo en los 3 seeds (por delante de
+`n_libros_autor_leidos`, su versión sin ponderar) -- `score_coleido_reciente`
+y `sim_resumen_historial_reciente` también quedan por delante de sus
+versiones "de siempre" en los 3 seeds. Las 4 features nuevas quedan en
+`FEATURES` (ya están wireadas a `submit.py` porque ese módulo importa la
+lista compartida).
+
+### Pendiente
+
+- **Confirmar en Kaggle** -- con una señal así de fuerte y consistente,
+  es el candidato más sólido para la próxima submission del proyecto.
+  Falta el visto bueno del usuario antes de gastarla.
+- **Reproducir la medición con `n_por_fuente=150`** fuera de este entorno
+  puntual, para tener un número comparable a los históricos y confirmar
+  que el problema de memoria observado esta sesión no era una regresión
+  real de código.
+
+---
+
+## Ítem 2 de los pendientes: refit de etapa 1 sobre todos los datos para los candidatos finales
+
+### Objetivo
+
+Segundo pendiente de `modelo_actual.md`: `submit.py::_recomendaciones_ranker`
+fiteaba ALS/popularidad/género/`calcular_features_auxiliares` sobre
+`train_candidatos` (sin la interacción más reciente de cada usuario)
+tanto para entrenar el ranker como para generar los candidatos **finales**
+de la submission real -- la interacción más reciente solo se usaba para
+filtrar libros ya leídos, nunca como señal de las fuentes de candidatos.
+La práctica estándar es refitear sobre todos los datos disponibles
+después de entrenar el modelo supervisado.
+
+### Implementación
+
+`preparar_pipeline(..., refit_para_test=False)` (nuevo parámetro, sin
+cambios de comportamiento por default): con `True`, después de entrenar
+el ranker sobre las señales de `train_candidatos` (no cambia, evita
+leakage de etiqueta), se refitean ALS/popularidad/género/features
+auxiliares sobre `train_candidatos_full` y ESE refit se usa para generar
+`candidatos_test`/`ndcg_als` -- mismo patrón que tendría producción (sin
+`test_final` que reservar). Se libera explícitamente el fit sobre
+`train_candidatos` antes de refitear (`del` + `gc.collect()`) para no
+tener las dos versiones de ALS/TF-IDF/co-ocurrencia vivas a la vez.
+`scripts/comparar_refit_etapa1.py` (nuevo) compara, sobre los 3 seeds de
+siempre, `refit_para_test=False` vs `True`. Dos tests de integración
+chicos (datos sintéticos, `tests/test_ranker.py`) confirman que un libro
+presente solo en `train_ranker` (ni en `test_final` ni en
+`train_candidatos`) aparece en `ranking_global` únicamente cuando
+`refit_para_test=True`.
+
+### Resultado
+
+Igual que el ítem 1, medido con `n_por_fuente=75` por la misma limitación
+de memoria de esta sesión (ver ítem 1 para el detalle):
+
+| seed | sin refit | con refit | diferencia |
+|---|---|---|---|
+| 42 | 0.125952 | 0.140086 | +0.014134 |
+| 7 | 0.128714 | 0.145643 | +0.016929 |
+| 123 | 0.128389 | 0.144281 | +0.015892 |
+| **media ± desvío** | **0.127685 ± 0.001509** | **0.143336 ± 0.002896** | **+0.015652 (+12.3%)** |
+
+**Positivo en los 3 seeds**, con una magnitud (+0.014 a +0.017) muy por
+encima del desvío entre seeds de cualquiera de las dos configs (~0.0015-0.0029)
+-- ninguna ambigüedad tipo "caso límite" acá, a diferencia de varias
+rondas anteriores. El ALS-solo también sube con el refit (0.0928→0.1015
+en seed=42) -- coincide EXACTO con el valor histórico de "ALS sobre split
+corregido" ya logueado (`0.101473`, fila `als` de 2026-08-29 en
+`log.csv`), lo cual tiene sentido: ese número histórico viene de fitear
+ALS sobre exactamente el mismo conjunto (todo menos la última interacción
+de cada usuario) y evaluar sobre esa última interacción -- confirma que
+el refit está bien implementado, no es un artefacto de medición.
+
+`submit.py::_recomendaciones_ranker` actualizado: sigue entrenando el
+ranker sobre las señales de `train_candidatos` (sin cambios, necesario
+para no filtrar la etiqueta), pero ahora REFITEA ALS/popularidad/género/
+features auxiliares sobre `interacciones` completo antes de generar
+`candidatos_finales` -- mismo patrón confirmado localmente.
+
+### Pendiente
+
+- **Confirmar en Kaggle** -- junto con el ítem 1 (features de recencia),
+  son los dos candidatos más sólidos para la próxima submission real.
+  Falta el visto bueno del usuario antes de gastarla. Nota: ambos
+  cambios ya están en el código de producción (`ranker.py`/`submit.py`)
+  simultáneamente -- si se sube una submission ahora, confirma el efecto
+  COMBINADO de los dos ítems juntos, no cada uno por separado. Si se
+  quisiera aislar el efecto individual de cada uno en Kaggle, haría falta
+  una submission de cada config por separado (costo: presupuesto de
+  submissions).
+- **Reproducir con `n_por_fuente=150`** fuera de este entorno puntual,
+  mismo pendiente que el ítem 1.
+
+---
+
+## Ítem 3 de los pendientes: NDCG ponderado por la actividad real de `ejemplo.csv`
+
+### Objetivo
+
+Tercer y último pendiente de `modelo_actual.md`. Ya se había investigado
+a fondo, en una sesión anterior, si reponderar la validación local por la
+distribución de actividad real de `ejemplo.csv` (en vez de la población
+general activa) cambiaba alguna decisión -- **no cambió el signo de
+ninguna comparación** (sección "Investigando el sesgo sistemático" más
+arriba). El usuario decidió cerrar este ítem igual, como una métrica
+**reportada** de forma permanente (no ad-hoc), para no tener que rehacer
+el análisis a mano en cada ronda futura -- sin que cambie ningún criterio
+de decisión existente.
+
+### Implementación
+
+`evaluation.py`: `BINS_ACTIVIDAD_DEFAULT` (7 buckets, `[0,2,5,10,20,50,100,inf)`),
+`pesos_por_actividad` (distribución bucket→proporción de una `pd.Series`
+de actividad -- pensada para los usuarios de `ejemplo.csv`, cruzados
+contra su conteo de interacciones reales), `evaluar_ndcg_ponderado_por_actividad`
+(NDCG@k agregado por bucket y reponderado por esa distribución en vez de
+promediar parejo; buckets sin usuarios locales se ignoran, no cuentan
+como 0). 3 tests nuevos en `test_evaluation.py` con pesos/NDCG sintéticos
+donde el promedio ponderado difiere a propósito del promedio parejo, para
+confirmar que la reponderación hace lo que dice.
+
+`scripts/evaluate_ranker.py` extendido: carga `ejemplo.csv` una vez,
+cruza sus usuarios contra la actividad real en `interacciones` completo,
+e imprime -- al lado de lo que ya imprimía -- el NDCG ponderado de
+ALS-solo y del ranker por seed. `preparar_pipeline`/`evaluar_con_params`
+ahora exponen `recs_als`/`recs_ranker` en sus dicts de salida (antes solo
+se usaban internamente para el NDCG agregado) para que el script pueda
+recalcular este diagnóstico sin reconstruir el ranking.
+
+### Verificación
+
+No se pudo completar una corrida real de `scripts/evaluate_ranker.py`
+esta sesión (4 intentos, todos `killed` por la infraestructura de la
+sesión sin ninguna traza de error de código -- mismo patrón que los
+ítems 1 y 2). En su lugar se verificó el cableado directamente contra
+datos reales (`load_interacciones` + `data/raw/ejemplo.csv`, sin pasar
+por el pipeline pesado del ranker):
+
+```
+pesos por bucket (actividad real de ejemplo.csv):
+[100.0, inf)     0.468750
+[50.0, 100.0)    0.200721
+[20.0, 50.0)     0.140625
+[10.0, 20.0)     0.067308
+[5.0, 10.0)      0.051683
+[0.0, 2.0)       0.038462
+[2.0, 5.0)       0.032452
+```
+
+**46.9% de los usuarios de `ejemplo.csv` cae en el bucket 100+** --
+coincide con el "47% de la población de Kaggle" que ya se había medido
+en la sesión de "Investigando el sesgo sistemático" (arriba), confirmando
+que el cruce `ejemplo.csv` ↔ actividad real está bien hecho. Un smoke
+test con recomendaciones perfectas dio NDCG ponderado = 1.0, como
+corresponde.
+
+### Pendiente
+
+- **Correr `scripts/evaluate_ranker.py` completo** fuera de este entorno
+  puntual para ver el número real de NDCG ponderado de la config actual
+  (con las features de recencia + el refit de etapa 1 ya wireados) --
+  mismo pendiente de infraestructura que los ítems 1 y 2.

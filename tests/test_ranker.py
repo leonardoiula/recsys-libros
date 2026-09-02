@@ -19,6 +19,7 @@ from recsys.models.ranker import (
     armar_dataset_entrenamiento,
     calcular_features_auxiliares,
     generar_candidatos_con_features,
+    preparar_pipeline,
     recall_de_candidatos,
 )
 
@@ -46,17 +47,21 @@ def _features_auxiliares_vacias() -> dict:
         "autor_por_libro": {},
         "anio_edicion_por_libro": {},
         "n_libros_autor_leidos_por_usuario": {},
+        "n_libros_autor_leidos_reciente_por_usuario": {},
         "editorial_por_libro": {},
         "n_libros_editorial_leidos_por_usuario": {},
+        "n_libros_editorial_leidos_reciente_por_usuario": {},
         "n_libros_por_editorial": {},
         "anio_edicion_promedio_por_usuario": {},
         "n_generos_distintos_por_usuario": {},
         "dias_desde_ultima_interaccion_por_usuario": {},
         "cooc": None,
         "columna_por_libro": {},
+        "matriz_recencia": None,
         "tfidf_norm": None,
         "fila_por_libro_texto": {},
         "perfil_usuario_norm": None,
+        "perfil_usuario_reciente_norm": None,
         "genero_macro_por_libro": {},
         "score_por_libro_genero_macro": {},
         "frecuencia_genero_macro_por_usuario": {},
@@ -206,6 +211,30 @@ def test_calcular_features_auxiliares():
     norma_u1 = np.sqrt(perfil_u1.multiply(perfil_u1).sum())
     assert norma_u1 == pytest.approx(1.0, abs=1e-6)  # normalizado L2, u1 tiene señal real (leyo a y b)
 
+    # Pesos de recencia (1/log2(rank+2), rank=posicion desde la mas
+    # reciente): c (01-01-2022) es la mas reciente -> rank 0 -> peso 1.0;
+    # b (01-01-2021) -> rank 1 -> peso 1/log2(3); a (01-01-2020, la mas
+    # vieja) -> rank 2 -> peso 1/log2(4) = 0.5.
+    peso_a, peso_b, peso_c = 1 / np.log2(4), 1 / np.log2(3), 1 / np.log2(2)
+    # KING STEPHEN = a+b (no c, que es de OTRO) -- reciente pesa distinto que el conteo crudo (2)
+    assert aux["n_libros_autor_leidos_reciente_por_usuario"]["u1"]["KING, STEPHEN"] == pytest.approx(peso_a + peso_b)
+    assert aux["n_libros_autor_leidos_reciente_por_usuario"]["u1"]["OTRO"] == pytest.approx(peso_c)
+    # mismo patron para editorial (PLANETA = a+b, SUDAMERICANA = c)
+    assert aux["n_libros_editorial_leidos_reciente_por_usuario"]["u1"]["PLANETA"] == pytest.approx(peso_a + peso_b)
+    assert aux["n_libros_editorial_leidos_reciente_por_usuario"]["u1"]["SUDAMERICANA"] == pytest.approx(peso_c)
+    # matriz_recencia: mismo shape/indice que la matriz de ALS, con el peso
+    # de cada libro leido en vez de 1/0 -- "d" (no leido) sigue en 0
+    matriz_recencia = aux["matriz_recencia"]
+    assert matriz_recencia[0, 0] == pytest.approx(peso_a)
+    assert matriz_recencia[0, 1] == pytest.approx(peso_b)
+    assert matriz_recencia[0, 2] == pytest.approx(peso_c)
+    assert matriz_recencia[0, 3] == 0
+    # perfil de texto "reciente": mismo centroide normalizado, pero pesado
+    # por recencia en vez de parejo -- también queda L2-normalizado
+    perfil_reciente_u1 = aux["perfil_usuario_reciente_norm"][fila_por_usuario["u1"]]
+    norma_reciente_u1 = np.sqrt(perfil_reciente_u1.multiply(perfil_reciente_u1).sum())
+    assert norma_reciente_u1 == pytest.approx(1.0, abs=1e-6)
+
     # macro-genero: "terror" (a, b) no esta en el mapa explicito -> catch-all;
     # "novela negra" (c) si esta mapeado a su propia familia
     assert aux["genero_macro_por_libro"]["a"] == MACRO_GENERO_DEFAULT
@@ -264,6 +293,48 @@ def test_generar_candidatos_incluye_features_de_autor_y_recencia():
     assert fila["dias_desde_ultima_interaccion_usuario"] == 30
     assert fila["en_editorial_leida"] == 1
     assert fila["n_libros_editorial_leidos"] == 2
+    # sin _reciente_por_usuario en aux -- caen al sentinel 0.0 (mismo
+    # criterio que el resto de las features "ausentes")
+    assert fila["n_libros_autor_leidos_reciente"] == 0.0
+    assert fila["n_libros_editorial_leidos_reciente"] == 0.0
+
+
+def test_generar_candidatos_incluye_features_reciente_de_autor_y_editorial():
+    modelo = _ModeloALSFalso({0: ([0], [0.7])})
+    matriz = np.zeros((1, 1))
+    stats_pop = _stats_popularidad(["a"], [5.0])
+    aux = {
+        **_features_auxiliares_vacias(),
+        "autor_por_libro": {"a": "KING, STEPHEN"},
+        "n_libros_autor_leidos_por_usuario": {"u1": {"KING, STEPHEN": 3}},
+        "n_libros_autor_leidos_reciente_por_usuario": {"u1": {"KING, STEPHEN": 1.63}},
+        "editorial_por_libro": {"a": "PLANETA"},
+        "n_libros_editorial_leidos_por_usuario": {"u1": {"PLANETA": 2}},
+        "n_libros_editorial_leidos_reciente_por_usuario": {"u1": {"PLANETA": 0.5}},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a"],
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    fila = candidatos.iloc[0]
+    # las variantes reciente son un numero DISTINTO del conteo crudo --
+    # confirma que se lee de la fuente "_reciente_por_usuario", no de la cruda
+    assert fila["n_libros_autor_leidos"] == 3
+    assert fila["n_libros_autor_leidos_reciente"] == pytest.approx(1.63)
+    assert fila["n_libros_editorial_leidos"] == 2
+    assert fila["n_libros_editorial_leidos_reciente"] == pytest.approx(0.5)
 
 
 def test_generar_candidatos_sentinel_cuando_no_hay_dato_de_recencia():
@@ -324,6 +395,44 @@ def test_generar_candidatos_incluye_score_coleido():
     assert fila_c["score_coleido"] == 5.0
 
 
+def test_generar_candidatos_incluye_score_coleido_reciente():
+    # mismo escenario que score_coleido, pero matriz_recencia pesa a y b
+    # DISTINTO de la matriz binaria (b mucho mas reciente que a) -- si
+    # score_coleido_reciente usara la matriz binaria por error, daria el
+    # mismo 5.0 que score_coleido; con matriz_recencia da otro numero.
+    modelo = _ModeloALSFalso({0: ([2], [0.4])})
+    matriz = np.array([[1, 1, 0]])
+    libros_por_columna = ["a", "b", "c"]
+    cooc = sp.csr_matrix(np.array([[0, 0, 5], [0, 0, 2], [5, 2, 0]]))
+    matriz_recencia = sp.csr_matrix(np.array([[0.1, 0.9, 0.0]]))  # a=0.1 (viejo), b=0.9 (reciente)
+    aux = {
+        **_features_auxiliares_vacias(),
+        "cooc": cooc,
+        "columna_por_libro": {"a": 0, "b": 1, "c": 2},
+        "matriz_recencia": matriz_recencia,
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=libros_por_columna,
+        stats_popularidad=_stats_popularidad(["c"], [5.0]),
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    fila_c = candidatos[candidatos["id_libro"] == "c"].iloc[0]
+    assert fila_c["score_coleido"] == pytest.approx(5.0 + 2.0)  # sin ponderar: cooc[a,c]+cooc[b,c]
+    # score_coleido_reciente(u1, c) = 0.1*cooc[a,c] + 0.9*cooc[b,c] = 0.1*5 + 0.9*2
+    assert fila_c["score_coleido_reciente"] == pytest.approx(0.1 * 5 + 0.9 * 2)
+
+
 def test_generar_candidatos_incluye_sim_resumen_historial():
     modelo = _ModeloALSFalso({0: ([1], [0.4])})  # candidato propuesto por ALS: "b"
     matriz = np.array([[1, 0]])  # u1 leyo "a" (columna 0)
@@ -353,6 +462,77 @@ def test_generar_candidatos_incluye_sim_resumen_historial():
     fila_b = candidatos[candidatos["id_libro"] == "b"].iloc[0]
     # sim(u1, b) = perfil_u1 . tfidf["b"] = [1,0] . [0.8,0.6] = 0.8
     assert fila_b["sim_resumen_historial"] == pytest.approx(0.8)
+
+
+def test_generar_candidatos_incluye_sim_resumen_historial_reciente():
+    # mismo escenario que sim_resumen_historial, pero con un perfil
+    # "reciente" DISTINTO del perfil de siempre -- confirma que
+    # sim_resumen_historial_reciente usa perfil_usuario_reciente_norm, no
+    # perfil_usuario_norm por error.
+    modelo = _ModeloALSFalso({0: ([1], [0.4])})
+    matriz = np.array([[1, 0]])
+    tfidf_norm = sp.csr_matrix(np.array([[1.0, 0.0], [0.8, 0.6]]))
+    aux = {
+        **_features_auxiliares_vacias(),
+        "tfidf_norm": tfidf_norm,
+        "fila_por_libro_texto": {"a": 0, "b": 1},
+        "perfil_usuario_norm": sp.csr_matrix(np.array([[1.0, 0.0]])),
+        "perfil_usuario_reciente_norm": sp.csr_matrix(np.array([[0.0, 1.0]])),  # perfil reciente "opuesto"
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a", "b"],
+        stats_popularidad=_stats_popularidad(["b"], [5.0]),
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    fila_b = candidatos[candidatos["id_libro"] == "b"].iloc[0]
+    assert fila_b["sim_resumen_historial"] == pytest.approx(0.8)  # sin cambios
+    # sim_reciente(u1, b) = perfil_reciente_u1 . tfidf["b"] = [0,1] . [0.8,0.6] = 0.6
+    assert fila_b["sim_resumen_historial_reciente"] == pytest.approx(0.6)
+
+
+def test_generar_candidatos_sentinel_cuando_no_hay_perfil_reciente():
+    # perfil_usuario_reciente_norm ausente (None, ver _features_auxiliares_vacias)
+    # -- sim_resumen_historial_reciente cae a 0.0, sim_resumen_historial normal
+    # sigue funcionando con perfil_usuario_norm.
+    modelo = _ModeloALSFalso({0: ([1], [0.4])})
+    matriz = np.array([[1, 0]])
+    tfidf_norm = sp.csr_matrix(np.array([[1.0, 0.0], [0.8, 0.6]]))
+    aux = {
+        **_features_auxiliares_vacias(),
+        "tfidf_norm": tfidf_norm,
+        "fila_por_libro_texto": {"a": 0, "b": 1},
+        "perfil_usuario_norm": sp.csr_matrix(np.array([[1.0, 0.0]])),
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a", "b"],
+        stats_popularidad=_stats_popularidad(["b"], [5.0]),
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    fila_b = candidatos[candidatos["id_libro"] == "b"].iloc[0]
+    assert fila_b["sim_resumen_historial"] == pytest.approx(0.8)
+    assert fila_b["sim_resumen_historial_reciente"] == 0.0
 
 
 def test_generar_candidatos_incluye_features_de_genero_macro():
@@ -991,6 +1171,73 @@ def test_fuentes_activas_desactiva_coleido_sin_afectar_score_coleido_de_otras_fu
     fila_b = sin_coleido[sin_coleido["id_libro"] == "b"].iloc[0]
     assert fila_b["en_coleido_candidato"] == 0
     assert fila_b["score_coleido"] == pytest.approx(3.0)
+
+
+def _interacciones_para_refit() -> pd.DataFrame:
+    """u1 lee a,b,c,d (crecientemente recientes) y u2 lee e,f,z --
+    dimensionado para que, con el split de tres niveles (`n_val=1` dos
+    veces), "f" quede en `train_ranker` (ni en `test_final` ni en
+    `train_candidatos`): presente en `train_candidatos_full` pero AUSENTE
+    de `train_candidatos`. Sirve para distinguir sin ambigüedad si
+    `preparar_pipeline` fiteó la etapa 1 de los candidatos de test sobre
+    uno u otro conjunto."""
+    filas = [
+        ("u1", "a", "01-01-2020"),
+        ("u1", "b", "01-02-2020"),
+        ("u1", "c", "01-03-2020"),
+        ("u1", "d", "01-04-2020"),
+        ("u2", "e", "01-01-2020"),
+        ("u2", "f", "01-02-2020"),
+        ("u2", "z", "01-03-2020"),
+    ]
+    return pd.DataFrame(
+        {
+            "id_lector": [f[0] for f in filas],
+            "id_libro": [f[1] for f in filas],
+            "fecha": [f[2] for f in filas],
+            "rating": [8] * len(filas),
+        }
+    )
+
+
+def _libros_lectores_para_refit() -> tuple[pd.DataFrame, pd.DataFrame]:
+    ids = ["a", "b", "c", "d", "e", "f", "z"]
+    libros = pd.DataFrame(
+        {
+            "id_libro": ids,
+            "autor": [None] * len(ids),
+            "editorial": [None] * len(ids),
+            "anio_edicion": [None] * len(ids),
+            "genero": [None] * len(ids),
+            "resumen": [None] * len(ids),
+        }
+    )
+    lectores = pd.DataFrame({"id_lector": ["u1", "u2"], "genero": ["Mujer", "Hombre"], "nacimiento": [None, None]})
+    return libros, lectores
+
+
+def test_refit_para_test_false_no_incluye_libros_solo_en_train_ranker():
+    interacciones = _interacciones_para_refit()
+    libros, lectores = _libros_lectores_para_refit()
+
+    ctx = preparar_pipeline(interacciones, libros, lectores, seed=1, n_por_fuente=10, refit_para_test=False)
+
+    # "f" es la interaccion mas reciente de u2 DENTRO de train_candidatos_full
+    # (train_ranker) -- con refit_para_test=False, la etapa 1 de los
+    # candidatos de test se fiteo solo con train_candidatos (sin "f"), asi
+    # que "f" no puede aparecer en el ranking global de popularidad.
+    assert "f" not in ctx["ranking_global"]
+
+
+def test_refit_para_test_true_incluye_libros_de_train_ranker():
+    interacciones = _interacciones_para_refit()
+    libros, lectores = _libros_lectores_para_refit()
+
+    ctx = preparar_pipeline(interacciones, libros, lectores, seed=1, n_por_fuente=10, refit_para_test=True)
+
+    # con refit_para_test=True, la etapa 1 de los candidatos de test se
+    # refiteo sobre train_candidatos_full (incluye "f") -- ahora si aparece.
+    assert "f" in ctx["ranking_global"]
 
 
 def test_recall_de_candidatos():

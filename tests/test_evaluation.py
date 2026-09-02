@@ -6,8 +6,10 @@ import pytest
 from recsys.evaluation import (
     evaluar_multisplit,
     evaluar_ndcg,
+    evaluar_ndcg_ponderado_por_actividad,
     evaluar_recall_personalizado,
     ndcg_at_k,
+    pesos_por_actividad,
     recall_at_k,
 )
 
@@ -101,3 +103,62 @@ def test_evaluar_multisplit_un_solo_seed_desvio_cero():
 
     assert resultado["media"] == 0.5
     assert resultado["desvio"] == 0.0
+
+
+def test_pesos_por_actividad_bucketiza_por_proporcion():
+    # 1 usuario en [0,2), 2 en [2,5), 1 en [5,20)
+    n_interacciones = pd.Series([1, 3, 4, 15])
+
+    pesos = pesos_por_actividad(n_interacciones, bins=[0, 2, 5, 20])
+
+    assert pesos[pd.Interval(0, 2, closed="left")] == pytest.approx(0.25)
+    assert pesos[pd.Interval(2, 5, closed="left")] == pytest.approx(0.5)
+    assert pesos[pd.Interval(5, 20, closed="left")] == pytest.approx(0.25)
+
+
+def test_evaluar_ndcg_ponderado_por_actividad_pesa_distinto_que_el_promedio_parejo():
+    bins = [0, 5, float("inf")]
+
+    # poblacion de referencia (ej. ejemplo.csv): 1/3 liviana, 2/3 pesada
+    pesos = pesos_por_actividad(pd.Series([1, 1, 10, 10, 10, 10]), bins=bins)
+
+    # validacion local: u1/u2 livianos (NDCG 1.0 y 0.0), u3 pesado (NDCG 1.0)
+    val_df = pd.DataFrame({"id_lector": ["u1", "u2", "u3"], "id_libro": ["a", "b", "c"]})
+    recomendaciones = {"u1": ["a"], "u2": ["x"], "u3": ["c"]}
+    n_interacciones_por_usuario = {"u1": 1, "u2": 1, "u3": 10}
+
+    promedio_parejo = sum(
+        ndcg_at_k(recomendaciones[u], {val_df.set_index("id_lector")["id_libro"][u]}, k=1)
+        for u in ["u1", "u2", "u3"]
+    ) / 3
+    assert promedio_parejo == pytest.approx(2 / 3)
+
+    ponderado = evaluar_ndcg_ponderado_por_actividad(
+        val_df, recomendaciones, k=1, n_interacciones_por_usuario=n_interacciones_por_usuario,
+        pesos_por_bucket=pesos, bins=bins,
+    )
+
+    # bucket liviano: NDCG medio (1.0+0.0)/2=0.5, peso 1/3; bucket pesado:
+    # NDCG medio 1.0, peso 2/3 -> ponderado = 1/3*0.5 + 2/3*1.0 = 0.8333,
+    # bien distinto del promedio parejo (2/3)
+    assert ponderado == pytest.approx(1 / 3 * 0.5 + 2 / 3 * 1.0)
+    assert ponderado != pytest.approx(promedio_parejo)
+
+
+def test_evaluar_ndcg_ponderado_por_actividad_ignora_buckets_sin_datos_locales():
+    bins = [0, 5, float("inf")]
+    # la poblacion de referencia tiene usuarios pesados, pero la
+    # validacion local no tiene NINGUN usuario pesado -- ese bucket se
+    # ignora (renormaliza sobre lo que si hay) en vez de contar como 0.
+    pesos = pesos_por_actividad(pd.Series([1, 10, 10]), bins=bins)
+
+    val_df = pd.DataFrame({"id_lector": ["u1"], "id_libro": ["a"]})
+    recomendaciones = {"u1": ["a"]}
+    n_interacciones_por_usuario = {"u1": 1}
+
+    ponderado = evaluar_ndcg_ponderado_por_actividad(
+        val_df, recomendaciones, k=1, n_interacciones_por_usuario=n_interacciones_por_usuario,
+        pesos_por_bucket=pesos, bins=bins,
+    )
+
+    assert ponderado == pytest.approx(1.0)

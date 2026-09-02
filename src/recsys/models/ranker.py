@@ -25,6 +25,7 @@ local pero empeoró el score real de Kaggle, ver `experiments/bitacora.md`.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import heapq
 import pickle
@@ -88,6 +89,10 @@ FEATURES = [
     "score_coleido_candidato",
     "rank_coleido_candidato",
     "en_coleido_candidato",
+    "n_libros_autor_leidos_reciente",
+    "n_libros_editorial_leidos_reciente",
+    "score_coleido_reciente",
+    "sim_resumen_historial_reciente",
 ]
 
 FUENTES_CANDIDATOS = frozenset({"als", "popularidad", "genero", "autor", "resumen", "coleido"})
@@ -117,6 +122,32 @@ espíritu que el tope de la fuente de autor y el descarte de
 veces esta sesión (ver `experiments/bitacora.md`)."""
 
 
+def _pesos_por_recencia(interacciones: pd.DataFrame) -> pd.Series:
+    """Peso de descuento por posición en el historial de cada usuario:
+    `peso = 1/log2(rank+2)`, con `rank` = posición de esa interacción
+    ordenando por `fecha` DESCENDENTE dentro de su propio usuario (0 = la
+    interacción más reciente de ese usuario) -- mismo descuento que ya usa
+    `ndcg_at_k` en `evaluation.py`, elegido a propósito para no introducir
+    una escala de tiempo nueva (días/vida media de un decaimiento
+    exponencial) que habría que barrer/validar aparte (co-diseñado con el
+    usuario, ver `experiments/decisiones.md`). Fechas inválidas se tratan
+    como las MÁS ANTIGUAS del usuario (mismo criterio que
+    `split_train_val`), nunca como las más recientes.
+
+    Usada para dar features "recencia-ponderadas" (autor/editorial/
+    co-lectura/similitud de resumen) que priorizan lo que el usuario leyó
+    hace poco, en vez de poolear todo el historial parejo -- ver
+    `calcular_features_auxiliares`.
+
+    Devuelve una `pd.Series` alineada al índice de `interacciones` (no un
+    array por posición), para poder sumarla agrupando por lo que haga
+    falta sin depender de que el índice sea contiguo.
+    """
+    orden = pd.to_datetime(interacciones["fecha"], format="%d-%m-%Y", errors="coerce").fillna(pd.Timestamp.min)
+    rank = orden.groupby(interacciones["id_lector"]).rank(method="first", ascending=False) - 1
+    return 1.0 / np.log2(rank + 2)
+
+
 def _calcular_cooccurrencia(matriz_usuario_libro, libros_por_columna: list) -> tuple:
     """Matriz ítem×ítem de co-lectura: `cooc[i, j]` = cantidad de
     usuarios (de `train_candidatos`) que leyeron tanto el libro de la
@@ -137,7 +168,12 @@ def _calcular_cooccurrencia(matriz_usuario_libro, libros_por_columna: list) -> t
     return cooc, columna_por_libro
 
 
-def _calcular_perfil_texto(interacciones: pd.DataFrame, libros: pd.DataFrame, fila_por_usuario: dict) -> dict:
+def _calcular_perfil_texto(
+    interacciones: pd.DataFrame,
+    libros: pd.DataFrame,
+    fila_por_usuario: dict,
+    pesos_recencia: pd.Series | None = None,
+) -> dict:
     """Similitud de texto entre el historial de un usuario y un
     candidato, basada en `libros.resumen`.
 
@@ -163,12 +199,23 @@ def _calcular_perfil_texto(interacciones: pd.DataFrame, libros: pd.DataFrame, fi
     `matriz_usuario_libro`/`fila_por_usuario` (recibido como parámetro,
     no se recalcula un índice de usuarios nuevo) para poder indexarlo
     igual que la matriz de ALS.
+
+    Si se pasa `pesos_recencia` (`_pesos_por_recencia`, alineado al índice
+    de `interacciones`), se arma además `perfil_usuario_reciente_norm`:
+    el mismo centroide pero pesando cada lectura por qué tan reciente es
+    en vez de parejo -- da `sim_resumen_historial_reciente`, la variante
+    "gustos recientes" de `sim_resumen_historial` ("gustos de siempre").
     """
     con_resumen = libros.dropna(subset=["resumen"])
     con_resumen = con_resumen[con_resumen["resumen"].astype(str).str.strip() != ""]
 
     if con_resumen.empty:
-        return {"tfidf_norm": None, "fila_por_libro_texto": {}, "perfil_usuario_norm": None}
+        return {
+            "tfidf_norm": None,
+            "fila_por_libro_texto": {},
+            "perfil_usuario_norm": None,
+            "perfil_usuario_reciente_norm": None,
+        }
 
     vectorizador = TfidfVectorizer(max_features=N_MAX_FEATURES_TFIDF, min_df=MIN_DF_TFIDF, max_df=MAX_DF_TFIDF)
     tfidf_norm = vectorizador.fit_transform(con_resumen["resumen"].astype(str)).tocsr()  # ya normalizado L2 por default
@@ -183,24 +230,27 @@ def _calcular_perfil_texto(interacciones: pd.DataFrame, libros: pd.DataFrame, fi
     interacciones_con_texto = interacciones.assign(
         _fila_usuario=interacciones["id_lector"].map(fila_por_usuario),
         _fila_texto=interacciones["id_libro"].map(fila_por_libro_texto),
+        _peso_recencia=pesos_recencia if pesos_recencia is not None else 1.0,
     ).dropna(subset=["_fila_usuario", "_fila_texto"])
 
-    X_bin_texto = sp.csr_matrix(
-        (
-            np.ones(len(interacciones_con_texto)),
-            (interacciones_con_texto["_fila_usuario"].astype(int), interacciones_con_texto["_fila_texto"].astype(int)),
-        ),
-        shape=(n_usuarios, tfidf_norm.shape[0]),
-    )
-    perfil_usuario = X_bin_texto @ tfidf_norm
-    normas = np.sqrt(perfil_usuario.multiply(perfil_usuario).sum(axis=1)).A1
-    normas[normas == 0] = 1.0  # evita división por cero para usuarios sin lecturas con resumen
-    perfil_usuario_norm = sp.diags(1.0 / normas) @ perfil_usuario
+    filas_usuario = interacciones_con_texto["_fila_usuario"].astype(int)
+    filas_texto = interacciones_con_texto["_fila_texto"].astype(int)
+
+    def _perfil_normalizado(valores: np.ndarray):
+        X = sp.csr_matrix((valores, (filas_usuario, filas_texto)), shape=(n_usuarios, tfidf_norm.shape[0]))
+        perfil = X @ tfidf_norm
+        normas = np.sqrt(perfil.multiply(perfil).sum(axis=1)).A1
+        normas[normas == 0] = 1.0  # evita división por cero para usuarios sin lecturas con resumen
+        return (sp.diags(1.0 / normas) @ perfil).tocsr()
+
+    perfil_usuario_norm = _perfil_normalizado(np.ones(len(interacciones_con_texto)))
+    perfil_usuario_reciente_norm = _perfil_normalizado(interacciones_con_texto["_peso_recencia"].to_numpy())
 
     return {
         "tfidf_norm": tfidf_norm.tocsr(),
         "fila_por_libro_texto": fila_por_libro_texto,
-        "perfil_usuario_norm": perfil_usuario_norm.tocsr(),
+        "perfil_usuario_norm": perfil_usuario_norm,
+        "perfil_usuario_reciente_norm": perfil_usuario_reciente_norm,
     }
 
 
@@ -317,6 +367,15 @@ def calcular_features_auxiliares(
       `popularity_segmentada.py` -- queda como `NaN`), para cruzar contra
       `anio_edicion_por_libro` y estimar la edad del lector cuando se
       publicó el candidato.
+    - `n_libros_autor_leidos_reciente_por_usuario` / `n_libros_editorial_leidos_reciente_por_usuario` /
+      `matriz_recencia` / `perfil_usuario_reciente_norm` (esta última
+      dentro de `perfil_texto`): variantes "recencia-ponderadas" de las
+      señales de arriba -- mismo dato, pero cada interacción pesa
+      `1/log2(rank+2)` según qué tan reciente es dentro del historial del
+      usuario (`_pesos_por_recencia`) en vez de contar/poolear todo el
+      historial parejo. Alimentan `n_libros_autor_leidos_reciente`/
+      `n_libros_editorial_leidos_reciente`/`score_coleido_reciente`/
+      `sim_resumen_historial_reciente` en `generar_candidatos_con_features`.
 
     `matriz_usuario_libro`, `fila_por_usuario` y `libros_por_columna` son
     los que ya devuelve `fit_als` sobre el mismo `train_candidatos` --
@@ -328,17 +387,34 @@ def calcular_features_auxiliares(
     anio_edicion_por_libro = pd.to_numeric(metadata["anio_edicion"], errors="coerce").to_dict()
     genero_por_libro = _normalizar_genero(metadata["genero"]).to_dict()
 
-    con_autor = interacciones.assign(autor=interacciones["id_libro"].map(autor_por_libro))
-    n_libros_autor_leidos_por_usuario: dict = {}
-    for (id_lector, autor), n in con_autor.dropna(subset=["autor"]).groupby(["id_lector", "autor"]).size().items():
-        n_libros_autor_leidos_por_usuario.setdefault(id_lector, {})[autor] = int(n)
+    # Pesos de recencia (`_pesos_por_recencia`): 1/log2(rank+2) por
+    # interacción, rank=posición desde la más reciente del usuario --
+    # alimentan las variantes "recientes" de autor/editorial/co-lectura/
+    # resumen (más abajo), que priorizan lo que el usuario leyó hace poco
+    # en vez de poolear todo el historial parejo.
+    pesos_recencia = _pesos_por_recencia(interacciones)
 
-    con_editorial = interacciones.assign(editorial=interacciones["id_libro"].map(editorial_por_libro))
+    con_autor = interacciones.assign(autor=interacciones["id_libro"].map(autor_por_libro), _peso=pesos_recencia)
+    n_libros_autor_leidos_por_usuario: dict = {}
+    n_libros_autor_leidos_reciente_por_usuario: dict = {}
+    agregado_autor = con_autor.dropna(subset=["autor"]).groupby(["id_lector", "autor"]).agg(
+        n=("autor", "size"), peso=("_peso", "sum")
+    )
+    for (id_lector, autor), fila in agregado_autor.iterrows():
+        n_libros_autor_leidos_por_usuario.setdefault(id_lector, {})[autor] = int(fila["n"])
+        n_libros_autor_leidos_reciente_por_usuario.setdefault(id_lector, {})[autor] = float(fila["peso"])
+
+    con_editorial = interacciones.assign(
+        editorial=interacciones["id_libro"].map(editorial_por_libro), _peso=pesos_recencia
+    )
     n_libros_editorial_leidos_por_usuario: dict = {}
-    for (id_lector, editorial), n in (
-        con_editorial.dropna(subset=["editorial"]).groupby(["id_lector", "editorial"]).size().items()
-    ):
-        n_libros_editorial_leidos_por_usuario.setdefault(id_lector, {})[editorial] = int(n)
+    n_libros_editorial_leidos_reciente_por_usuario: dict = {}
+    agregado_editorial = con_editorial.dropna(subset=["editorial"]).groupby(["id_lector", "editorial"]).agg(
+        n=("editorial", "size"), peso=("_peso", "sum")
+    )
+    for (id_lector, editorial), fila in agregado_editorial.iterrows():
+        n_libros_editorial_leidos_por_usuario.setdefault(id_lector, {})[editorial] = int(fila["n"])
+        n_libros_editorial_leidos_reciente_por_usuario.setdefault(id_lector, {})[editorial] = float(fila["peso"])
 
     # Tamaño de la editorial (cuántos libros tiene en TODO el catálogo,
     # no solo los leídos por algún usuario) -- a diferencia de
@@ -396,7 +472,28 @@ def calcular_features_auxiliares(
     )
 
     cooc, columna_por_libro = _calcular_cooccurrencia(matriz_usuario_libro, libros_por_columna)
-    perfil_texto = _calcular_perfil_texto(interacciones, libros, fila_por_usuario)
+    perfil_texto = _calcular_perfil_texto(interacciones, libros, fila_por_usuario, pesos_recencia)
+
+    # Matriz usuario x libro "reciente" (mismo shape/índice que
+    # matriz_usuario_libro, pero con `pesos_recencia` como valores en vez
+    # de rating/binario) -- da `score_coleido_reciente` en
+    # `generar_candidatos_con_features`: mismo cálculo que `score_coleido`
+    # (`X_batch @ cooc`) pero pesando más los libros que el usuario leyó
+    # hace poco, sin recalcular `cooc` (que sigue siendo una estadística
+    # poblacional estable, no algo que tenga sentido "hacer reciente" por
+    # usuario).
+    con_indices_recencia = interacciones.assign(
+        _fila=interacciones["id_lector"].map(fila_por_usuario),
+        _columna=interacciones["id_libro"].map(columna_por_libro),
+        _peso=pesos_recencia,
+    ).dropna(subset=["_fila", "_columna"])
+    matriz_recencia = sp.csr_matrix(
+        (
+            con_indices_recencia["_peso"].to_numpy(),
+            (con_indices_recencia["_fila"].astype(int), con_indices_recencia["_columna"].astype(int)),
+        ),
+        shape=matriz_usuario_libro.shape,
+    )
 
     # Señales cruzadas lector<->libro (ver docstring): género DECLARADO
     # del lector (no confundir con género literario) segmenta tanto una
@@ -434,14 +531,17 @@ def calcular_features_auxiliares(
         "autor_por_libro": autor_por_libro,
         "anio_edicion_por_libro": anio_edicion_por_libro,
         "n_libros_autor_leidos_por_usuario": n_libros_autor_leidos_por_usuario,
+        "n_libros_autor_leidos_reciente_por_usuario": n_libros_autor_leidos_reciente_por_usuario,
         "editorial_por_libro": editorial_por_libro,
         "n_libros_editorial_leidos_por_usuario": n_libros_editorial_leidos_por_usuario,
+        "n_libros_editorial_leidos_reciente_por_usuario": n_libros_editorial_leidos_reciente_por_usuario,
         "n_libros_por_editorial": n_libros_por_editorial,
         "anio_edicion_promedio_por_usuario": anio_edicion_promedio_por_usuario,
         "n_generos_distintos_por_usuario": n_generos_distintos_por_usuario,
         "dias_desde_ultima_interaccion_por_usuario": dias_desde_ultima_interaccion_por_usuario,
         "cooc": cooc,
         "columna_por_libro": columna_por_libro,
+        "matriz_recencia": matriz_recencia,
         "genero_macro_por_libro": genero_macro_por_libro,
         "score_por_libro_genero_macro": score_por_libro_genero_macro,
         "frecuencia_genero_macro_por_usuario": frecuencia_genero_macro_por_usuario,
@@ -552,17 +652,23 @@ def generar_candidatos_con_features(
     autor_por_libro = features_auxiliares["autor_por_libro"]
     anio_edicion_por_libro = features_auxiliares["anio_edicion_por_libro"]
     n_libros_autor_leidos_por_usuario = features_auxiliares["n_libros_autor_leidos_por_usuario"]
+    n_libros_autor_leidos_reciente_por_usuario = features_auxiliares.get("n_libros_autor_leidos_reciente_por_usuario", {})
     editorial_por_libro = features_auxiliares.get("editorial_por_libro", {})
     n_libros_editorial_leidos_por_usuario = features_auxiliares.get("n_libros_editorial_leidos_por_usuario", {})
+    n_libros_editorial_leidos_reciente_por_usuario = features_auxiliares.get(
+        "n_libros_editorial_leidos_reciente_por_usuario", {}
+    )
     n_libros_por_editorial = features_auxiliares.get("n_libros_por_editorial", {})
     anio_edicion_promedio_por_usuario = features_auxiliares["anio_edicion_promedio_por_usuario"]
     n_generos_distintos_por_usuario = features_auxiliares["n_generos_distintos_por_usuario"]
     dias_desde_ultima_interaccion_por_usuario = features_auxiliares["dias_desde_ultima_interaccion_por_usuario"]
     cooc = features_auxiliares.get("cooc")
     columna_por_libro = features_auxiliares.get("columna_por_libro", {})
+    matriz_recencia = features_auxiliares.get("matriz_recencia")
     tfidf_norm = features_auxiliares.get("tfidf_norm")
     fila_por_libro_texto = features_auxiliares.get("fila_por_libro_texto", {})
     perfil_usuario_norm = features_auxiliares.get("perfil_usuario_norm")
+    perfil_usuario_reciente_norm = features_auxiliares.get("perfil_usuario_reciente_norm")
     genero_macro_por_libro = features_auxiliares.get("genero_macro_por_libro", {})
     score_por_libro_genero_macro = features_auxiliares.get("score_por_libro_genero_macro", {})
     frecuencia_genero_macro_por_usuario = features_auxiliares.get("frecuencia_genero_macro_por_usuario", {})
@@ -618,6 +724,17 @@ def generar_candidatos_con_features(
         for id_lector, fila_row in zip(usuarios_con_als, co_scores_batch):
             co_scores_por_usuario[id_lector] = dict(zip(fila_row.indices, fila_row.data))
 
+    # Variante "reciente" de co-lectura (ver `matriz_recencia` en
+    # `calcular_features_auxiliares`): mismo `cooc` poblacional, pero el
+    # lado del usuario pesa cada libro que leyó por qué tan reciente es
+    # en vez de 1/0 -- dos libros co-leídos hace mucho pesan menos que dos
+    # co-leídos hace poco, aunque `cooc[i,j]` en sí sea la misma.
+    co_scores_recencia_por_usuario: dict = {}
+    if usuarios_con_als and cooc is not None and matriz_recencia is not None:
+        co_scores_recencia_batch = (matriz_recencia[filas] @ cooc).tocsr()
+        for id_lector, fila_row in zip(usuarios_con_als, co_scores_recencia_batch):
+            co_scores_recencia_por_usuario[id_lector] = dict(zip(fila_row.indices, fila_row.data))
+
     # Candidatos por similitud de resumen (5ª fuente, ver docstring de
     # `_generar_candidatos_por_resumen`): busca en TODO el catálogo con
     # resumen, no solo entre los candidatos que ya trajeron las otras 4
@@ -633,7 +750,17 @@ def generar_candidatos_con_features(
             n_por_fuente,
         )
 
-    filas_resultado = []
+    # Acumular por columna (no una lista de dicts por candidato): con
+    # ~9k usuarios de test * ~700 candidatos, una lista de millones de
+    # dicts de 39 claves cada uno se volvió lo bastante pesada como para
+    # que la consolidación final de `pd.DataFrame` fallara por memoria
+    # ("unable to allocate ... MiB") pese a tener RAM de sobra en la
+    # máquina -- síntoma de fragmentación por acumular millones de objetos
+    # Python de vida larga. Construir cada `fila` igual que antes (mismo
+    # dict, mismo código) pero volcarla enseguida a listas por columna
+    # evita mantener esos millones de dicts vivos a la vez.
+    columnas = ["id_lector", "id_libro"] + FEATURES
+    columnas_datos: dict = {columna: [] for columna in columnas}
     for id_lector in usuarios:
         vistos = set(libros_leidos.get(id_lector, set()))
         candidatos: dict = {}
@@ -736,7 +863,10 @@ def generar_candidatos_con_features(
 
         n_usuario = n_interacciones_por_usuario.get(id_lector, 0)
         autores_leidos = n_libros_autor_leidos_por_usuario.get(id_lector, {})
+        autores_leidos_reciente = n_libros_autor_leidos_reciente_por_usuario.get(id_lector, {})
         editoriales_leidas = n_libros_editorial_leidos_por_usuario.get(id_lector, {})
+        editoriales_leidas_reciente = n_libros_editorial_leidos_reciente_por_usuario.get(id_lector, {})
+        co_scores_recencia_usuario = co_scores_recencia_por_usuario.get(id_lector, {})
         anio_promedio_usuario = anio_edicion_promedio_por_usuario.get(id_lector)
         n_generos_distintos = n_generos_distintos_por_usuario.get(id_lector, 0)
         dias_desde_ultima = dias_desde_ultima_interaccion_por_usuario.get(
@@ -752,21 +882,42 @@ def generar_candidatos_con_features(
         # filas de tfidf_norm) contra el perfil de ESTE usuario -- nunca un
         # cruce usuario x catálogo completo (ver docstring de `_calcular_perfil_texto`).
         sim_resumen_por_candidato: dict = {}
+        sim_resumen_reciente_por_candidato: dict = {}
         fila_usuario_texto = fila_por_usuario.get(id_lector)
         if tfidf_norm is not None and perfil_usuario_norm is not None and fila_usuario_texto is not None:
             ids_con_texto = [id_libro for id_libro in candidatos if id_libro in fila_por_libro_texto]
             if ids_con_texto:
+                # Un solo matmul disperso (`@`, no `.multiply(...).sum(axis=1)`)
+                # apilando el perfil "de siempre" y el "reciente" en una sola
+                # matriz de 2 filas -- da las dos similitudes de un saque en
+                # vez de dos productos dispersos intermedios por usuario
+                # (con ~9k usuarios de test, duplicar esa asignación en un
+                # loop así de caliente llegó a agotar la memoria del proceso
+                # -- "unable to allocate 378 KiB" pese a tener RAM de sobra,
+                # síntoma de fragmentación por muchas asignaciones chicas).
                 filas_texto = [fila_por_libro_texto[id_libro] for id_libro in ids_con_texto]
+                tfidf_candidatos = tfidf_norm[filas_texto]
                 perfil_usuario = perfil_usuario_norm[fila_usuario_texto]
-                similitudes = tfidf_norm[filas_texto].multiply(perfil_usuario).sum(axis=1).A1
-                sim_resumen_por_candidato = dict(zip(ids_con_texto, similitudes))
+
+                if perfil_usuario_reciente_norm is not None:
+                    perfiles = sp.vstack([perfil_usuario, perfil_usuario_reciente_norm[fila_usuario_texto]])
+                    similitudes = (tfidf_candidatos @ perfiles.T).toarray()
+                    sim_resumen_por_candidato = dict(zip(ids_con_texto, similitudes[:, 0]))
+                    sim_resumen_reciente_por_candidato = dict(zip(ids_con_texto, similitudes[:, 1]))
+                else:
+                    similitudes = (tfidf_candidatos @ perfil_usuario.T).toarray().ravel()
+                    sim_resumen_por_candidato = dict(zip(ids_con_texto, similitudes))
 
         for id_libro, f in candidatos.items():
             autor = autor_por_libro.get(id_libro)
             n_autor_leidos = autores_leidos.get(autor, 0) if pd.notna(autor) else 0
+            n_autor_leidos_reciente = autores_leidos_reciente.get(autor, 0.0) if pd.notna(autor) else 0.0
 
             editorial = editorial_por_libro.get(id_libro)
             n_editorial_leidos = editoriales_leidas.get(editorial, 0) if pd.notna(editorial) else 0
+            n_editorial_leidos_reciente = (
+                editoriales_leidas_reciente.get(editorial, 0.0) if pd.notna(editorial) else 0.0
+            )
             n_libros_editorial_catalogo = n_libros_por_editorial.get(editorial, 0) if pd.notna(editorial) else 0
 
             anio_candidato = anio_edicion_por_libro.get(id_libro)
@@ -777,6 +928,9 @@ def generar_candidatos_con_features(
 
             columna_candidato = columna_por_libro.get(id_libro)
             score_coleido = co_scores_usuario.get(columna_candidato, 0.0) if columna_candidato is not None else 0.0
+            score_coleido_reciente = (
+                co_scores_recencia_usuario.get(columna_candidato, 0.0) if columna_candidato is not None else 0.0
+            )
 
             genero_macro_candidato = genero_macro_por_libro.get(id_libro)
             popularidad_genero_macro = score_por_libro_genero_macro.get(id_libro, 0.0)
@@ -797,50 +951,67 @@ def generar_candidatos_con_features(
             else:
                 edad_lector_al_publicarse = 0.0
 
-            filas_resultado.append(
-                {
-                    "id_lector": id_lector,
-                    "id_libro": id_libro,
-                    "score_als": f.get("score_als", 0.0),
-                    "rank_als": f.get("rank_als", n_por_fuente),
-                    "en_als": f.get("en_als", 0),
-                    "score_popularidad": f.get("score_popularidad", 0.0),
-                    "rank_popularidad": f.get("rank_popularidad", n_por_fuente),
-                    "en_popularidad": f.get("en_popularidad", 0),
-                    "score_genero": f.get("score_genero", 0.0),
-                    "rank_genero": f.get("rank_genero", n_por_fuente),
-                    "en_genero": f.get("en_genero", 0),
-                    "n_interacciones_libro": n_por_libro.get(id_libro, 0),
-                    "n_interacciones_usuario": n_usuario,
-                    "en_autor_leido": 1 if n_autor_leidos > 0 else 0,
-                    "n_libros_autor_leidos": n_autor_leidos,
-                    "anio_edicion_dif": anio_edicion_dif,
-                    "n_generos_distintos_usuario": n_generos_distintos,
-                    "dias_desde_ultima_interaccion_usuario": dias_desde_ultima,
-                    "score_coleido": float(score_coleido),
-                    "en_editorial_leida": 1 if n_editorial_leidos > 0 else 0,
-                    "n_libros_editorial_leidos": n_editorial_leidos,
-                    "sim_resumen_historial": float(sim_resumen_por_candidato.get(id_libro, 0.0)),
-                    "popularidad_genero_macro_candidato": float(popularidad_genero_macro),
-                    "frecuencia_genero_macro_usuario": float(frecuencia_genero_macro),
-                    "n_libros_editorial_catalogo": n_libros_editorial_catalogo,
-                    "popularidad_genero_lector_candidato": float(popularidad_genero_lector),
-                    "frecuencia_genero_macro_por_genero_lector": float(frecuencia_genero_macro_genero_lector),
-                    "edad_lector_al_publicarse": float(edad_lector_al_publicarse),
-                    "score_autor_candidato": f.get("score_autor_candidato", 0.0),
-                    "rank_autor_candidato": f.get("rank_autor_candidato", n_por_autor),
-                    "en_autor_candidato": f.get("en_autor_candidato", 0),
-                    "score_resumen_candidato": f.get("score_resumen_candidato", 0.0),
-                    "rank_resumen_candidato": f.get("rank_resumen_candidato", n_por_fuente),
-                    "en_resumen_candidato": f.get("en_resumen_candidato", 0),
-                    "score_coleido_candidato": f.get("score_coleido_candidato", 0.0),
-                    "rank_coleido_candidato": f.get("rank_coleido_candidato", n_por_fuente),
-                    "en_coleido_candidato": f.get("en_coleido_candidato", 0),
-                }
-            )
+            fila = {
+                "id_lector": id_lector,
+                "id_libro": id_libro,
+                "score_als": f.get("score_als", 0.0),
+                "rank_als": f.get("rank_als", n_por_fuente),
+                "en_als": f.get("en_als", 0),
+                "score_popularidad": f.get("score_popularidad", 0.0),
+                "rank_popularidad": f.get("rank_popularidad", n_por_fuente),
+                "en_popularidad": f.get("en_popularidad", 0),
+                "score_genero": f.get("score_genero", 0.0),
+                "rank_genero": f.get("rank_genero", n_por_fuente),
+                "en_genero": f.get("en_genero", 0),
+                "n_interacciones_libro": n_por_libro.get(id_libro, 0),
+                "n_interacciones_usuario": n_usuario,
+                "en_autor_leido": 1 if n_autor_leidos > 0 else 0,
+                "n_libros_autor_leidos": n_autor_leidos,
+                "anio_edicion_dif": anio_edicion_dif,
+                "n_generos_distintos_usuario": n_generos_distintos,
+                "dias_desde_ultima_interaccion_usuario": dias_desde_ultima,
+                "score_coleido": float(score_coleido),
+                "en_editorial_leida": 1 if n_editorial_leidos > 0 else 0,
+                "n_libros_editorial_leidos": n_editorial_leidos,
+                "sim_resumen_historial": float(sim_resumen_por_candidato.get(id_libro, 0.0)),
+                "popularidad_genero_macro_candidato": float(popularidad_genero_macro),
+                "frecuencia_genero_macro_usuario": float(frecuencia_genero_macro),
+                "n_libros_editorial_catalogo": n_libros_editorial_catalogo,
+                "popularidad_genero_lector_candidato": float(popularidad_genero_lector),
+                "frecuencia_genero_macro_por_genero_lector": float(frecuencia_genero_macro_genero_lector),
+                "edad_lector_al_publicarse": float(edad_lector_al_publicarse),
+                "score_autor_candidato": f.get("score_autor_candidato", 0.0),
+                "rank_autor_candidato": f.get("rank_autor_candidato", n_por_autor),
+                "en_autor_candidato": f.get("en_autor_candidato", 0),
+                "score_resumen_candidato": f.get("score_resumen_candidato", 0.0),
+                "rank_resumen_candidato": f.get("rank_resumen_candidato", n_por_fuente),
+                "en_resumen_candidato": f.get("en_resumen_candidato", 0),
+                "score_coleido_candidato": f.get("score_coleido_candidato", 0.0),
+                "rank_coleido_candidato": f.get("rank_coleido_candidato", n_por_fuente),
+                "en_coleido_candidato": f.get("en_coleido_candidato", 0),
+                "n_libros_autor_leidos_reciente": float(n_autor_leidos_reciente),
+                "n_libros_editorial_leidos_reciente": float(n_editorial_leidos_reciente),
+                "score_coleido_reciente": float(score_coleido_reciente),
+                "sim_resumen_historial_reciente": float(sim_resumen_reciente_por_candidato.get(id_libro, 0.0)),
+            }
+            for columna, valor in fila.items():
+                columnas_datos[columna].append(valor)
 
-    columnas = ["id_lector", "id_libro"] + FEATURES
-    return pd.DataFrame(filas_resultado, columns=columnas)
+    # Cada columna de FEATURES se convierte a un array de numpy ANTES de
+    # armar el DataFrame (no se deja que pandas infiera el dtype de una
+    # lista de Python) y todas a `float32` en vez del `float64`/`int64`
+    # mixto que salía antes: reduce a la mitad el tamaño del bloque
+    # numérico consolidado y evita que pandas necesite dos bloques
+    # separados (uno por familia de dtype) -- con ~5.5M filas x 39
+    # columnas, la consolidación mixta llegó a fallar por
+    # `ArrayMemoryError` pese a tener RAM de sobra en la máquina (síntoma
+    # de fragmentación, no de falta de memoria real). LightGBM no pierde
+    # nada de precisión útil con float32 (ranks/conteos/scores de este
+    # proyecto están lejos del límite de representación exacta de ese
+    # tipo).
+    for columna in FEATURES:
+        columnas_datos[columna] = np.asarray(columnas_datos[columna], dtype=np.float32)
+    return pd.DataFrame(columnas_datos)
 
 
 def armar_dataset_entrenamiento(
@@ -976,6 +1147,7 @@ def preparar_pipeline(
     n_por_autor: int = 20,
     k: int = 20,
     fuentes_activas: frozenset[str] | None = None,
+    refit_para_test: bool = False,
 ) -> dict:
     """Arma todo lo que necesita el pipeline del ranker para un seed,
     **excepto** entrenar el `LGBMRanker` en sí -- eso queda para
@@ -1010,6 +1182,18 @@ def preparar_pipeline(
     `fuentes_activas` (default `None` = las 6) se pasa tal cual a las dos
     llamadas de `generar_candidatos_con_features` -- ver docstring de esa
     función y `FUENTES_CANDIDATOS`.
+
+    `refit_para_test` (default `False`, sin cambios de comportamiento):
+    con `True`, después de entrenar el ranker sobre las señales fiteadas
+    en `train_candidatos` (eso no cambia -- evita que el ranker vea, como
+    features, scores calculados con la misma etiqueta que tiene que
+    predecir), se REFITEAN ALS/popularidad/género/`calcular_features_auxiliares`
+    sobre `train_candidatos_full` (=`train_candidatos`+`train_ranker`,
+    todo menos `test_final`) y ese refit se usa para generar
+    `candidatos_test`/`ndcg_als` -- mismo patrón que tendría producción
+    (`submit.py`, que no tiene un `test_final` que reservar y podría
+    refitear sobre absolutamente todos los datos antes de generar la
+    entrega real). Ver `scripts/comparar_refit_etapa1.py`.
     """
     train_candidatos_full, test_final = split_train_val(interacciones, n_val=1, seed=seed)
     train_candidatos, train_ranker = split_train_val(train_candidatos_full, n_val=1, seed=seed + 1000)
@@ -1050,21 +1234,73 @@ def preparar_pipeline(
         n_por_fuente=n_por_fuente,
         n_por_autor=n_por_autor,
     )
+    # `candidatos_train_ranker` (millones de filas) ya no hace falta -- lo
+    # que importa de acá en más es `X`/`y`/`group` (mucho más chico, solo
+    # columnas numéricas). Liberarlo antes de la segunda llamada, tan
+    # pesada como la primera, a `generar_candidatos_con_features` reduce
+    # el pico de memoria del proceso (encontrado en la práctica: la
+    # segunda llamada llegó a fallar por `ArrayMemoryError` con RAM de
+    # sobra en la máquina -- síntoma de fragmentación, no de falta de
+    # memoria real).
+    del candidatos_train_ranker
+    gc.collect()
 
     libros_leidos_hasta_ranker = libros_leidos_por_usuario(train_candidatos_full)
     usuarios_test = test_final["id_lector"].unique().tolist()
 
+    if refit_para_test:
+        # Ya no hace falta el fit sobre train_candidatos (candidatos_train_ranker
+        # ya se usó para armar X/y/group) -- liberarlo antes de refitear
+        # evita tener las dos versiones de ALS/features_auxiliares (cada
+        # una con su propia matriz de co-ocurrencia/TF-IDF) vivas a la vez.
+        del args_candidatos, features_auxiliares, matriz, modelo_als, fila_por_usuario, libros_por_columna
+        gc.collect()
+
+        stats_popularidad_test = fit_popularity(train_candidatos_full)
+        ranking_global_test = stats_popularidad_test["id_libro"].tolist()
+        stats_por_genero_test = fit_popularity_por_genero(train_candidatos_full, libros)
+        genero_por_usuario_test = genero_preferido_por_usuario(train_candidatos_full, libros)
+        modelo_als_test, matriz_test, fila_por_usuario_test, libros_por_columna_test = fit_als(
+            train_candidatos_full
+        )
+        features_auxiliares_test = calcular_features_auxiliares(
+            train_candidatos_full, libros, lectores, matriz_test, fila_por_usuario_test, libros_por_columna_test
+        )
+        args_candidatos_test = dict(
+            modelo_als=modelo_als_test,
+            matriz_usuario_libro=matriz_test,
+            fila_por_usuario=fila_por_usuario_test,
+            libros_por_columna=libros_por_columna_test,
+            stats_popularidad=stats_popularidad_test,
+            stats_por_genero=stats_por_genero_test,
+            genero_por_usuario=genero_por_usuario_test,
+            n_interacciones_por_usuario=train_candidatos_full.groupby("id_lector").size().to_dict(),
+            features_auxiliares=features_auxiliares_test,
+            n_por_fuente=n_por_fuente,
+            n_por_autor=n_por_autor,
+            fuentes_activas=fuentes_activas,
+        )
+    else:
+        ranking_global_test = ranking_global
+        modelo_als_test, matriz_test, fila_por_usuario_test, libros_por_columna_test = (
+            modelo_als,
+            matriz,
+            fila_por_usuario,
+            libros_por_columna,
+        )
+        args_candidatos_test = args_candidatos
+
     candidatos_test = generar_candidatos_con_features(
-        usuarios=usuarios_test, libros_leidos=libros_leidos_hasta_ranker, **args_candidatos
+        usuarios=usuarios_test, libros_leidos=libros_leidos_hasta_ranker, **args_candidatos_test
     )
 
     recs_als = _recomendar_als(
         usuarios=usuarios_test,
-        modelo=modelo_als,
-        matriz_usuario_libro=matriz,
-        fila_por_usuario=fila_por_usuario,
-        libros_por_columna=libros_por_columna,
-        ranking_global=ranking_global,
+        modelo=modelo_als_test,
+        matriz_usuario_libro=matriz_test,
+        fila_por_usuario=fila_por_usuario_test,
+        libros_por_columna=libros_por_columna_test,
+        ranking_global=ranking_global_test,
         libros_leidos=libros_leidos_hasta_ranker,
         k=k,
     )
@@ -1075,11 +1311,12 @@ def preparar_pipeline(
         "y": y,
         "group": group,
         "candidatos_test": candidatos_test,
-        "ranking_global": ranking_global,
+        "ranking_global": ranking_global_test,
         "libros_leidos_hasta_ranker": libros_leidos_hasta_ranker,
         "usuarios_test": usuarios_test,
         "test_final": test_final,
         "ndcg_als": ndcg_als,
+        "recs_als": recs_als,
         "k": k,
     }
 
@@ -1092,9 +1329,12 @@ def evaluar_con_params(contexto: dict, lgbm_params: dict | None = None) -> dict:
     veces con distintos `lgbm_params` contra el mismo `contexto`/seed sin
     repetir el armado de candidatos.
 
-    Devuelve `{"ndcg_als": ..., "ndcg_ranker": ..., "modelo_ranker": ...}`
-    -- mismo shape que devolvía `evaluar_pipeline` (`ndcg_als` viene tal
-    cual del contexto, no depende de `lgbm_params`).
+    Devuelve `{"ndcg_als": ..., "ndcg_ranker": ..., "modelo_ranker": ...,
+    "recs_ranker": ...}` -- `recs_ranker` (recomendaciones por usuario, ya
+    filtradas/completadas a `k`) se expone además del NDCG agregado para
+    poder recalcular diagnósticos por usuario (ej.
+    `evaluation.evaluar_ndcg_ponderado_por_actividad`) sin tener que
+    recomputar el ranking.
     """
     modelo_ranker = fit_ranker(contexto["X"], contexto["y"], contexto["group"], **(lgbm_params or {}))
 
@@ -1108,7 +1348,12 @@ def evaluar_con_params(contexto: dict, lgbm_params: dict | None = None) -> dict:
     )
     ndcg_ranker = evaluar_ndcg_personalizado(contexto["test_final"], recs_ranker, contexto["k"])
 
-    return {"ndcg_als": contexto["ndcg_als"], "ndcg_ranker": ndcg_ranker, "modelo_ranker": modelo_ranker}
+    return {
+        "ndcg_als": contexto["ndcg_als"],
+        "ndcg_ranker": ndcg_ranker,
+        "modelo_ranker": modelo_ranker,
+        "recs_ranker": recs_ranker,
+    }
 
 
 def evaluar_pipeline(
@@ -1162,6 +1407,7 @@ def preparar_pipeline_cacheado(
     n_por_autor: int = 20,
     k: int = 20,
     fuentes_activas: frozenset[str] | None = None,
+    refit_para_test: bool = False,
     cache_dir: str | Path | None = None,
 ) -> dict:
     """Wrapper de `preparar_pipeline` que cachea el contexto resultante a
@@ -1200,9 +1446,10 @@ def preparar_pipeline_cacheado(
 
     hash_codigo = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
     fuentes_label = "todas" if fuentes_activas is None else "+".join(sorted(fuentes_activas))
+    refit_label = "refit" if refit_para_test else "sinrefit"
     nombre = (
         f"ranker_ctx_seed{seed}_nf{n_por_fuente}_na{n_por_autor}_k{k}"
-        f"_fuentes-{fuentes_label}"
+        f"_fuentes-{fuentes_label}_{refit_label}"
         f"_n{len(interacciones)}-{len(libros)}-{len(lectores)}"
         f"_{hash_codigo}.pkl"
     )
@@ -1221,6 +1468,7 @@ def preparar_pipeline_cacheado(
         n_por_autor=n_por_autor,
         k=k,
         fuentes_activas=fuentes_activas,
+        refit_para_test=refit_para_test,
     )
     with open(ruta, "wb") as f:
         pickle.dump(_comprimir_para_cache(contexto), f, protocol=pickle.HIGHEST_PROTOCOL)

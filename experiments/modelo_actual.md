@@ -445,20 +445,29 @@ para distinguir señal real de ruido en este rango de efectos.
    siempre los dos números (recall Y NDCG en un seed) -- el caso de
    `n_por_fuente=500` mostró que el recall puede subir mucho sin que el
    NDCG lo acompañe.
-6. **Features ponderadas por recencia** (última fecha / últimas N
+6. ~~**Features ponderadas por recencia** (última fecha / últimas N
    interacciones) de las señales que hoy poolean todo el historial
    parejo (autor, editorial, co-lectura, `sim_resumen_historial`) — la
    forma correcta de aprovechar la señal temporal en estos datos, dado
-   que un modelo secuencial no aplica. Va *después* de las fuentes de
-   candidatos: es un factor de eficiencia de ranking, no de recall.
-7. **Revisar el refit de etapa 1 en `submit.py`**: hoy fitea ALS/
+   que un modelo secuencial no aplica.~~ **✅ HECHO (2026-09-02)**:
+   decaimiento por posición (rank), `peso = 1/log2(rank+2)` (co-diseñado
+   con el usuario, mismo descuento que `ndcg_at_k`). 4 features nuevas
+   (39 en total). Test pareado (`n_por_fuente=75` por una limitación de
+   memoria de esa sesión, ver `bitacora.md`): diferencia +0.007802,
+   **5.96σ**, la señal más fuerte medida en el proyecto con este método
+   -- pendiente de confirmar en Kaggle. Ver `decisiones.md` sección 18.
+7. ~~**Revisar el refit de etapa 1 en `submit.py`**: hoy fitea ALS/
    popularidad sobre `train_candidatos` (sin la interacción más
    reciente de cada usuario, ~10.673 interacciones, la parte más
-   informativa) para generar los candidatos finales de producción. La
-   práctica estándar es refitear etapa 1 sobre todos los datos después
-   de entrenar el ranker sobre el split — testeable localmente sin
-   leakage (comparar señales fitteadas en `train_candidatos` vs.
-   `train_candidatos_full`, evaluando siempre en `test_final`).
+   informativa) para generar los candidatos finales de producción.~~
+   **✅ HECHO (2026-09-02)**: `preparar_pipeline(..., refit_para_test=True)`
+   refitea etapa 1 sobre `train_candidatos_full` para los candidatos de
+   test. CV 3 seeds (`n_por_fuente=75` por una limitación de memoria de
+   esa sesión): **+0.0157 (+12.3%), positivo en los 3 seeds**, muy por
+   encima del desvío entre seeds -- la mejora más grande y menos ambigua
+   de la sesión. `submit.py` actualizado para refitear sobre
+   `interacciones` completo antes de generar los candidatos finales.
+   Pendiente de confirmar en Kaggle. Ver `decisiones.md` sección 19.
 8. **No volver a tunear LightGBM.** 3/3 intentos fallidos, y ahora se
    entiende por qué: el efecto que se buscaba (~0.0013) está por
    debajo del error estándar no pareado (0.0038) con el que se medía.
@@ -560,10 +569,17 @@ botella pasa a ser implementar/auditar, no evaluar)
    parámetro en vez de leer `ranker.FEATURES` global. Habilita
    ablations de ~1 min.
 2. Cambiar el criterio de decisión en `evaluation.py`: NDCG por usuario
-   + diferencia media pareada + CI bootstrap, y NDCG ponderado por la
-   distribución de actividad de `ejemplo.csv` reportado al lado del
-   plano. Pre-registrar el umbral (ej. adoptar si el CI pareado del
-   95% excluye el 0 en la población ponderada).
+   + diferencia media pareada + CI bootstrap (**✅ hecho**,
+   `scripts/comparar_features_pareado.py`/`comparar_generadores_pareado.py`),
+   y NDCG ponderado por la distribución de actividad de `ejemplo.csv`
+   reportado al lado del plano (**✅ hecho (2026-09-02)**,
+   `evaluation.pesos_por_actividad`/`evaluar_ndcg_ponderado_por_actividad`,
+   wireado a `scripts/evaluate_ranker.py` -- ver `decisiones.md` sección
+   20). No se pre-registró un umbral formal para el NDCG ponderado: ya se
+   había confirmado antes que reponderar no cambia el signo de ninguna
+   comparación (sección "Investigando el sesgo sistemático" en
+   `bitacora.md`), así que queda como diagnóstico reportado, no como
+   criterio de decisión nuevo.
 3. Subir el archivo de paginación, bajar el pico de memoria del TF-IDF,
    recién entonces paralelizar los seeds con 2-3 workers.
 4. Con eso andando, abrir la agenda del generador de candidatos con

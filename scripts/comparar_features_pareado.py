@@ -53,22 +53,17 @@ N_POR_FUENTE = 150
 SEED = 42
 N_BOOTSTRAP = 2000
 
-# Comparación activa: las 32 features actuales (incluye la 5a fuente de
-# candidatos por similitud de resumen) vs. esas mismas 32 sin las 3
-# features de esa fuente -- para confirmar con rigor la 5a fuente (ver
-# experiments/modelo_actual.md, "Recomendación: ¿cambiar de paradigma?").
-# OJO: esto solo compara las FEATURES del ranker, no la generación de
-# candidatos en sí -- la fuente de resumen igual aporta candidatos
-# nuevos en ambos casos (A y B comparten el mismo contexto, incluida la
-# unión de las 5 fuentes); lo que se aísla acá es si el ranker aprende
-# algo de los 3 campos score/rank/en_resumen_candidato -- que se solapan
-# con sim_resumen_historial, ya presente en ambos -- no si el recall
-# extra ayuda (eso ya lo mide `recall_candidatos.py` + el CV de 3 seeds).
+# Comparación activa: las 39 features actuales (incluye las 4 variantes
+# "recencia-ponderadas" de autor/editorial/co-lectura/resumen, ver
+# `_pesos_por_recencia` en ranker.py) vs. esas mismas 39 sin esas 4 --
+# para confirmar con rigor si priorizar lo que el usuario leyó hace poco
+# aporta señal real, antes de correr el CV de 3 seeds o pensar en Kaggle.
 FEATURES_A = R.FEATURES
 FEATURES_EXCLUIR_EN_B = [
-    "score_resumen_candidato",
-    "rank_resumen_candidato",
-    "en_resumen_candidato",
+    "n_libros_autor_leidos_reciente",
+    "n_libros_editorial_leidos_reciente",
+    "score_coleido_reciente",
+    "sim_resumen_historial_reciente",
 ]
 FEATURES_B = [f for f in R.FEATURES if f not in FEATURES_EXCLUIR_EN_B]
 

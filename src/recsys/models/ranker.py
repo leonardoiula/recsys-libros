@@ -1625,8 +1625,20 @@ def recall_de_candidatos(ctx: dict) -> float:
     entre los candidatos de `ctx["candidatos_test"]` -- el TECHO absoluto
     de NDCG@k que puede lograr el reranking con ese set de candidatos
     (ver `scripts/recall_candidatos.py`, que tenía esta misma lógica
-    inline)."""
-    candidatos_por_usuario = ctx["candidatos_test"].groupby("id_lector")["id_libro"].agg(set).to_dict()
+    inline).
+
+    `id_libro` se pasa a `object` ANTES de agrupar: desde que
+    `generar_candidatos_con_features_por_lotes` comprime `candidatos_test`
+    a `category` (ver esa función), `.groupby(...).agg(set)` directamente
+    sobre la columna `category` rompe con `TypeError: unhashable type:
+    'set'` -- pandas intenta reconstruir un `Categorical` a partir de los
+    sets que devuelve `agg`, y un set no es un valor de categoría válido.
+    """
+    candidatos = ctx["candidatos_test"]
+    id_libro_objeto = candidatos["id_libro"].astype(object)
+    candidatos_por_usuario = (
+        candidatos.assign(id_libro=id_libro_objeto).groupby("id_lector")["id_libro"].agg(set).to_dict()
+    )
     test_final = ctx["test_final"]
     hits = sum(
         1

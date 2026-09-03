@@ -28,6 +28,7 @@ en cada ronda futura.
 
 from __future__ import annotations
 
+import gc
 import sys
 import time
 from pathlib import Path
@@ -86,6 +87,15 @@ def main() -> None:
         if modelo_ranker is not None:
             importancias = sorted(zip(FEATURES, modelo_ranker.feature_importances_), key=lambda t: -t[1])
             print("  feature_importances_:", ", ".join(f"{f}={v}" for f, v in importancias))
+
+        # Libera el contexto de este seed (candidatos_test/X/y/group, lo más
+        # pesado del pipeline) ANTES de construir el del siguiente -- si no,
+        # `ctx = preparar_pipeline_cacheado(...)` de la próxima vuelta arma el
+        # contexto nuevo completo mientras el de esta vuelta sigue vivo (el
+        # lado derecho se evalúa antes de reasignar `ctx`), duplicando el pico
+        # de memoria en la transición entre semillas en vez de liberarlo.
+        del ctx
+        gc.collect()
 
     resumen_als = evaluar_multisplit(lambda s: resultados_por_seed[s]["ndcg_als"], SEEDS)
     resumen_ranker = evaluar_multisplit(lambda s: resultados_por_seed[s]["ndcg_ranker"], SEEDS)

@@ -2842,3 +2842,170 @@ la misma fila (`2026-09-02`, 0.06149), ahora confirmada además a
   problema de raíz está resuelto -- debería poder correr
   `scripts/evaluate_ranker.py`/`comparar_features_pareado.py`/
   `comparar_refit_etapa1.py` con el default de 150 sin problemas.
+
+## Reproducir el CV a `n_por_fuente=150` (cierra el pendiente de arriba)
+
+Con la memoria resuelta, `scripts/evaluate_ranker.py` (ya usa
+`N_POR_FUENTE=150` por default, sin cambios de código) corrió sin
+problemas sobre el ranker de 39 features/6 fuentes confirmado en Kaggle
+a 0.06149:
+
+| | ALS solo | Ranker |
+|---|---|---|
+| `n_por_fuente=75` (sesión anterior) | 0.094406±0.001359 | 0.127685±0.001509 |
+| `n_por_fuente=150` (ahora) | 0.094406±0.001359 | 0.130273±0.002993 [0.127139, 0.130577, 0.133103] |
+
+ALS solo dio **exactamente el mismo número** que el histórico ya
+confirmado varias veces en el proyecto -- otra confirmación de que el
+split es determinístico y el particionado por lotes no cambió nada. El
+ranker mejoró +2.0% local al subir de 75 a 150 candidatos por fuente,
+modesto pero en la dirección esperada. Esta corrida usa
+`refit_para_test=False` (el default del script) -- no reproduce el
+0.143336 de la ronda de recencia+refit (esa combinación ya está
+confirmada indirectamente por la submission real a `n_por_fuente=150`
+de la sección anterior, 0.06149) -- no se consideró necesario gastar
+~40 min más en la reproducción exacta con refit dado que Kaggle ya la
+validó de punta a punta.
+
+## 7ª fuente de candidatos (intento): similitud usuario-usuario podada a k vecinos — descartado
+
+### Motivación
+
+Retomando la agenda de atacar el generador de candidatos: las 6 fuentes
+actuales incluyen ALS (factorización latente global) y co-lectura
+ítem-ítem (kNN), pero nunca la mitad "usuario" del filtrado colaborativo
+clásico -- ningún modelo del proyecto había mirado nunca similitud
+*directa* entre usuarios. Sugerencia del usuario de comparar además una
+alternativa de clustering ("otra forma de agrupar puede darnos
+información interesante").
+
+Detalle importante encontrado antes de implementar: propagar por
+similitud usuario-usuario **sin podar** a los k vecinos más parecidos es
+matemáticamente idéntico a la co-lectura ítem-ítem ya existente, por
+asociatividad de matmul (`(X @ Xᵀ) @ X == X @ (Xᵀ @ X)`) -- la poda a
+top-k no es un detalle de rendimiento, es lo único que puede hacer que
+esta fuente aporte señal distinta.
+
+### Oportunidad teórica: kNN vs clustering
+
+`scripts/medir_oportunidad_usuario_usuario.py` (ad-hoc, seed=42, 8.904
+targets de validación, borrado tras esta ronda -- mismo criterio que
+embeddings/editorial: no queda código de un experimento descartado,
+solo esta entrada) midió, para cada candidato a fuente, si el target
+cae en el top-150 generado SOLO por esa señal:
+
+| | oportunidad (target en top-150) |
+|---|---|
+| kNN usuario-usuario, k=20 | 0.3272 |
+| kNN usuario-usuario, k=50 | 0.3325 |
+| Clustering (KMeans 20 clusters sobre `user_factors` de ALS) | 0.2761 |
+| Clustering (KMeans 50 clusters) | 0.2737 |
+
+kNN ganó claramente, en el mismo orden que la oportunidad de autor
+(28.6-31.9%, que sí terminó siendo una mejora real). El clustering
+rindió peor por clusters muy desbalanceados (tamaño mínimo=1,
+máximo=6.361 -- más de la mitad de la población en un solo cluster
+gigante), diluyendo la popularidad-dentro-del-cluster hacia algo
+parecido a popularidad global. Se decidió seguir con kNN (k=50) y dejar
+el clustering documentado como explorado pero no retomado (un
+clustering balanceado podría dar otro resultado, no se probó).
+
+### Implementación
+
+7ª fuente (`"vecinos"` en `FUENTES_CANDIDATOS`), mismo patrón que
+autor/resumen/co-lectura: `_calcular_similitud_usuario_usuario` arma
+`X @ Xᵀ` (misma binarización que la co-lectura ítem-ítem), poda a
+`K_VECINOS_USUARIO_USUARIO=50` vecinos por fila (`_top_k_por_fila`, la
+poda que evita la redundancia con co-lectura) y la propaga contra la
+matriz binaria completa (`similitud_podada[filas] @ X`) para dar
+`score_vecinos_candidato`/`rank_vecinos_candidato`/`en_vecinos_candidato`
+(39→42 features, sobre el ranker ya confirmado con recencia+refit). De
+paso se encontró y corrigió un bug real y preexistente en `recall_de_candidatos` (no relacionado con esta fuente,
+se mantuvo tras el revert): `.groupby(...).agg(set)` sobre `id_libro`
+rompía con `TypeError: unhashable type: 'set'` desde que
+`generar_candidatos_con_features_por_lotes` comprime esa columna a
+`category` -- nunca se había ejercitado ese camino porque
+`scripts/recall_candidatos.py` no se había vuelto a correr desde el
+commit de particionado por lotes. Fix: castear `id_libro` a `object`
+antes de agrupar. Test de regresión agregado
+(`test_recall_de_candidatos_con_id_libro_categorico`).
+
+### Recall real y test pareado: señal casi idéntica a la 6ª fuente confirmada
+
+RECALL del set de candidatos (seed=42, `n_por_fuente=150`): 0.5115→0.5184
+(+1.35%) -- mucho más chico que autor (+12.9%) o co-lectura (+12.2%), en
+el mismo orden que editorial (+1.0%, descartada). NDCG@20 (mismo seed):
+0.127139→0.128373 (+0.97%, +0.00123 absoluto, por encima del error
+estándar pareado ~0.0008 que sí descartó a editorial).
+
+Test pareado por usuario (`scripts/comparar_generadores_pareado.py`,
+`FUENTES_A`=7 fuentes, `FUENTES_B`=7 menos "vecinos", seed=42, 8.904
+usuarios) dio una firma **casi idéntica** a la que tuvo la 6ª fuente
+(co-lectura) antes de confirmarse en Kaggle:
+
+| | vecinos (esta ronda) | co-lectura (confirmada, +1.56% en Kaggle) |
+|---|---|---|
+| Diferencia media pareada | +0.001230 | +0.001121 |
+| Sigma pareado | 1.39 | 1.35 |
+| Bootstrap 95% CI | [-0.000437, +0.002907] | [-0.000506, +0.002759] |
+| P(mejora) | 0.9155 | 0.9105 |
+
+Un precedente fuerte para no descartar sin más -- muy por encima de los
+casos que ya se habían medido como ruido puro (género macro 0.3σ,
+editorial 0.3σ, señales cruzadas 0.04σ).
+
+### CV de 3 seeds: mixto, no cumple el criterio
+
+| | 6 fuentes | 7 fuentes (+vecinos) | diferencia |
+|---|---|---|---|
+| seed=42 | 0.127139 | 0.128373 | +0.001234 |
+| seed=7 | 0.130577 | 0.131669 | +0.001092 |
+| seed=123 | 0.133103 | 0.132434 | **-0.000669** |
+| media±desvío | 0.130273±0.002993 | 0.130825±0.002158 | +0.000552 (+0.42%) |
+
+**No da positivo en los 3 seeds** -- a diferencia de género
+macro/editorial/señales cruzadas (los "casos límite" que sí lo
+cumplieron y se confirmaron en Kaggle) y a diferencia de co-lectura
+(positiva en los 3 pese a la misma firma de sigma del test pareado). El
+seed negativo (-0.000669) es proporcionalmente más grande que el único
+seed negativo de señales cruzadas (-0.00024, "mucho menor que el
+desvío") -- más parecido en magnitud a los fallos reales de país/franja
+de nacimiento (que rondaban -0.001 y se habían descartado sin gastar
+submission).
+
+### Confirmado en Kaggle: REGRESIÓN
+
+Con la aclaración del usuario de que las submissions no son un recurso
+escaso en este proyecto (2-3 por día no son un problema), se decidió
+confirmar directamente en vez de seguir analizando el caso límite --
+mismo espíritu que género macro/editorial/señales cruzadas, pero ahora
+sin la fricción de "ahorrar" una entrega.
+
+`ranker_20260903-200207_7fuentes-vecinos.csv` (42 features, 7 fuentes,
+refit de etapa 1, recencia) -- **0.06017 en Kaggle**, **peor** que el
+récord actual (0.06149, -0.00132 absoluto, -2.1% relativo). Es la
+**primera vez en el proyecto que el test pareado (que había señalado
+"probablemente señal real") y el resultado en Kaggle real discrepan** --
+en todos los casos límite anteriores confirmados (género macro,
+editorial, señales cruzadas, co-lectura) la dirección se sostuvo.
+
+Revertido en su totalidad (`ranker.py`, `tests/test_ranker.py`,
+`scripts/comparar_generadores_pareado.py` vuelto a su config de
+co-lectura, `scripts/medir_oportunidad_usuario_usuario.py` borrado) --
+mismo criterio que embeddings/editorial. Se mantiene el fix de
+`recall_de_candidatos` (bug real independiente).
+
+### Reflexión: el test pareado de un solo seed no reemplaza al CV de 3 seeds
+
+Hasta esta ronda, un sigma de test pareado ~1.3-1.4 con P(mejora)~91%
+había sido, en la práctica, un buen predictor de que el CV de 3 seeds
+saldría positivo en los 3 (co-lectura) y de que Kaggle confirmaría la
+mejora. Acá el test pareado dio prácticamente el mismo número que
+co-lectura, pero el CV de 3 seeds ya mostraba la grieta (2 de 3
+positivos, uno claramente negativo) que el test pareado de un solo seed
+no podía ver -- midiendo un solo split, es ciego a cómo se comporta la
+fuente en OTROS splits. La lección concreta: el test pareado es una
+herramienta barata para decidir si vale la pena correr el CV completo
+(sigue siendo mucho más barato que un CV a ciegas), pero no reemplaza el
+chequeo de consistencia entre seeds -- los dos hicieron falta acá, y el
+CV fue el que finalmente coincidió con Kaggle.

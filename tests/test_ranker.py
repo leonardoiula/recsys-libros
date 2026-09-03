@@ -1256,6 +1256,23 @@ def test_recall_de_candidatos():
     assert recall_de_candidatos(ctx) == pytest.approx(0.5)
 
 
+def test_recall_de_candidatos_con_id_libro_categorico():
+    # `generar_candidatos_con_features_por_lotes` comprime id_lector/id_libro
+    # a `category` (ver esa función) -- `.groupby(...).agg(set)` directo
+    # sobre una columna category rompia con "TypeError: unhashable type:
+    # 'set'" (pandas intenta reconstruir un Categorical a partir de sets).
+    ctx = {
+        "candidatos_test": pd.DataFrame(
+            {
+                "id_lector": pd.Categorical(["u1", "u1", "u2"]),
+                "id_libro": pd.Categorical(["a", "b", "c"]),
+            }
+        ),
+        "test_final": pd.DataFrame({"id_lector": ["u1", "u2"], "id_libro": ["a", "z"]}),
+    }
+    assert recall_de_candidatos(ctx) == pytest.approx(0.5)
+
+
 def _args_candidatos_por_lotes() -> dict:
     """5 usuarios, 3 libros -- suficiente para forzar varios lotes con
     `tamano_lote=2` en los tests de equivalencia lote-vs-sin-lotes."""

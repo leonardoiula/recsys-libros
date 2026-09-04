@@ -10,17 +10,40 @@ está.
 Columna **Estado**: es una sugerción de lectura, no un veredicto —
 la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 
-## Para retomar: próximos pasos pendientes (al 2026-09-01)
+## Para retomar (al 2026-09-03): investigación abierta sobre el límite del reranking
 
-Estado actual: `"ranker"` (v3, ALS+género+popularidad+autor/año/diversidad/
-recencia+co-lectura+editorial+resumen+popularidad/frecuencia de
-macro-género+tamaño de catálogo de editorial+señales cruzadas lector↔libro
-**+4ª fuente de autor ya leído+5ª fuente de similitud de resumen+6ª
-fuente de co-lectura ítem-ítem (kNN)** → LightGBM, 35 features,
-hiperparámetros conservadores) es el modelo de referencia del proyecto,
-con **0.05262 confirmado en Kaggle** (récord actual). Ideas concretas
-para la próxima sesión, en orden sugerido (ver `experiments/modelo_actual.md`
-para el detalle completo):
+Estado actual: `"ranker"` (39 features, 6 fuentes de candidatos + refit
+de etapa 1 + recencia) sigue siendo el modelo de referencia, con
+**0.06149 confirmado en Kaggle** (récord actual, memoria resuelta por el
+particionado por lotes). Se probó y descartó una 7ª fuente (similitud
+usuario-usuario, sección 22 más abajo -- regresión en Kaggle, 0.06017).
+
+**Arrancar la próxima sesión acá**: tras descartar 2 fuentes de
+candidatos seguidas (editorial, vecinos), se abrió una investigación
+sobre dónde está el límite real del sistema HOY -- ver `bitacora.md`,
+sección "Investigación abierta: ¿dónde está el límite del reranking?"
+para el detalle completo. Resumen:
+
+- De los usuarios donde el objetivo SÍ está entre los candidatos, el
+  reranker solo lo sube al top-20 el **44%** de las veces (posición
+  mediana 29) -- plata que se pierde en el *ranking en sí*, no en la
+  generación de candidatos.
+- La relación entre popularidad del objetivo y éxito en el top-20 tiene
+  **forma de U** (no un sesgo simple hacia lo popular): los objetivos
+  muy poco populares rankean casi tan bien como los muy populares: los
+  peor rankeados son los de **popularidad media**.
+- Se investigó (y se descartó parcialmente) la hipótesis de que el tope
+  `n_por_autor=20` de la fuente de autor explicara esto -- explica menos
+  de la mitad de un subgrupo que además resultó no ser el que peor
+  rankea. **Sin conclusión accionable todavía** -- ver los 3 scripts de
+  diagnóstico (`diagnostico_posicion_popularidad.py`,
+  `diagnostico_franja_media.py`, `diagnostico_cap_autor.py`, quedan en
+  el repo como herramientas reusables) y las ideas para retomar al
+  final de esa sección de `bitacora.md`.
+
+Ideas concretas más viejas (siguen vigentes, ver `experiments/modelo_actual.md`
+para el detalle completo -- documento algo desactualizado, pre-fecha la
+investigación de arriba):
 
 1. **Seguir atacando el generador de candidatos, no el reranking** —
    confirmado con evidencia real en varias rondas: la 4ª fuente (autor)

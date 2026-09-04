@@ -3009,3 +3009,115 @@ herramienta barata para decidir si vale la pena correr el CV completo
 (sigue siendo mucho más barato que un CV a ciegas), pero no reemplaza el
 chequeo de consistencia entre seeds -- los dos hicieron falta acá, y el
 CV fue el que finalmente coincidió con Kaggle.
+
+## Investigación abierta: ¿dónde está el límite del reranking? (sesión 2026-09-03, sin resolver, continúa la próxima)
+
+### Motivación
+
+Tras descartar dos fuentes de candidatos seguidas (editorial, vecinos),
+el usuario preguntó directamente qué pareciera ser el limitante del
+sistema hoy. En vez de tirar ideas nuevas sin medir, se retomó el
+análisis dedicado de `modelo_actual.md` ("¿cambiar de paradigma?") y se
+sumó un dato que ese análisis no tenía: de los usuarios donde el
+objetivo SÍ está entre los candidatos (recall), el reranker solo lo
+sube al top-20 el **44%** de las veces (posición mediana 29, justo
+pasado el corte) -- plata que se pierde en el *ranking en sí*, no en la
+generación de candidatos. Se decidió investigar esto (barato, solo
+análisis de una corrida ya hecha, sin entrenar nada nuevo) antes de
+seguir agregando fuentes o features a ciegas.
+
+### Diagnóstico 1: la relación entre popularidad del objetivo y éxito en el top-20 tiene forma de U, no es un sesgo simple
+
+`scripts/diagnostico_posicion_popularidad.py` (seed=42, `n_por_fuente=150`,
+ranker de 6 fuentes/39 features, 4.554 usuarios con objetivo alcanzable):
+
+| decil de popularidad del objetivo (0=menos popular) | popularidad mediana | P(en el top-20) |
+|---|---|---|
+| 0 | 4 | **0.48** |
+| 1 | 27 | 0.42 |
+| 2 | 64 | 0.39 |
+| 3 | 118 | **0.34** |
+| 4 | 207 | **0.34** |
+| 5 | 386 | 0.38 |
+| 6 | 580 | 0.40 |
+| 7 | 767 | 0.48 |
+| 8 | 944 | 0.52 |
+| 9 | 1.449 | 0.61 |
+
+Hipótesis inicial descartada: NO es que el reranker simplemente
+"castigue lo poco popular" (correlación de Spearman posición-popularidad
+débil, -0.15). La relación tiene forma de **U**: los objetivos MENOS
+populares (decil 0) rankean casi tan bien como los MÁS populares (decil
+9), y los peor rankeados son los de **popularidad media** (deciles 3-4).
+Hipótesis de por qué: un libro rarísimo que llega como candidato
+probablemente lo hace vía una señal específica y fuerte (autor/resumen/
+co-lectura ya leídos), y uno popular tiene la popularidad misma como
+señal directa -- uno de popularidad media no tiene ninguna de las dos
+cosas a favor.
+
+### Diagnóstico 2: dentro de la franja media, el éxito correlaciona con recibir corroboración de una fuente específica -- pero es más matizado de lo que pareció al principio
+
+`scripts/diagnostico_franja_media.py` (mismo contexto, franja media =
+deciles 3-4, n=918):
+
+| | fuera del top-20 | en el top-20 |
+|---|---|---|
+| cantidad de fuentes que proponen al objetivo (promedio) | 1.39 | **2.62** |
+| `en_autor_candidato` | 16% | **74%** |
+| `en_coleido_candidato` | 13% | **48%** |
+| `en_resumen_candidato` | 4% | **19%** |
+| `en_als` | 79% | 98% |
+
+Casi todos los objetivos de popularidad media llegan vía ALS (fuente
+genérica); cuando ADEMÁS los corrobora una fuente específica, el éxito
+salta fuerte. El modelo SÍ usa bien esa corroboración cuando existe
+(`score_autor_candidato` pasa de mediana 0 a 7.18 entre fracaso y
+éxito) -- el problema parecía ser que la mayoría de los objetivos de
+popularidad media no la reciben.
+
+### Diagnóstico 3 (chequeo puntual): ¿el tope `n_por_autor=20` explica los casos donde el objetivo es de un autor ya leído pero la fuente de autor no lo propuso? -- parcialmente, y el hallazgo se matiza más de lo esperado
+
+`scripts/diagnostico_cap_autor.py` (mismo contexto): de los 918 usuarios
+de la franja media, solo **118 (12.9%)** son el caso puntual (objetivo
+de un autor ya leído, pero `en_autor_candidato=0`). De esos 118, el tope
+por autor (`n_por_autor=20`, ranking por popularidad GLOBAL dentro del
+autor) explica **menos de la mitad (46.6%)** -- el resto tiene un rank
+favorable dentro del catálogo de su autor (mediana 11) pero igual no fue
+propuesto, probablemente por el OTRO tope de la fuente (`n_por_fuente=150`
+candidatos totales, repartidos priorizando a los autores MÁS leídos por
+el usuario) -- **no medido con certeza, queda como hipótesis derivada**.
+
+**Corrección importante a la lectura del diagnóstico 2**: este subgrupo
+de 118 usuarios en realidad rankea **mejor** que el promedio de la
+franja media (41.5% vs 34.4% de éxito en el top-20) -- NO es un grupo
+especialmente perjudicado. La tabla del diagnóstico 2 (`en_autor_candidato`
+16% en fracasos vs 74% en éxitos) mezclaba dos poblaciones distintas: la
+gran mayoría de los "fracasos con en_autor_candidato=0" son usuarios
+cuyo objetivo simplemente **no es de ningún autor que hayan leído**
+(nada que esa fuente pudiera haber encontrado, no una falla activa) --
+el caso puntual y accionable (autor leído, la fuente lo pasó por alto)
+es un grupo mucho más chico de lo que sugería la tabla original, y ni
+siquiera es el que peor rankea.
+
+### Estado: sin conclusión accionable todavía, continúa la próxima sesión
+
+No se llegó a una palanca concreta y barata para la franja media -- el
+diagnóstico apunta más a "falta cobertura en general" (mismo patrón que
+ya se viene atacando con autor/resumen/co-lectura) que a un bug puntual
+de un tope mal calibrado. Ideas para retomar, sin implementar nada
+todavía:
+
+- Medir con más precisión el tope `n_por_fuente=150` total de la fuente
+  de autor (priorizado por autor más leído) -- ¿cuántos usuarios pierden
+  candidatos de autores "secundarios" por agotar el presupuesto en sus
+  autores favoritos? Quedó como hipótesis derivada, no confirmada.
+- El framework recall×eficiencia sigue siendo válido, pero esta sesión
+  sumó una tercera lente (la forma en U por popularidad del objetivo)
+  que `modelo_actual.md` no tenía -- vale la pena incorporarla ahí la
+  próxima vez que se actualice ese documento.
+- Los 3 scripts de diagnóstico (`diagnostico_posicion_popularidad.py`,
+  `diagnostico_franja_media.py`, `diagnostico_cap_autor.py`) quedan en
+  el repo como herramientas reusables (no se descartó nada, la
+  investigación sigue abierta) -- todos corren rápido si el contexto
+  cacheado de `preparar_pipeline_cacheado` sigue vigente (seed=42,
+  `n_por_fuente=150`, código actual de `ranker.py`).

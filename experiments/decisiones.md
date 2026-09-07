@@ -14,22 +14,23 @@ la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 
 Estado actual: `"ranker"` (39 features, 6 fuentes de candidatos + refit
 de etapa 1 + recencia + **BM25 en la matriz de ALS** + **presupuesto
-propio de la fuente de autor**) es el modelo de referencia, con **0.06231
-confirmado en Kaggle** (récord actual). Progresión de esta sesión sobre
-el récord de entrada (0.06149): BM25 en ALS (`BM25_ALS=(10.0, 0.75)`,
-sección 23 -- +0,54%, 0.06182) → presupuesto propio de la fuente de autor
-(`N_POR_FUENTE_AUTOR_RANKER=300`, sección 24 -- +0,79%, 0.06231). Antes se
-probó y descartó una 7ª fuente (similitud usuario-usuario, sección 22 --
-regresión, 0.06017).
+propio de la fuente de autor = 500**) es el modelo de referencia, con
+**0.06316 confirmado en Kaggle** (récord actual). Progresión de esta
+sesión sobre el récord de entrada (0.06149): BM25 en ALS
+(`BM25_ALS=(10.0, 0.75)`, sección 23 -- +0,54%, 0.06182) → presupuesto
+propio de la fuente de autor `nfa=300` (sección 24 -- +0,79%, 0.06231) →
+`nfa=500` (sección 24 -- +1,36%, 0.06316). Antes se probó y descartó una
+7ª fuente (similitud usuario-usuario, sección 22 -- regresión, 0.06017).
 
 **Arrancar la próxima sesión acá**: la investigación sobre el límite del
 reranking (`bitacora.md`, "Investigación abierta: ¿dónde está el límite
 del reranking?") ya produjo **una palanca confirmada** esta sesión (el
-tope total de la fuente de autor, Diagnóstico 4 → sección 24). BM25 **no**
-movió la franja media puntualmente; el presupuesto de autor **sí** ayuda
-al subgrupo "objetivo de un autor ya leído". Ideas que siguen sobre la
-mesa: barrer `n_por_fuente_autor` > 300 (500/800 no se llegaron a probar
-por RAM); aplicar el mismo análisis de presupuesto a otras fuentes;
+tope total de la fuente de autor, Diagnóstico 4 → sección 24, dos
+submissions confirmadas). BM25 **no** movió la franja media puntualmente;
+el presupuesto de autor **sí** ayuda, sobre todo al bucket 100+ (heavy
+users). Ideas que siguen sobre la mesa: `n_por_fuente_autor > 500` casi
+seguro no aporta (`800` ya dio 0,84 σ incremental, descartado); aplicar
+el mismo análisis de presupuesto a otras fuentes (resumen, co-lectura);
 seguir con la forma de U por popularidad del objetivo. Resumen del
 diagnóstico original:
 
@@ -413,8 +414,9 @@ catálogo de editorial" para las dos rondas más recientes.
 | Decisión | Estado sugerido | Detalle |
 |---|---|---|
 | `n_por_fuente_autor` (nuevo param de `generar_candidatos_con_features`/`preparar_pipeline`/`preparar_pipeline_cacheado`/`evaluar_pipeline`, default `None` = usar `n_por_fuente`) -- tope TOTAL de candidatos que aporta la fuente de autor por usuario, separado del `n_por_fuente=150` de las otras 5 fuentes | ✅ **CONFIRMADO EN KAGGLE -- nuevo récord** | Sale de la investigación abierta del límite del reranking (ver `bitacora.md`, "Diagnóstico 4"). `scripts/diagnostico_presupuesto_autor.py`: la fuente de autor recorre los autores del usuario de más leído a menos leído (hasta `n_por_autor=20` libros por autor) y corta al llegar a 150 candidatos acumulados -- **39% de los usuarios toca ese tope**, y de ellos una mediana de 25 autores ya leídos queda con CERO candidatos. **455 usuarios (5,1%, cota superior)** tienen el objetivo entre los candidatos de autor SIN tope pero no CON el tope de 150. |
-| `N_POR_FUENTE_AUTOR_RANKER = 300` (constante en `submit.py`, pasada a `args_candidatos` y `args_candidatos_finales`) | ✅ **elegido con recall + test pareado, confirmado con CV + Kaggle** | `scripts/screen_presupuesto_autor.py` (nuevo, barre `[None, 300, 500, 800]` -- el sweep murió por RAM tras `None` y `300`, pero `300` ya alcanzaba). Screen seed=42: recall del set de candidatos 0.5152→**0.5265** (+2,2%), NDCG@20 ranker 0.129787→0.131731, eficiencia de ranking 0.2519→0.2502 (**plana**, muy lejos del −22% de `n_por_fuente=500`). Test pareado seed=42: **+0.001943, 2,22 σ**, bootstrap 95% CI [+0.000227, +0.003702] (excluye 0), P(mejora)=0.9845 -- cruza el umbral estricto de 2 σ, más fuerte que los casos límite recientes. `500`/`800` no se probaron (300 alcanza, la eficiencia ya venía bajando). |
-| Validación con CV de 3 seeds + Kaggle | ✅ **positivo en las 3 seeds, confirmación más limpia que la ronda BM25** | CV 3 seeds (`scripts/evaluate_ranker.py`, `N_POR_FUENTE_AUTOR=300`): 0.132313→**0.133475**, +0.00194/+0.00080/+0.00075 por seed (positivo en los 3), media +0,88%, **desvío entre seeds bajó** de 0.00219 a 0.00152. NDCG@20 ponderado por actividad de `ejemplo.csv` (sesgado a heavy users, más cercano a Kaggle): **+2,6%**, bastante más que el sin ponderar -- coherente: los heavy users leen muchos autores, son los que tocan el tope. **CONFIRMADO EN KAGGLE: 0.06231**, +0,79% sobre el récord anterior (0.06182, +0.00049 absoluto) -- salto absoluto mayor que la ronda BM25 y con el test pareado por encima del umbral. `ranker.py`, `submit.py`, test nuevo en `tests/test_ranker.py`, `scripts/screen_presupuesto_autor.py`, `scripts/diagnostico_presupuesto_autor.py`. Ver `bitacora.md`, "Presupuesto propio para la fuente de autor". |
+| `N_POR_FUENTE_AUTOR_RANKER = 500` (constante en `submit.py`, pasada a `args_candidatos` y `args_candidatos_finales`) | ✅ **`300` confirmado primero (0.06231), `500` después (0.06316) -- valor final adoptado** | `scripts/screen_presupuesto_autor.py` (reworkeado a **un proceso por valor** -- escribe cada resultado a `data/cache/screen_nfa/<valor>.json` y sale, así el SO recupera los ~3-4 GB de cada contexto entre valores; el sweep en un solo proceso había agotado la RAM dos veces). Sweep seed=42 `[none, 300, 500, 800]`: NDCG@20 ranker monótono 0.129787 / 0.131730 / 0.133014 / 0.133733; recall del set de candidatos 0.5152 / 0.5265 / 0.5346 / 0.5389; eficiencia de ranking baja lento (0.2519→0.2482 a 800, **muy lejos** del −22% de `n_por_fuente=500` global). Test pareado seed=42 vs `none`: `300` +0.00194 (2,22 σ), `500` +0.00323 (**3,32 σ, P=1,0**), `800` +0.00395 (4,13 σ). Incremental `800`-vs-`500`: +0.00072, **0,84 σ, CI cruza 0** → **`800` descartado** (sin ganancia confiable sobre `500`, +67% candidatos/usuario). |
+| Validación de `nfa=300` con CV de 3 seeds + Kaggle | ✅ **positivo en las 3 seeds, primera confirmación** | CV 3 seeds (`N_POR_FUENTE_AUTOR=300`): 0.132313→**0.133475**, +0.00194/+0.00080/+0.00075 por seed (positivo en los 3), media +0,88%, desvío entre seeds bajó de 0.00219 a 0.00152. NDCG@20 ponderado por actividad de `ejemplo.csv` (sesgado a heavy users, más cercano a Kaggle): **+2,6%**. **CONFIRMADO EN KAGGLE: 0.06231**, +0,79% sobre 0.06182 (+0.00049 absoluto). |
+| Validación de `nfa=500` con CV de 3 seeds + desglose por bucket + Kaggle | ✅ **positivo en las 3 seeds vs `nfa=300` y vs base, adoptado como valor final** | CV 3 seeds (`N_POR_FUENTE_AUTOR=500`): **0.134117 ± 0.00096** [0.133014, 0.134661, 0.134677] -- positivo por seed vs `nfa=300` (+0.00128/+0.00019/+0.00045) y vs base BM25; **el desvío entre seeds sigue bajando** (0.00219 → 0.00152 → 0.00096: el modelo se vuelve más consistente al llenarse el set de candidatos). Incremental sobre `300` chico en media (+0.00064) y cargado por seed=42; ponderado por actividad +0.0026 vs `300`. `scripts/evaluate_ranker.py` con **desglose de NDCG@20 por bucket de actividad por seed** (nuevo): el bucket 5-9 (casuales) parecía regresar en seed=42 (0.1629→0.1572) pero su varianza **entre seeds** (0.1572 / 0.1726 / 0.1728) es ~3× la regresión → ruido de seed, no efecto real (chequeo de generalización pedido por el usuario). **CONFIRMADO EN KAGGLE: 0.06316**, +1,36% sobre 0.06231 (+0.00085 absoluto -- salto mayor que el de `nfa=300`). `ranker.py`, `submit.py`, test nuevo en `tests/test_ranker.py`, `scripts/screen_presupuesto_autor.py`, `scripts/diagnostico_presupuesto_autor.py`. Ver `bitacora.md`, "Presupuesto propio para la fuente de autor". |
 
 ---
 

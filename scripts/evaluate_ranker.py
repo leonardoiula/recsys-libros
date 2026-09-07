@@ -29,10 +29,13 @@ en cada ronda futura.
 from __future__ import annotations
 
 import gc
+import math
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -41,6 +44,7 @@ from recsys.data import load_interacciones, load_lectores, load_libros
 from recsys.evaluation import (
     evaluar_multisplit,
     evaluar_ndcg_ponderado_por_actividad,
+    ndcg_at_k,
     pesos_por_actividad,
 )
 from recsys.models.ranker import (
@@ -51,9 +55,26 @@ from recsys.models.ranker import (
 
 K = 20
 N_POR_FUENTE = 150
-N_POR_FUENTE_AUTOR = 300  # tope propio de la fuente de autor (None = usar N_POR_FUENTE); ver scripts/screen_presupuesto_autor.py
+N_POR_FUENTE_AUTOR = 500  # tope propio de la fuente de autor (None = usar N_POR_FUENTE); ver scripts/screen_presupuesto_autor.py
 SEEDS = [42, 7, 123]
 EJEMPLO_PATH = Path(__file__).resolve().parents[1] / "data" / "raw" / "ejemplo.csv"
+
+# Buckets de actividad (interacciones totales del usuario) para el desglose
+# por seed -- mismo criterio que scripts/screen_presupuesto_autor.py, para
+# poder ver si un bucket concreto (p.ej. 5-9, casuales) regresa de forma
+# consistente entre seeds y no solo en uno.
+BINS_ACT = [0, 2, 5, 10, 20, 50, 100, math.inf]
+LABELS_ACT = ["1", "2-4", "5-9", "10-19", "20-49", "50-99", "100+"]
+
+
+def ndcg_por_bucket(test_final: pd.DataFrame, recs: dict, n_int_total: pd.Series) -> dict:
+    relevantes = test_final.groupby("id_lector")["id_libro"].agg(set).to_dict()
+    por_bucket = defaultdict(list)
+    for id_lector, rel in relevantes.items():
+        act = n_int_total.get(id_lector, 0)
+        lab = LABELS_ACT[min(np.searchsorted(BINS_ACT, act, side="right") - 1, len(LABELS_ACT) - 1)]
+        por_bucket[lab].append(ndcg_at_k(recs.get(id_lector, []), rel, K))
+    return {lab: (len(v), float(np.mean(v))) for lab, v in por_bucket.items()}
 
 interacciones = load_interacciones()
 libros = load_libros()
@@ -87,6 +108,11 @@ def main() -> None:
             f"ranker={ndcg_ranker_ponderado:.6f}"
         )
 
+        bucket_seed = ndcg_por_bucket(ctx["test_final"], r["recs_ranker"], n_interacciones_por_usuario_total)
+        r["ndcg_por_bucket"] = bucket_seed
+        print("  NDCG@20 ranker por bucket de actividad:",
+              {lab: round(bucket_seed[lab][1], 4) for lab in LABELS_ACT if lab in bucket_seed})
+
         modelo_ranker = r.get("modelo_ranker")
         if modelo_ranker is not None:
             importancias = sorted(zip(FEATURES, modelo_ranker.feature_importances_), key=lambda t: -t[1])
@@ -107,6 +133,14 @@ def main() -> None:
     print("\n=== Resumen (media +- desvio sobre 3 seeds) ===")
     print(f"ALS solo:            {resumen_als['media']:.6f} +- {resumen_als['desvio']:.6f}  {resumen_als['valores']}")
     print(f"Ranker (dos etapas): {resumen_ranker['media']:.6f} +- {resumen_ranker['desvio']:.6f}  {resumen_ranker['valores']}")
+
+    print("\n=== NDCG@20 ranker por bucket de actividad (una columna por seed + media) ===")
+    print(f"{'bucket':>8} " + " ".join(f"{s:>10}" for s in SEEDS) + f" {'media':>10} {'n(42)':>7}")
+    for lab in LABELS_ACT:
+        vals = [resultados_por_seed[s]["ndcg_por_bucket"].get(lab) for s in SEEDS]
+        if all(v is not None for v in vals):
+            medias = [v[1] for v in vals]
+            print(f"{lab:>8} " + " ".join(f"{m:>10.4f}" for m in medias) + f" {np.mean(medias):>10.4f} {vals[0][0]:>7}")
 
 
 if __name__ == "__main__":

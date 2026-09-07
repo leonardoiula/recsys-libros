@@ -3339,11 +3339,9 @@ Test pareado seed=42: **+0.001943, 2,22 σ**, bootstrap 95% CI
 umbral estricto de 2 σ**, a diferencia de los casos límite recientes
 (BM25, co-lectura). La eficiencia de ranking casi plana confirma la
 hipótesis: los candidatos extra de autor SÍ traen señal, no son ruido
-(contra `n_por_fuente=500`). No se probaron `500`/`800` -- el sweep murió
-por RAM tras `None` y `300`, y `300` ya alcanzaba (la eficiencia ya venía
-bajando levemente).
+(contra `n_por_fuente=500` global).
 
-CV de 3 seeds (`scripts/evaluate_ranker.py`, `N_POR_FUENTE_AUTOR=300`):
+CV de 3 seeds de `nfa=300` (`scripts/evaluate_ranker.py`):
 
 | seed | BM25 base | BM25 + nfa=300 | Δ |
 |---|---|---|---|
@@ -3353,31 +3351,82 @@ CV de 3 seeds (`scripts/evaluate_ranker.py`, `N_POR_FUENTE_AUTOR=300`):
 | **media ± desvío** | **0.132313 ± 0.00219** | **0.133475 ± 0.00152** | **+0.001162 (+0,88%)** |
 
 **Positivo en las 3 seeds**, y el desvío entre seeds BAJÓ (0.00219 →
-0.00152) -- más consistente. La media queda por debajo del desvío entre
-seeds (caso límite en el CV crudo), pero el test pareado de seed=42 lo
-respalda con más poder. El NDCG@20 **ponderado por la actividad de
-`ejemplo.csv`** (sesgado a heavy users, más cercano a la población de
-Kaggle) subió **+2,6%**, bastante más que el sin ponderar -- coherente:
-los heavy users leen muchos autores, son justo los que tocan el tope de
-150. `feature_importances_`: `score_autor_candidato` sube (de ~123 a
-145-172 splits según seed) -- la fuente de autor carga más señal útil.
+0.00152) -- más consistente. NDCG@20 **ponderado por la actividad de
+`ejemplo.csv`** (sesgado a heavy users, más cercano a Kaggle) subió
+**+2,6%**, bastante más que el sin ponderar -- coherente: los heavy users
+leen muchos autores, son justo los que tocan el tope de 150.
+`feature_importances_`: `score_autor_candidato` sube (de ~123 a 145-172
+splits según seed).
+
+### Sweep completo (`screen_presupuesto_autor.py` reworkeado) y `nfa=500`
+
+El sweep de un solo proceso había agotado la RAM dos veces (contextos de
+~3-4 GB que no se liberan entre valores). Se reworkeó
+`screen_presupuesto_autor.py` a **un proceso por valor**: cada `--valor`
+corre aislado, escribe su resultado a `data/cache/screen_nfa/<valor>.json`
+y sale (el SO recupera la memoria); `--resumen` junta los archivos. De
+paso se le agregó el **desglose de NDCG@20 por bucket de actividad del
+usuario** (`1`, `2-4`, ..., `100+`), y el mismo desglose por seed a
+`evaluate_ranker.py` -- chequeo de generalización pedido por el usuario:
+¿la mejora viene de los heavy users (que dominan Kaggle) SIN dañar a los
+casuales?
+
+Sweep seed=42 `[none, 300, 500, 800]`:
+
+| valor | recall | NDCG@20 | eficiencia | cand/u p90 | pareado vs none | pareado vs anterior |
+|---|---|---|---|---|---|---|
+| none | 0.5152 | 0.129787 | 0.2519 | 764 | — | — |
+| 300 | 0.5265 | 0.131730 | 0.2502 | 890 | +0.00194 (2,22 σ) | — |
+| 500 | 0.5346 | 0.133014 | 0.2488 | 1061 | +0.00323 (**3,32 σ**, P=1,0) | vs 300: +0.00128 (1,47 σ) |
+| 800 | 0.5389 | 0.133733 | 0.2482 | 1279 | +0.00395 (4,13 σ) | vs 500: +0.00072 (**0,84 σ**, CI cruza 0) |
+
+`800` NO aporta sobre `500` (0,84 σ, +67% candidatos/usuario) -- descartado.
+
+Δ NDCG por bucket de actividad (seed 42, vs `none`):
+
+| bucket | n | none | Δ300 | Δ500 | Δ800 |
+|---|---|---|---|---|---|
+| 2-4 | 2134 | 0.1394 | +0.0010 | +0.0023 | +0.0029 |
+| **5-9** | 1524 | 0.1629 | −0.0033 | **−0.0057** | −0.0018 |
+| 10-19 | 1353 | 0.1566 | +0.0006 | +0.0008 | −0.0005 |
+| 20-49 | 1571 | 0.1286 | +0.0042 | +0.0026 | +0.0040 |
+| 50-99 | 1084 | 0.0980 | +0.0095 | +0.0095 | +0.0056 |
+| **100+** | 1238 | 0.0726 | +0.0019 | **+0.0138** | +0.0162 |
+
+La ganancia grande está en los **heavy users (100+)** -- los que tocan el
+tope y los que dominan Kaggle. El bucket **5-9 (casuales) parecía
+regresar** (−0.0057 en `500`), pero el CV de 3 seeds lo aclaró: la
+varianza de ese bucket **entre seeds** (5-9: 0.1572 / 0.1726 / 0.1728) es
+~3× esa "regresión" -- ruido de seed, no efecto real. No hay una
+contradicción heavy-vs-casual que pese contra el cambio.
+
+CV de 3 seeds de `nfa=500`: **0.134117 ± 0.00096** [0.133014, 0.134661,
+0.134677] -- positivo por seed vs `nfa=300` (+0.00128/+0.00019/+0.00045) y
+vs base BM25, y el **desvío entre seeds sigue bajando**
+(0.00219 → 0.00152 → 0.00096: el modelo se vuelve más consistente al
+llenarse el set de candidatos). El incremental sobre `300` es chico en
+media (+0.00064) y lo carga seed=42.
 
 ### Confirmado en Kaggle
 
-Submission `ranker_20260907-174708_bm25-als-nfa-autor-300.csv`: **0.06231,
-nuevo récord del proyecto**, +0,79% sobre el récord anterior (0.06182,
-+0.00049 absoluto). Confirmación **más limpia que la ronda BM25**: el
-salto absoluto es mayor y el test pareado local cruzó el umbral estricto
-de 2 σ (BM25 había sido un caso límite en todos los frentes). `ranker.py`,
-`submit.py`, `tests/test_ranker.py`, `scripts/screen_presupuesto_autor.py`,
-`scripts/diagnostico_presupuesto_autor.py`.
+- `nfa=300` (`ranker_20260907-174708_bm25-als-nfa-autor-300.csv`):
+  **0.06231**, +0,79% sobre 0.06182 (+0.00049 absoluto). Confirmación más
+  limpia que la ronda BM25 (salto mayor + test pareado sobre el umbral).
+- `nfa=500` (`ranker_20260907-201601_bm25-als-nfa-autor-500.csv`):
+  **0.06316, nuevo récord**, +1,36% sobre 0.06231 (+0.00085 absoluto --
+  salto **mayor** que el de `nfa=300` pese a un incremental local más
+  chico). `N_POR_FUENTE_AUTOR_RANKER` queda en **500** en producción.
+
+Progresión de la sesión: 0.06149 → BM25 0.06182 → `nfa=300` 0.06231 →
+`nfa=500` 0.06316 (+2,7% neto).
 
 ### Pendiente / próximo paso
 
-- Barrer `n_por_fuente_autor` > 300 (500/800 quedaron sin probar por el
-  problema de RAM del sweep -- correr `screen_presupuesto_autor.py` de a
-  un valor por vez, o con más `del`/`gc` entre iteraciones).
+- `n_por_fuente_autor > 500` casi seguro no aporta (`800` ya dio 0,84 σ
+  incremental).
 - Aplicar el mismo análisis de presupuesto (`diagnostico_presupuesto_autor.py`
   como molde) a otras fuentes con cola larga -- resumen, co-lectura.
 - La forma de U por popularidad del objetivo sigue sin una palanca
   propia.
+- `estado_del_arte.md` sigue desactualizado (récord 0.05262) -- pendiente
+  un refresh con BM25 + presupuesto de autor.

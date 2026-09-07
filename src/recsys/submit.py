@@ -105,13 +105,15 @@ def _recomendaciones_als(usuarios: list, k: int) -> dict:
 
 N_POR_FUENTE_RANKER = 150
 N_POR_AUTOR_RANKER = 20
-N_POR_FUENTE_AUTOR_RANKER = 300
+N_POR_FUENTE_AUTOR_RANKER = 500
 """Tope TOTAL de la fuente de candidatos por autor, separado del
 `N_POR_FUENTE_RANKER=150` de las otras 5 fuentes. El 39% de los usuarios
 agotaba el presupuesto de 150 en sus autores favoritos (ver
 `scripts/diagnostico_presupuesto_autor.py`); subirlo solo para esta
-fuente agrega candidatos de alta precisión. Confirmado con CV de 3 seeds
-+ test pareado -- ver `experiments/bitacora.md`."""
+fuente agrega candidatos de alta precisión. `300` se confirmó en Kaggle
+(0.06231); `500` mejora el CV de 3 seeds otro poco (0.133475 -> 0.134117,
+positivo en los 3 seeds, desvío entre seeds bajando) -- ver
+`experiments/bitacora.md`."""
 
 
 def _recomendaciones_ranker(usuarios: list, k: int) -> dict:

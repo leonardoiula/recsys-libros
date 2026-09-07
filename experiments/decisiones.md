@@ -13,21 +13,25 @@ la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 ## Para retomar (al 2026-09-07): investigación abierta sobre el límite del reranking
 
 Estado actual: `"ranker"` (39 features, 6 fuentes de candidatos + refit
-de etapa 1 + recencia + **BM25 en la matriz de ALS**) es el modelo de
-referencia, con **0.06182 confirmado en Kaggle** (récord actual). Sobre
-el récord anterior (0.06149) se sumó la normalización por actividad de la
-matriz de ALS con BM25 (`BM25_ALS=(10.0, 0.75)`, sección 23 más abajo --
-+0,54% en Kaggle, caso límite confirmado). Antes se probó y descartó una
-7ª fuente (similitud usuario-usuario, sección 22 -- regresión, 0.06017).
+de etapa 1 + recencia + **BM25 en la matriz de ALS** + **presupuesto
+propio de la fuente de autor**) es el modelo de referencia, con **0.06231
+confirmado en Kaggle** (récord actual). Progresión de esta sesión sobre
+el récord de entrada (0.06149): BM25 en ALS (`BM25_ALS=(10.0, 0.75)`,
+sección 23 -- +0,54%, 0.06182) → presupuesto propio de la fuente de autor
+(`N_POR_FUENTE_AUTOR_RANKER=300`, sección 24 -- +0,79%, 0.06231). Antes se
+probó y descartó una 7ª fuente (similitud usuario-usuario, sección 22 --
+regresión, 0.06017).
 
-**Arrancar la próxima sesión acá**: tras descartar 2 fuentes de
-candidatos seguidas (editorial, vecinos), se abrió una investigación
-sobre dónde está el límite real del sistema HOY -- ver `bitacora.md`,
-sección "Investigación abierta: ¿dónde está el límite del reranking?"
-para el detalle completo. BM25 (ronda 2026-09-07) **no la movió**: el
-objetivo-alcanzable-en-top-20 sigue plano en ~44,5%. El siguiente paso
-concreto pendiente es medir con precisión el tope `n_por_fuente=150` de
-la fuente de candidatos por autor. Resumen:
+**Arrancar la próxima sesión acá**: la investigación sobre el límite del
+reranking (`bitacora.md`, "Investigación abierta: ¿dónde está el límite
+del reranking?") ya produjo **una palanca confirmada** esta sesión (el
+tope total de la fuente de autor, Diagnóstico 4 → sección 24). BM25 **no**
+movió la franja media puntualmente; el presupuesto de autor **sí** ayuda
+al subgrupo "objetivo de un autor ya leído". Ideas que siguen sobre la
+mesa: barrer `n_por_fuente_autor` > 300 (500/800 no se llegaron a probar
+por RAM); aplicar el mismo análisis de presupuesto a otras fuentes;
+seguir con la forma de U por popularidad del objetivo. Resumen del
+diagnóstico original:
 
 - De los usuarios donde el objetivo SÍ está entre los candidatos, el
   reranker solo lo sube al top-20 el **44%** de las veces (posición
@@ -403,6 +407,14 @@ catálogo de editorial" para las dos rondas más recientes.
 | `BM25_ALS = (10.0, 0.75)` (constante de módulo en `ranker.py`, pasada a los 2 `fit_als` de `preparar_pipeline` y a los 3 de `submit.py`) | ✅ **elegida en un pre-screen ALS-solo, no en el pipeline completo** | `scripts/screen_bm25_als.py` (nuevo, molde de `tune_als.py`): ALS solo, seed=42, split `n_val=1`, grilla `K1 ∈ {1,10,100} × B ∈ {0.25,0.5,0.75,1.0}` + baseline `bm25=None`. **Las 12 configs mejoraron el NDCG@20** sobre baseline (+2,7% a +7,9%); ganó `K1=10, B=0.75` (NDCG@20 0.101565→0.109558, +7,9%; Recall@200 0.3968→0.4048, aún +0,008). Con `K1=100` el Recall se empieza a hundir; con `K1=1` gana más Recall pero menos NDCG. `bm25_weight` **siempre** aplica IDF (incluso con B=0), por eso la referencia de "sin cambio" es `bm25=None`, no B=0. |
 | Validación con el ranker completo (CV 3 seeds, `n_por_fuente=150`) | 🔄 **caso límite: positivo en las 3 seeds, por debajo del desvío entre seeds** | `scripts/evaluate_ranker.py`: ALS solo 0.094406→**0.098263** (+4,1%), ranker 0.130273→**0.132313** (+1,6%), positivo por seed +0.00265/+0.00310/+0.00037 (seed=123 apenas). El ranker se "come" parte de la ganancia de ALS-solo (+4,1% → +1,6%). Mismo patrón que género macro / editorial / señales cruzadas -- por debajo del criterio estricto pero positivo en los 3. `scripts/recall_candidatos.py` (seed=42): recall del set de candidatos 0.5115→0.5152 (+0,7%), objetivo-alcanzable-en-top-20 plano en ~44,5% -- **no arregló la franja media puntualmente** (la investigación abierta del hilo del límite del reranking), es un lift chico y parejo. |
 | Confirmación en Kaggle | ✅ **0.06182, nuevo récord (+0,54% sobre 0.06149, +0.00033 absoluto)** | El margen de confirmación más chico del proyecto (señales cruzadas había sido +0,5%). Se adopta por el mismo criterio que esos casos: CV local positivo en las 3 seeds + ALS-solo claramente mejor (+4,1%) + nuevo récord con dirección consistente. `submit.py` (los 3 `fit_als`, incluido `--model als`), `ranker.py`, test nuevo en `tests/test_als.py`, `scripts/screen_bm25_als.py`. Ver `bitacora.md`, sección "Normalización por actividad de ALS con BM25". |
+
+## 24. Presupuesto propio para la fuente de candidatos por autor (`n_por_fuente_autor`, ronda 2026-09-07)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| `n_por_fuente_autor` (nuevo param de `generar_candidatos_con_features`/`preparar_pipeline`/`preparar_pipeline_cacheado`/`evaluar_pipeline`, default `None` = usar `n_por_fuente`) -- tope TOTAL de candidatos que aporta la fuente de autor por usuario, separado del `n_por_fuente=150` de las otras 5 fuentes | ✅ **CONFIRMADO EN KAGGLE -- nuevo récord** | Sale de la investigación abierta del límite del reranking (ver `bitacora.md`, "Diagnóstico 4"). `scripts/diagnostico_presupuesto_autor.py`: la fuente de autor recorre los autores del usuario de más leído a menos leído (hasta `n_por_autor=20` libros por autor) y corta al llegar a 150 candidatos acumulados -- **39% de los usuarios toca ese tope**, y de ellos una mediana de 25 autores ya leídos queda con CERO candidatos. **455 usuarios (5,1%, cota superior)** tienen el objetivo entre los candidatos de autor SIN tope pero no CON el tope de 150. |
+| `N_POR_FUENTE_AUTOR_RANKER = 300` (constante en `submit.py`, pasada a `args_candidatos` y `args_candidatos_finales`) | ✅ **elegido con recall + test pareado, confirmado con CV + Kaggle** | `scripts/screen_presupuesto_autor.py` (nuevo, barre `[None, 300, 500, 800]` -- el sweep murió por RAM tras `None` y `300`, pero `300` ya alcanzaba). Screen seed=42: recall del set de candidatos 0.5152→**0.5265** (+2,2%), NDCG@20 ranker 0.129787→0.131731, eficiencia de ranking 0.2519→0.2502 (**plana**, muy lejos del −22% de `n_por_fuente=500`). Test pareado seed=42: **+0.001943, 2,22 σ**, bootstrap 95% CI [+0.000227, +0.003702] (excluye 0), P(mejora)=0.9845 -- cruza el umbral estricto de 2 σ, más fuerte que los casos límite recientes. `500`/`800` no se probaron (300 alcanza, la eficiencia ya venía bajando). |
+| Validación con CV de 3 seeds + Kaggle | ✅ **positivo en las 3 seeds, confirmación más limpia que la ronda BM25** | CV 3 seeds (`scripts/evaluate_ranker.py`, `N_POR_FUENTE_AUTOR=300`): 0.132313→**0.133475**, +0.00194/+0.00080/+0.00075 por seed (positivo en los 3), media +0,88%, **desvío entre seeds bajó** de 0.00219 a 0.00152. NDCG@20 ponderado por actividad de `ejemplo.csv` (sesgado a heavy users, más cercano a Kaggle): **+2,6%**, bastante más que el sin ponderar -- coherente: los heavy users leen muchos autores, son los que tocan el tope. **CONFIRMADO EN KAGGLE: 0.06231**, +0,79% sobre el récord anterior (0.06182, +0.00049 absoluto) -- salto absoluto mayor que la ronda BM25 y con el test pareado por encima del umbral. `ranker.py`, `submit.py`, test nuevo en `tests/test_ranker.py`, `scripts/screen_presupuesto_autor.py`, `scripts/diagnostico_presupuesto_autor.py`. Ver `bitacora.md`, "Presupuesto propio para la fuente de autor". |
 
 ---
 

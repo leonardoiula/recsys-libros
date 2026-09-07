@@ -51,6 +51,7 @@ from recsys.models.ranker import (
 
 K = 20
 N_POR_FUENTE = 150
+N_POR_FUENTE_AUTOR = 300  # tope propio de la fuente de autor (None = usar N_POR_FUENTE); ver scripts/screen_presupuesto_autor.py
 SEEDS = [42, 7, 123]
 EJEMPLO_PATH = Path(__file__).resolve().parents[1] / "data" / "raw" / "ejemplo.csv"
 
@@ -67,7 +68,10 @@ def main() -> None:
     resultados_por_seed = {}
     for seed in SEEDS:
         t0 = time.time()
-        ctx = preparar_pipeline_cacheado(interacciones, libros, lectores, seed, n_por_fuente=N_POR_FUENTE, k=K)
+        ctx = preparar_pipeline_cacheado(
+            interacciones, libros, lectores, seed,
+            n_por_fuente=N_POR_FUENTE, n_por_fuente_autor=N_POR_FUENTE_AUTOR, k=K,
+        )
         resultados_por_seed[seed] = evaluar_con_params(ctx, None)
         r = resultados_por_seed[seed]
         print(f"seed={seed}: ALS={r['ndcg_als']:.6f}  ranker={r['ndcg_ranker']:.6f}  ({time.time()-t0:.1f}s)")

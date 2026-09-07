@@ -303,6 +303,45 @@ def test_generar_candidatos_incluye_features_de_autor_y_recencia():
     assert fila["n_libros_editorial_leidos_reciente"] == 0.0
 
 
+def test_n_por_fuente_autor_topea_la_fuente_de_autor_sin_tocar_las_otras():
+    # Usuario que leyó 2 autores; cada autor tiene 3 libros populares sin
+    # leer. Sin tope (None -> n_por_fuente=150) la fuente de autor propone
+    # los 6; con n_por_fuente_autor=2 solo propone 2 (los del autor MÁS
+    # leído, en orden de popularidad global).
+    libros_ids = ["a1", "a2", "a3", "b1", "b2", "b3"]
+    modelo = _ModeloALSFalso({0: ([], [])})  # ALS no aporta candidatos
+    matriz = np.zeros((1, len(libros_ids)))
+    stats_pop = _stats_popularidad(libros_ids, [6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
+    aux = {
+        **_features_auxiliares_vacias(),
+        "autor_por_libro": {"a1": "A", "a2": "A", "a3": "A", "b1": "B", "b2": "B", "b3": "B"},
+        "n_libros_autor_leidos_por_usuario": {"u1": {"A": 5, "B": 1}},
+    }
+
+    comun = dict(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=libros_ids,
+        stats_popularidad=stats_pop,
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    sin_tope = generar_candidatos_con_features(**comun)
+    assert int(sin_tope["en_autor_candidato"].sum()) == 6
+
+    con_tope = generar_candidatos_con_features(**comun, n_por_fuente_autor=2)
+    propuestos = con_tope[con_tope["en_autor_candidato"] == 1]["id_libro"].tolist()
+    assert len(propuestos) == 2
+    assert set(propuestos) == {"a1", "a2"}  # autor A (más leído), top-2 por popularidad global
+
+
 def test_generar_candidatos_incluye_features_reciente_de_autor_y_editorial():
     modelo = _ModeloALSFalso({0: ([0], [0.7])})
     matriz = np.zeros((1, 1))

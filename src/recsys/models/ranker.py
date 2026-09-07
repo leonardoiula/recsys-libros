@@ -588,6 +588,7 @@ def generar_candidatos_con_features(
     features_auxiliares: dict,
     n_por_fuente: int = 150,
     n_por_autor: int = 20,
+    n_por_fuente_autor: int | None = None,
     fuentes_activas: frozenset[str] | None = None,
 ) -> pd.DataFrame:
     """Arma, para cada usuario, la unión de candidatos de las seis fuentes
@@ -617,6 +618,19 @@ def generar_candidatos_con_features(
     `en_autor_candidato` son distintos de `en_autor_leido`/
     `n_libros_autor_leidos` (que miden el historial del usuario con ese
     autor, sin importar qué fuente propuso el candidato).
+
+    `n_por_fuente_autor` (default `None` = usar `n_por_fuente`) es el tope
+    TOTAL de candidatos que aporta la fuente de autor por usuario,
+    repartido recorriendo los autores del usuario de más leído a menos
+    leído. Se separa de `n_por_fuente` porque un usuario con muchos
+    autores leídos agota ese presupuesto en sus favoritos y no recibe
+    nada de los demás -- `scripts/diagnostico_presupuesto_autor.py` midió
+    que el 39% de los usuarios toca el tope de 150 y que hasta un 5% (cota
+    superior) pierde el libro-objetivo del set de candidatos solo por
+    esto. Subirlo solo para esta fuente agrega candidatos de alta
+    precisión (todos de un autor que el usuario demostradamente lee), a
+    diferencia de subir `n_por_fuente` global (probado y descartado con
+    `n_por_fuente=500`). Ver `experiments/bitacora.md`.
 
     La fuente de resumen (ver `_generar_candidatos_por_resumen`): top-
     `n_por_fuente` libros de todo el catálogo con resumen más similares
@@ -701,6 +715,8 @@ def generar_candidatos_con_features(
     score_popularidad_por_libro = stats_popularidad.set_index("id_libro")["score"].to_dict()
     ranking_global_ids = stats_popularidad["id_libro"].tolist()
     rank_popularidad_por_libro = {libro: i for i, libro in enumerate(ranking_global_ids)}
+
+    tope_autor = n_por_fuente if n_por_fuente_autor is None else n_por_fuente_autor
 
     # Fuente de autor: hasta n_por_autor libros por autor, rankeados por
     # popularidad GLOBAL (no un score bayesiano por autor -- la mayoría
@@ -832,17 +848,20 @@ def generar_candidatos_con_features(
         # un solo seed, contra ~450 típicos) -- un problema real de
         # memoria/rendimiento en la corrida completa, no solo teórico.
         # Se prioriza a los autores que MÁS leyó el usuario (no el orden
-        # arbitrario del dict) hasta `n_por_fuente` candidatos en total,
-        # mismo criterio de ventana que las otras 3 fuentes.
+        # arbitrario del dict) hasta `tope_autor` candidatos en total.
+        # `tope_autor` se separa de `n_por_fuente` (ver docstring y
+        # `scripts/diagnostico_presupuesto_autor.py`): el 39% de los
+        # usuarios agota el presupuesto de 150 en sus autores favoritos y
+        # no recibe candidatos de los demás.
         if "autor" in fuentes_activas:
             autores_leidos_conteo = n_libros_autor_leidos_por_usuario.get(id_lector, {})
             autores_ordenados = sorted(autores_leidos_conteo, key=lambda a: -autores_leidos_conteo[a])
             agregados_autor = 0
             for autor in autores_ordenados:
-                if agregados_autor >= n_por_fuente:
+                if agregados_autor >= tope_autor:
                     break
                 for rank_autor, id_libro in enumerate(libros_por_autor_ordenados.get(autor, [])):
-                    if agregados_autor >= n_por_fuente:
+                    if agregados_autor >= tope_autor:
                         break
                     if id_libro in vistos:
                         continue
@@ -1279,6 +1298,7 @@ def preparar_pipeline(
     seed: int,
     n_por_fuente: int = 150,
     n_por_autor: int = 20,
+    n_por_fuente_autor: int | None = None,
     k: int = 20,
     fuentes_activas: frozenset[str] | None = None,
     refit_para_test: bool = False,
@@ -1355,6 +1375,7 @@ def preparar_pipeline(
         features_auxiliares=features_auxiliares,
         n_por_fuente=n_por_fuente,
         n_por_autor=n_por_autor,
+        n_por_fuente_autor=n_por_fuente_autor,
         fuentes_activas=fuentes_activas,
     )
 
@@ -1401,6 +1422,7 @@ def preparar_pipeline(
             features_auxiliares=features_auxiliares_test,
             n_por_fuente=n_por_fuente,
             n_por_autor=n_por_autor,
+            n_por_fuente_autor=n_por_fuente_autor,
             fuentes_activas=fuentes_activas,
         )
     else:
@@ -1486,6 +1508,7 @@ def evaluar_pipeline(
     seed: int,
     n_por_fuente: int = 150,
     n_por_autor: int = 20,
+    n_por_fuente_autor: int | None = None,
     lgbm_params: dict | None = None,
     k: int = 20,
 ) -> dict:
@@ -1516,7 +1539,9 @@ def evaluar_pipeline(
     reentrenar.
     """
     contexto = preparar_pipeline(
-        interacciones, libros, lectores, seed, n_por_fuente=n_por_fuente, n_por_autor=n_por_autor, k=k
+        interacciones, libros, lectores, seed,
+        n_por_fuente=n_por_fuente, n_por_autor=n_por_autor,
+        n_por_fuente_autor=n_por_fuente_autor, k=k,
     )
     return evaluar_con_params(contexto, lgbm_params)
 
@@ -1528,6 +1553,7 @@ def preparar_pipeline_cacheado(
     seed: int,
     n_por_fuente: int = 150,
     n_por_autor: int = 20,
+    n_por_fuente_autor: int | None = None,
     k: int = 20,
     fuentes_activas: frozenset[str] | None = None,
     refit_para_test: bool = False,
@@ -1541,8 +1567,9 @@ def preparar_pipeline_cacheado(
     ver `scripts/comparar_features_pareado.py`, `scripts/recall_candidatos.py`,
     `scripts/comparar_generadores_pareado.py`.
 
-    La clave de caché combina `seed`/`n_por_fuente`/`n_por_autor`/`k`/
-    `fuentes_activas` con un hash corto del *código fuente* de este módulo
+    La clave de caché combina `seed`/`n_por_fuente`/`n_por_autor`/
+    `n_por_fuente_autor`/`k`/`fuentes_activas` con un hash corto del
+    *código fuente* de este módulo
     (`ranker.py`): cualquier cambio en la lógica de generación de
     candidatos/features invalida el caché automáticamente, sin depender de
     acordarse de bumpear una versión a mano. También incluye la cantidad de
@@ -1567,8 +1594,9 @@ def preparar_pipeline_cacheado(
     hash_codigo = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
     fuentes_label = "todas" if fuentes_activas is None else "+".join(sorted(fuentes_activas))
     refit_label = "refit" if refit_para_test else "sinrefit"
+    nfa_label = "def" if n_por_fuente_autor is None else str(n_por_fuente_autor)
     nombre = (
-        f"ranker_ctx_seed{seed}_nf{n_por_fuente}_na{n_por_autor}_k{k}"
+        f"ranker_ctx_seed{seed}_nf{n_por_fuente}_na{n_por_autor}_nfa{nfa_label}_k{k}"
         f"_fuentes-{fuentes_label}_{refit_label}"
         f"_n{len(interacciones)}-{len(libros)}-{len(lectores)}"
         f"_{hash_codigo}.pkl"
@@ -1586,6 +1614,7 @@ def preparar_pipeline_cacheado(
         seed,
         n_por_fuente=n_por_fuente,
         n_por_autor=n_por_autor,
+        n_por_fuente_autor=n_por_fuente_autor,
         k=k,
         fuentes_activas=fuentes_activas,
         refit_para_test=refit_para_test,

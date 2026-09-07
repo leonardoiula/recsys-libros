@@ -105,6 +105,13 @@ def _recomendaciones_als(usuarios: list, k: int) -> dict:
 
 N_POR_FUENTE_RANKER = 150
 N_POR_AUTOR_RANKER = 20
+N_POR_FUENTE_AUTOR_RANKER = 300
+"""Tope TOTAL de la fuente de candidatos por autor, separado del
+`N_POR_FUENTE_RANKER=150` de las otras 5 fuentes. El 39% de los usuarios
+agotaba el presupuesto de 150 en sus autores favoritos (ver
+`scripts/diagnostico_presupuesto_autor.py`); subirlo solo para esta
+fuente agrega candidatos de alta precisión. Confirmado con CV de 3 seeds
++ test pareado -- ver `experiments/bitacora.md`."""
 
 
 def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
@@ -166,6 +173,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
         features_auxiliares=features_auxiliares,
         n_por_fuente=N_POR_FUENTE_RANKER,
         n_por_autor=N_POR_AUTOR_RANKER,
+        n_por_fuente_autor=N_POR_FUENTE_AUTOR_RANKER,
     )
 
     usuarios_ranker = train_ranker["id_lector"].unique().tolist()
@@ -212,6 +220,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
         features_auxiliares=features_auxiliares_completo,
         n_por_fuente=N_POR_FUENTE_RANKER,
         n_por_autor=N_POR_AUTOR_RANKER,
+        n_por_fuente_autor=N_POR_FUENTE_AUTOR_RANKER,
     )
 
     libros_leidos_completo = libros_leidos_por_usuario(interacciones)

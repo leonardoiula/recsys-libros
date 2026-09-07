@@ -3282,10 +3282,102 @@ es sólida y va en la misma dirección.
 
 ### Pendiente / próximo paso
 
-- Seguir con el hilo abierto del límite del reranking: medir con
-  precisión el tope `n_por_fuente=150` de la fuente de candidatos por
-  autor (¿cuántos usuarios pierden candidatos de autores "secundarios"
-  por agotar el presupuesto en sus autores favoritos?).
+- Seguir con el hilo abierto del límite del reranking (ver sección
+  siguiente -- se atacó el tope de la fuente de autor en esta misma
+  sesión).
 - `estado_del_arte.md` quedó desactualizado desde la ronda de
   recencia/refit (dice récord 0.05262, 35 features/6 fuentes) -- pendiente
-  un refresh que incluya también BM25.
+  un refresh que incluya también BM25 y el presupuesto de autor.
+
+---
+
+## Presupuesto propio para la fuente de autor (`n_por_fuente_autor`, ronda 2026-09-07)
+
+### Objetivo / hipótesis
+
+Actuar sobre el Diagnóstico 4 de la investigación abierta del límite del
+reranking: `scripts/diagnostico_presupuesto_autor.py` midió que el 39% de
+los usuarios agota el tope TOTAL de 150 candidatos de la fuente de autor
+en sus autores más leídos (mediana de 25 autores ya leídos quedan con
+CERO candidatos), y que hasta un 5% (cota superior) pierde el
+libro-objetivo del set de candidatos solo por ese tope -- objetivos que
+la fuente encuentra y descarta por falta de presupuesto, popularidad
+mediana 85 (franja media-baja, justo la zona que peor rankea).
+
+Idea: darle a la fuente de autor un tope propio, más grande que el
+`n_por_fuente=150` de las otras 5. La lección de `n_por_fuente=500` (subir
+el tope de TODAS las fuentes: +30% recall, NDCG plano, eficiencia de
+ranking −22%) fue con candidatos genéricos; acá los candidatos extra son
+todos de un autor que el usuario demostradamente lee -- mucha más
+precisión, hipótesis de que la eficiencia de ranking NO se hunde.
+
+### Implementación
+
+`n_por_fuente_autor: int | None = None` (default `None` = usar
+`n_por_fuente`, sin cambio de comportamiento) threaded por
+`generar_candidatos_con_features` (usa `tope_autor` en el bucle de la
+fuente de autor), `preparar_pipeline`, `preparar_pipeline_cacheado` (+ en
+la clave de caché), `evaluar_pipeline`. En `submit.py`,
+`N_POR_FUENTE_AUTOR_RANKER = 300`. Test nuevo en `tests/test_ranker.py`
+(un tope bajo topea la fuente de autor sin tocar las otras).
+`scripts/screen_presupuesto_autor.py` (nuevo) barre valores midiendo
+recall + NDCG@20 + test pareado por usuario contra el baseline.
+
+### Resultado
+
+Screen seed=42 (`n_por_fuente_autor=300` vs baseline `None`):
+
+| | baseline (150) | nfa=300 | Δ |
+|---|---|---|---|
+| candidatos / usuario (media) | 701 | 744 | +6% |
+| recall del set de candidatos | 0.5152 | **0.5265** | +2,2% |
+| NDCG@20 ranker (seed 42) | 0.129787 | **0.131731** | +1,5% |
+| eficiencia de ranking (NDCG/recall) | 0.2519 | 0.2502 | **−0,7% (plana)** |
+
+Test pareado seed=42: **+0.001943, 2,22 σ**, bootstrap 95% CI
+[+0.000227, +0.003702] (excluye el cero), P(mejora)=0.9845 -- **cruza el
+umbral estricto de 2 σ**, a diferencia de los casos límite recientes
+(BM25, co-lectura). La eficiencia de ranking casi plana confirma la
+hipótesis: los candidatos extra de autor SÍ traen señal, no son ruido
+(contra `n_por_fuente=500`). No se probaron `500`/`800` -- el sweep murió
+por RAM tras `None` y `300`, y `300` ya alcanzaba (la eficiencia ya venía
+bajando levemente).
+
+CV de 3 seeds (`scripts/evaluate_ranker.py`, `N_POR_FUENTE_AUTOR=300`):
+
+| seed | BM25 base | BM25 + nfa=300 | Δ |
+|---|---|---|---|
+| 42 | 0.129787 | 0.131731 | +0.001944 |
+| 7 | 0.133676 | 0.134471 | +0.000795 |
+| 123 | 0.133475 | 0.134225 | +0.000750 |
+| **media ± desvío** | **0.132313 ± 0.00219** | **0.133475 ± 0.00152** | **+0.001162 (+0,88%)** |
+
+**Positivo en las 3 seeds**, y el desvío entre seeds BAJÓ (0.00219 →
+0.00152) -- más consistente. La media queda por debajo del desvío entre
+seeds (caso límite en el CV crudo), pero el test pareado de seed=42 lo
+respalda con más poder. El NDCG@20 **ponderado por la actividad de
+`ejemplo.csv`** (sesgado a heavy users, más cercano a la población de
+Kaggle) subió **+2,6%**, bastante más que el sin ponderar -- coherente:
+los heavy users leen muchos autores, son justo los que tocan el tope de
+150. `feature_importances_`: `score_autor_candidato` sube (de ~123 a
+145-172 splits según seed) -- la fuente de autor carga más señal útil.
+
+### Confirmado en Kaggle
+
+Submission `ranker_20260907-174708_bm25-als-nfa-autor-300.csv`: **0.06231,
+nuevo récord del proyecto**, +0,79% sobre el récord anterior (0.06182,
++0.00049 absoluto). Confirmación **más limpia que la ronda BM25**: el
+salto absoluto es mayor y el test pareado local cruzó el umbral estricto
+de 2 σ (BM25 había sido un caso límite en todos los frentes). `ranker.py`,
+`submit.py`, `tests/test_ranker.py`, `scripts/screen_presupuesto_autor.py`,
+`scripts/diagnostico_presupuesto_autor.py`.
+
+### Pendiente / próximo paso
+
+- Barrer `n_por_fuente_autor` > 300 (500/800 quedaron sin probar por el
+  problema de RAM del sweep -- correr `screen_presupuesto_autor.py` de a
+  un valor por vez, o con más `del`/`gc` entre iteraciones).
+- Aplicar el mismo análisis de presupuesto (`diagnostico_presupuesto_autor.py`
+  como molde) a otras fuentes con cola larga -- resumen, co-lectura.
+- La forma de U por popularidad del objetivo sigue sin una palanca
+  propia.

@@ -3099,28 +3099,60 @@ el caso puntual y accionable (autor leído, la fuente lo pasó por alto)
 es un grupo mucho más chico de lo que sugería la tabla original, y ni
 siquiera es el que peor rankea.
 
-### Estado: sin conclusión accionable todavía, continúa la próxima sesión
+### Diagnóstico 4 (ronda 2026-09-07): el tope TOTAL `n_por_fuente=150` de la fuente de autor sí deja objetivos afuera -- primera palanca concreta
 
-No se llegó a una palanca concreta y barata para la franja media -- el
-diagnóstico apunta más a "falta cobertura en general" (mismo patrón que
-ya se viene atacando con autor/resumen/co-lectura) que a un bug puntual
-de un tope mal calibrado. Ideas para retomar, sin implementar nada
-todavía:
+`scripts/diagnostico_presupuesto_autor.py` (nuevo, reproduce el split y
+las piezas de la fuente de autor a mano, sin correr el pipeline). Mide la
+hipótesis derivada del diagnóstico 3: la fuente recorre los autores del
+usuario de más leído a menos leído, hasta 20 libros por autor, y corta al
+llegar a `n_por_fuente=150` candidatos acumulados -- un usuario con muchos
+autores leídos agota el presupuesto en sus favoritos.
 
-- Medir con más precisión el tope `n_por_fuente=150` total de la fuente
-  de autor (priorizado por autor más leído) -- ¿cuántos usuarios pierden
-  candidatos de autores "secundarios" por agotar el presupuesto en sus
-  autores favoritos? Quedó como hipótesis derivada, no confirmada.
+Sobre 8.902 usuarios de `test_final` con ≥1 autor leído:
+
+| | media | mediana | p90 | max |
+|---|---|---|---|---|
+| autores leídos / usuario | 29,9 | 9 | 78 | 962 |
+| candidatos de autor **sin** tope total | 264 | 86 | 724 | 5083 |
+| candidatos de autor **con** tope 150 | 85 | 86 | — | — |
+
+- **39,3% de los usuarios (3.499) tocan el tope de 150.**
+- De esos 3.499: pierden una mediana de 265 candidatos de autor, y una
+  **mediana de 25 autores ya leídos quedan con CERO candidatos** (p90 =
+  109).
+- **Impacto en el objetivo**: 2.542 usuarios (28,6%) tienen el objetivo
+  escrito por un autor ya leído. De esos, **455 (17,9%; 5,1% de los
+  8.902) tienen el objetivo entre los candidatos de autor SIN tope pero
+  no CON el tope de 150** -- objetivos que la fuente encuentra y descarta
+  solo por presupuesto. Popularidad de esos objetivos perdidos: mediana
+  85 interacciones (franja media-baja).
+
+**Caveat de precisión** (mismo espíritu que la nota de
+`diagnostico_cap_autor.py`): el `vistos` real incluye lo que ya
+propusieron ALS/popularidad/género, que la fuente de autor **saltea sin
+gastar presupuesto** -- el script usa solo "ya leído" como `vistos`, así
+que estos números **sobreestiman** cuánto muerde el tope. El 5,1% es una
+cota superior.
+
+Aun así: es la **primera palanca concreta y cuantificada** de la
+investigación. Decidido con el usuario: darle a la fuente de autor un
+presupuesto propio (`n_por_fuente_autor`, separado del `n_por_fuente=150`
+de las otras 5 fuentes), barrer 2-3 valores midiendo recall del set de
+candidatos + test pareado primero, CV de 3 seeds solo si lo justifica.
+
+### Estado: una palanca identificada (tope total de la fuente de autor), en curso
+
 - El framework recall×eficiencia sigue siendo válido, pero esta sesión
   sumó una tercera lente (la forma en U por popularidad del objetivo)
   que `modelo_actual.md` no tenía -- vale la pena incorporarla ahí la
   próxima vez que se actualice ese documento.
-- Los 3 scripts de diagnóstico (`diagnostico_posicion_popularidad.py`,
-  `diagnostico_franja_media.py`, `diagnostico_cap_autor.py`) quedan en
-  el repo como herramientas reusables (no se descartó nada, la
-  investigación sigue abierta) -- todos corren rápido si el contexto
+- Los 4 scripts de diagnóstico (`diagnostico_posicion_popularidad.py`,
+  `diagnostico_franja_media.py`, `diagnostico_cap_autor.py`,
+  `diagnostico_presupuesto_autor.py`) quedan en el repo como
+  herramientas reusables -- los 3 primeros corren rápido si el contexto
   cacheado de `preparar_pipeline_cacheado` sigue vigente (seed=42,
-  `n_por_fuente=150`, código actual de `ranker.py`).
+  `n_por_fuente=150`); el 4º no necesita el pipeline (reproduce el split
+  y las piezas de la fuente de autor a mano).
 
 ---
 

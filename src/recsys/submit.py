@@ -28,6 +28,7 @@ from recsys.models.popularity_segmentada import (
     recomendar_por_usuario,
 )
 from recsys.models.ranker import (
+    BM25_ALS,
     armar_dataset_entrenamiento_por_lotes,
     calcular_features_auxiliares,
     fit_ranker,
@@ -88,7 +89,7 @@ def _recomendaciones_als(usuarios: list, k: int) -> dict:
     """
     interacciones = load_interacciones()
     libros_leidos = libros_leidos_por_usuario(interacciones)
-    modelo, matriz, fila_por_usuario, libros_por_columna = fit_als(interacciones)
+    modelo, matriz, fila_por_usuario, libros_por_columna = fit_als(interacciones, bm25=BM25_ALS)
 
     return recomendar_por_usuario_als(
         usuarios=usuarios,
@@ -148,7 +149,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     stats_popularidad = fit_popularity(train_candidatos)
     stats_por_genero = fit_popularity_por_genero(train_candidatos, libros)
     genero_por_usuario = genero_preferido_por_usuario(train_candidatos, libros)
-    modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos)
+    modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos, bm25=BM25_ALS)
     features_auxiliares = calcular_features_auxiliares(
         train_candidatos, libros, lectores, matriz, fila_por_usuario, libros_por_columna
     )
@@ -194,7 +195,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     stats_por_genero_completo = fit_popularity_por_genero(interacciones, libros)
     genero_por_usuario_completo = genero_preferido_por_usuario(interacciones, libros)
     modelo_als_completo, matriz_completo, fila_por_usuario_completo, libros_por_columna_completo = fit_als(
-        interacciones
+        interacciones, bm25=BM25_ALS
     )
     features_auxiliares_completo = calcular_features_auxiliares(
         interacciones, libros, lectores, matriz_completo, fila_por_usuario_completo, libros_por_columna_completo

@@ -3121,3 +3121,139 @@ todavía:
   investigación sigue abierta) -- todos corren rápido si el contexto
   cacheado de `preparar_pipeline_cacheado` sigue vigente (seed=42,
   `n_por_fuente=150`, código actual de `ranker.py`).
+
+---
+
+## Normalización por actividad de ALS con BM25 (ronda 2026-09-07)
+
+### Objetivo / hipótesis
+
+El usuario planteó la pregunta al retomar el proyecto: para armar el ALS
+usamos a **todos** los usuarios por igual; ¿no convendría tratar distinto
+a los muy activos? Mirando la distribución real de actividad
+(`data/raw/data.db`, 10.673 usuarios con interacción):
+
+| interacciones/usuario | % usuarios | % interacciones |
+|---|---|---|
+| ≤5 | 40,8% | 2,2% |
+| 6–50 | 37,9% | 19,0% |
+| 51–100 | 9,9% | 16,4% |
+| **100+** | **11,5%** | **64,3%** |
+
+El 11,5% de power users concentra el 64% de la señal. Con `confianza =
+rating` crudo (`alpha=None`), esos usuarios **dominan la factorización**
+y arrastran los factores de ítem hacia el gusto mainstream -- consistente
+con el hallazgo abierto de que la franja de **popularidad media** es la
+que peor rankea (forma de U). El experimento previo `recomendar_hibrido`
+era sobre *ruteo en inferencia* (y mostró que ALS le gana a popularidad
+en todos los buckets, incluso con 1 interacción) -- nunca se había tocado
+la **composición de la matriz de entrenamiento**.
+
+Se discutió con el usuario y se descartó "quedarnos solo con los activos"
+(los casuales ya casi no pesan: el 40% con ≤5 interacciones aporta el
+2,2% de la señal, y sólo 720 libros -- 1,5%, 0,2% de las interacciones --
+son leídos exclusivamente por ellos, así que sacarlos casi no cambia los
+factores de ítem). La palanca correcta para un sesgo así es la inversa:
+**bajarle el peso a los power users sin descartar datos**. Elegido con el
+usuario: BM25 (`implicit.nearest_neighbours.bm25_weight`) con barrido de
+`(K1, B)`, antes que una normalización `rating / n_u**p` de un solo knob.
+
+### Implementación
+
+`fit_als(..., bm25=(K1, B))` -- parámetro nuevo, default `None` = sin
+cambios. Cuando es una tupla, después de `construir_matriz_usuario_libro`
+(que sigue armando la matriz `usuarios × libros` con el rating crudo) se
+pesa una **copia** con `bm25_weight(matriz, K1=k1, B=b).tocsr()` y esa
+copia va a `modelo.fit()`. La matriz que **devuelve** `fit_als` sigue con
+el rating crudo: así el filtrado de ya-leídos (`filter_already_liked_items`),
+la co-ocurrencia ítem-ítem (`X.T @ X` de `calcular_features_auxiliares`,
+que alimenta `score_coleido` y la 6ª fuente de candidatos) y el perfil
+TF-IDF quedan idénticos -- el efecto queda **aislado al factorizado de
+ALS**. Nuestra matriz tiene `filas = usuarios`, así que `bm25_weight`
+normaliza por usuario directamente (el término `B`), no hay que
+transponer como en el ejemplo lastfm de `implicit` (matriz
+`artista × usuario`). Test nuevo en `tests/test_als.py`: con `bm25=(...)`,
+la matriz devuelta sigue teniendo el rating crudo.
+
+### Pre-screen ALS-solo (`scripts/screen_bm25_als.py`, nuevo)
+
+ALS solo (sin ranker), seed=42, split `n_val=1`, grilla
+`K1 ∈ {1, 10, 100} × B ∈ {0.25, 0.5, 0.75, 1.0}` + baseline `bm25=None`.
+Reporta NDCG@20 y Recall@200 (molde de `tune_als.py`). Ojo: `bm25_weight`
+**siempre** aplica IDF (incluso con B=0), la referencia de "sin cambio"
+es `bm25=None`.
+
+**Las 12 configs mejoraron el NDCG@20** sobre baseline (0.101565), entre
++2,7% y +7,9%:
+
+| K1 | B | NDCG@20 | ΔNDCG | Recall@200 | ΔRecall |
+|---|---|---|---|---|---|
+| — (baseline) | — | 0.101565 | — | 0.3968 | — |
+| **10** | **0.75** | **0.109558** | **+7,9%** | 0.4048 | +0,008 |
+| 10 | 1.00 | 0.109166 | +7,5% | 0.4018 | +0,005 |
+| 100 | 0.75 | 0.108751 | +7,1% | 0.3952 | −0,002 |
+| 100 | 0.50 | 0.108368 | +6,7% | 0.3997 | +0,003 |
+| 10 | 0.50 | 0.107906 | +6,2% | 0.4088 | +0,012 |
+| 1 | 1.00 | 0.105916 | +4,3% | 0.4132 | +0,016 |
+
+Patrón claro: `K1=10, B=0.75` es el mejor NDCG con Recall@200 todavía
+levemente positivo. `K1=100` sube el NDCG pero empieza a hundir el
+Recall; `K1=1` gana más Recall pero menos NDCG. Se eligió **`K1=10,
+B=0.75`** -- fijado sobre un solo split a propósito para el pre-screen,
+pero validado enseguida con CV de 3 seeds antes de confiar (la lección de
+"Regresión en Kaggle" aplicada).
+
+### CV de 3 seeds con el ranker completo (`n_por_fuente=150`)
+
+Cableado como `BM25_ALS = (10.0, 0.75)` (constante de módulo en
+`ranker.py`), pasado a los 2 `fit_als` de `preparar_pipeline` (el de
+etapa 1 y el del `refit_para_test=True`). Editar `ranker.py` invalida la
+caché de `preparar_pipeline_cacheado` -> rebuild completo por seed.
+
+| | sin BM25 (histórico) | con BM25 (K1=10, B=0.75) | Δ |
+|---|---|---|---|
+| ALS solo (media 3 seeds) | 0.094406 ± 0.00136 | **0.098263 ± 0.00222** | +4,1% |
+| Ranker (media 3 seeds) | 0.130273 ± 0.00299 | **0.132313 ± 0.00219** | +1,6% |
+| ranker seed=42 | 0.127139 | 0.129787 | +0.00265 |
+| ranker seed=7 | 0.130577 | 0.133676 | +0.00310 |
+| ranker seed=123 | 0.133103 | 0.133475 | +0.00037 |
+
+**Positivo en las 3 seeds**, pero la mejora media del ranker (+0.00204)
+queda por debajo del desvío entre seeds (~0.0022–0.003) y seed=123 apenas
+se mueve. El ranker se "come" buena parte de la ganancia de ALS-solo
+(+4,1% → +1,6%) -- consistente con lo ya visto de que una base más fuerte
+no propaga entera. Es el **caso límite** clásico del proyecto (mismo
+patrón que género macro, tamaño de editorial, señales cruzadas: positivo
+en los 3 seeds, no supera el desvío).
+
+`scripts/recall_candidatos.py` (seed=42): recall del set de candidatos
+0.5115 → **0.5152** (+0,7%); objetivo-alcanzable-en-top-20 del reranker
+**plano en ~44,5%** (era ~44%). O sea: **BM25 no arregló la franja media
+puntualmente** (la investigación abierta del límite del reranking sigue
+igual), el efecto es un lift chico y parejo -- candidatos apenas mejores
++ orden apenas mejor en todo el rango, no un target concreto resuelto.
+
+### Confirmado en Kaggle
+
+Submission `ranker_20260907-155812_bm25-als-k1-10-b-0.75.csv` (los 3
+`fit_als` de `submit.py` cableados con `BM25_ALS`, incluido el de
+`--model als`): **0.06182, nuevo récord del proyecto**, +0,54% sobre el
+récord anterior (0.06149, +0.00033 absoluto).
+
+Es **el margen de confirmación más chico del proyecto** hasta ahora
+(señales cruzadas había sido +0,5%). Se adopta por el mismo criterio que
+esos casos: CV local positivo en las 3 seeds + ALS-solo claramente mejor
+(+4,1%) + nuevo récord en Kaggle con dirección consistente. Un solo dato
+de Kaggle a este margen no confirma por sí solo (el salto absoluto es del
+orden del ruido de una submission), pero la evidencia local por separado
+es sólida y va en la misma dirección.
+
+### Pendiente / próximo paso
+
+- Seguir con el hilo abierto del límite del reranking: medir con
+  precisión el tope `n_por_fuente=150` de la fuente de candidatos por
+  autor (¿cuántos usuarios pierden candidatos de autores "secundarios"
+  por agotar el presupuesto en sus autores favoritos?).
+- `estado_del_arte.md` quedó desactualizado desde la ronda de
+  recencia/refit (dice récord 0.05262, 35 features/6 fuentes) -- pendiente
+  un refresh que incluya también BM25.

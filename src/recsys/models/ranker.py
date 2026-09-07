@@ -131,6 +131,17 @@ máquina (fragmentación del proceso, no falta de memoria real -- ver
 `experiments/bitacora.md`). Procesar por lotes de este tamaño acota el
 pico de memoria al tamaño de UN lote, no de la población completa."""
 
+BM25_ALS: tuple[float, float] | None = (10.0, 0.75)
+"""`(K1, B)` para pesar la matriz de ALS con BM25 antes del `modelo.fit()`
+(`fit_als(..., bm25=BM25_ALS)`) -- baja el peso de los power users (el
+11,5% con 100+ interacciones concentra el 64% de la señal) y de los
+libros muy leídos en la factorización, sin descartar datos. `None`
+desactiva (comportamiento histórico). `K1=10, B=0.75` salió de un
+pre-screen ALS-solo (`scripts/screen_bm25_als.py`, seed=42): +7,9% NDCG@20
+sobre `bm25=None`, con Recall@200 todavía levemente positivo -- el mejor
+punto de una grilla donde las 12 configs mejoraron el NDCG. Ver
+`experiments/bitacora.md`."""
+
 
 def _pesos_por_recencia(interacciones: pd.DataFrame) -> pd.Series:
     """Peso de descuento por posición en el historial de cada usuario:
@@ -1327,7 +1338,7 @@ def preparar_pipeline(
     ranking_global = stats_popularidad["id_libro"].tolist()
     stats_por_genero = fit_popularity_por_genero(train_candidatos, libros)
     genero_por_usuario = genero_preferido_por_usuario(train_candidatos, libros)
-    modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos)
+    modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_candidatos, bm25=BM25_ALS)
     features_auxiliares = calcular_features_auxiliares(
         train_candidatos, libros, lectores, matriz, fila_por_usuario, libros_por_columna
     )
@@ -1373,7 +1384,7 @@ def preparar_pipeline(
         stats_por_genero_test = fit_popularity_por_genero(train_candidatos_full, libros)
         genero_por_usuario_test = genero_preferido_por_usuario(train_candidatos_full, libros)
         modelo_als_test, matriz_test, fila_por_usuario_test, libros_por_columna_test = fit_als(
-            train_candidatos_full
+            train_candidatos_full, bm25=BM25_ALS
         )
         features_auxiliares_test = calcular_features_auxiliares(
             train_candidatos_full, libros, lectores, matriz_test, fila_por_usuario_test, libros_por_columna_test

@@ -10,19 +10,24 @@ está.
 Columna **Estado**: es una sugerción de lectura, no un veredicto —
 la idea es que la marques vos como ✅ conservar / ❌ sacar / 🔄 revisar.
 
-## Para retomar (al 2026-09-03): investigación abierta sobre el límite del reranking
+## Para retomar (al 2026-09-07): investigación abierta sobre el límite del reranking
 
 Estado actual: `"ranker"` (39 features, 6 fuentes de candidatos + refit
-de etapa 1 + recencia) sigue siendo el modelo de referencia, con
-**0.06149 confirmado en Kaggle** (récord actual, memoria resuelta por el
-particionado por lotes). Se probó y descartó una 7ª fuente (similitud
-usuario-usuario, sección 22 más abajo -- regresión en Kaggle, 0.06017).
+de etapa 1 + recencia + **BM25 en la matriz de ALS**) es el modelo de
+referencia, con **0.06182 confirmado en Kaggle** (récord actual). Sobre
+el récord anterior (0.06149) se sumó la normalización por actividad de la
+matriz de ALS con BM25 (`BM25_ALS=(10.0, 0.75)`, sección 23 más abajo --
++0,54% en Kaggle, caso límite confirmado). Antes se probó y descartó una
+7ª fuente (similitud usuario-usuario, sección 22 -- regresión, 0.06017).
 
 **Arrancar la próxima sesión acá**: tras descartar 2 fuentes de
 candidatos seguidas (editorial, vecinos), se abrió una investigación
 sobre dónde está el límite real del sistema HOY -- ver `bitacora.md`,
 sección "Investigación abierta: ¿dónde está el límite del reranking?"
-para el detalle completo. Resumen:
+para el detalle completo. BM25 (ronda 2026-09-07) **no la movió**: el
+objetivo-alcanzable-en-top-20 sigue plano en ~44,5%. El siguiente paso
+concreto pendiente es medir con precisión el tope `n_por_fuente=150` de
+la fuente de candidatos por autor. Resumen:
 
 - De los usuarios donde el objetivo SÍ está entre los candidatos, el
   reranker solo lo sube al top-20 el **44%** de las veces (posición
@@ -389,6 +394,15 @@ catálogo de editorial" para las dos rondas más recientes.
 | Decisión | Estado sugerido | Detalle |
 |---|---|---|
 | `K_VECINOS_USUARIO_USUARIO=50`/`_calcular_similitud_usuario_usuario`/fuente `"vecinos"` (`score_vecinos_candidato`/`rank_vecinos_candidato`/`en_vecinos_candidato`, 39→42 features) -- similitud usuario-usuario (`X @ Xᵀ`) podada a los 50 vecinos más parecidos por usuario | ❌ **descartada -- REGRESIÓN confirmada en Kaggle, código revertido en su totalidad** | Oportunidad teórica (seed=42): kNN k=50 dio 0.3325 vs 0.2737-0.2761 de una alternativa de clustering (KMeans sobre `user_factors` de ALS, descartada por clusters muy desbalanceados -- uno con más de la mitad de la población). Recall real +1.35% (0.5115→0.5184, en el orden de editorial +1.0%, no de autor/co-lectura +12%). Test pareado casi idéntico a la firma de co-lectura antes de confirmarse (1.39σ vs 1.35σ, P(mejora) 91.55% vs 91.05%) -- precedente fuerte. Pero el CV de 3 seeds NO dio positivo en los 3 (2/3 positivos, seed=123 -0.000669, proporcionalmente grande, más parecido a los fallos reales de país/franja que a los casos límite confirmados). Con la aclaración del usuario de que las submissions no son un recurso escaso en este proyecto, se confirmó directo en Kaggle: **0.06017, peor que el récord actual (0.06149, -2.1%)** -- primera vez que el test pareado y el resultado real discrepan. Revertido en su totalidad; se mantiene el fix de un bug real e independiente encontrado de paso en `recall_de_candidatos` (rompía con `id_libro` categórico). Ver `bitacora.md`, sección "7ª fuente de candidatos (intento): similitud usuario-usuario podada a k vecinos" y su reflexión final sobre los límites del test pareado de un solo seed. |
+
+## 23. Normalización por actividad de la matriz de ALS con BM25 (ronda 2026-09-07)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| `fit_als(..., bm25=(K1, B))` (nuevo parámetro, default `None` = sin cambios) -- pesa la matriz con `implicit.nearest_neighbours.bm25_weight` **solo para el `modelo.fit()`**; la matriz que devuelve `fit_als` sigue con el rating crudo, así que el filtrado de ya-leídos, la co-ocurrencia ítem-ítem (`score_coleido`, fuente de co-lectura) y el perfil TF-IDF no cambian -- el efecto queda aislado al factorizado de ALS | ✅ **CONFIRMADO EN KAGGLE -- nuevo récord, aunque por el margen de confirmación más chico del proyecto** | Motivación (planteada por el usuario): la matriz está muy sesgada -- el 11,5% de usuarios con 100+ interacciones concentra el 64% de la señal y, con `confianza = rating` crudo, domina la factorización y arrastra los factores de ítem hacia el gusto mainstream. `bm25_weight` baja el peso de esos power users (normalización por "largo" de la fila -- nuestra matriz es `usuarios × libros`, no se transpone) y, vía IDF, el de los libros muy leídos. Co-decidido con el usuario: empezar por BM25 con barrido de `(K1, B)` en vez de una normalización `rating/n_u**p` de un solo knob. |
+| `BM25_ALS = (10.0, 0.75)` (constante de módulo en `ranker.py`, pasada a los 2 `fit_als` de `preparar_pipeline` y a los 3 de `submit.py`) | ✅ **elegida en un pre-screen ALS-solo, no en el pipeline completo** | `scripts/screen_bm25_als.py` (nuevo, molde de `tune_als.py`): ALS solo, seed=42, split `n_val=1`, grilla `K1 ∈ {1,10,100} × B ∈ {0.25,0.5,0.75,1.0}` + baseline `bm25=None`. **Las 12 configs mejoraron el NDCG@20** sobre baseline (+2,7% a +7,9%); ganó `K1=10, B=0.75` (NDCG@20 0.101565→0.109558, +7,9%; Recall@200 0.3968→0.4048, aún +0,008). Con `K1=100` el Recall se empieza a hundir; con `K1=1` gana más Recall pero menos NDCG. `bm25_weight` **siempre** aplica IDF (incluso con B=0), por eso la referencia de "sin cambio" es `bm25=None`, no B=0. |
+| Validación con el ranker completo (CV 3 seeds, `n_por_fuente=150`) | 🔄 **caso límite: positivo en las 3 seeds, por debajo del desvío entre seeds** | `scripts/evaluate_ranker.py`: ALS solo 0.094406→**0.098263** (+4,1%), ranker 0.130273→**0.132313** (+1,6%), positivo por seed +0.00265/+0.00310/+0.00037 (seed=123 apenas). El ranker se "come" parte de la ganancia de ALS-solo (+4,1% → +1,6%). Mismo patrón que género macro / editorial / señales cruzadas -- por debajo del criterio estricto pero positivo en los 3. `scripts/recall_candidatos.py` (seed=42): recall del set de candidatos 0.5115→0.5152 (+0,7%), objetivo-alcanzable-en-top-20 plano en ~44,5% -- **no arregló la franja media puntualmente** (la investigación abierta del hilo del límite del reranking), es un lift chico y parejo. |
+| Confirmación en Kaggle | ✅ **0.06182, nuevo récord (+0,54% sobre 0.06149, +0.00033 absoluto)** | El margen de confirmación más chico del proyecto (señales cruzadas había sido +0,5%). Se adopta por el mismo criterio que esos casos: CV local positivo en las 3 seeds + ALS-solo claramente mejor (+4,1%) + nuevo récord con dirección consistente. `submit.py` (los 3 `fit_als`, incluido `--model als`), `ranker.py`, test nuevo en `tests/test_als.py`, `scripts/screen_bm25_als.py`. Ver `bitacora.md`, sección "Normalización por actividad de ALS con BM25". |
 
 ---
 

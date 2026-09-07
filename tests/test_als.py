@@ -12,7 +12,12 @@ librería.
 import numpy as np
 import pandas as pd
 
-from recsys.models.als import construir_matriz_usuario_libro, recomendar_hibrido, recomendar_por_usuario
+from recsys.models.als import (
+    construir_matriz_usuario_libro,
+    fit_als,
+    recomendar_hibrido,
+    recomendar_por_usuario,
+)
 
 
 class _ModeloALSFalso:
@@ -82,6 +87,29 @@ def test_construir_matriz_usuario_libro_alpha_none_es_rating_crudo():
     matriz, _, _ = construir_matriz_usuario_libro(interacciones, alpha=None)
 
     assert matriz[0, 0] == 7
+
+
+def test_fit_als_bm25_no_altera_la_matriz_devuelta():
+    # Con bm25=(K1, B), el pesado BM25 se aplica solo a la copia que va a
+    # modelo.fit() -- la matriz que devuelve fit_als tiene que seguir con el
+    # rating crudo (la usan aguas abajo el filtro de ya-leídos y la
+    # co-ocurrencia ítem-ítem, que no deben cambiar por este experimento).
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u1", "u2", "u2", "u3"],
+            "id_libro": ["a", "b", "a", "c", "b"],
+            "rating": [8, 5, 3, 9, 7],
+        }
+    )
+
+    modelo, matriz, fila_por_usuario, libros_por_columna = fit_als(
+        interacciones, factors=4, iterations=1, bm25=(100.0, 0.8)
+    )
+
+    assert modelo.user_factors.shape[0] == 3
+    columna_a = libros_por_columna.index("a")
+    assert matriz[fila_por_usuario["u1"], columna_a] == 8
+    assert matriz[fila_por_usuario["u2"], columna_a] == 3
 
 
 def test_recomendar_usa_al_modelo_cuando_alcanza():

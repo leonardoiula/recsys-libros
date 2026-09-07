@@ -23,6 +23,22 @@ NDCG local) -- ver `experiments/bitacora.md`:**
   Kaggle, peor** que la config de arriba -- sobreajuste al split fijo
   usado en el sweep. Se dejó de usar como default por esto.
 
+**Normalización por actividad (BM25), `fit_als(..., bm25=(K1, B))`:** la
+matriz de este dataset está muy sesgada -- el 11,5% de usuarios con 100+
+interacciones concentra el 64% de la señal, así que esos power users
+dominan la factorización y arrastran los factores de ítem hacia el gusto
+mainstream. `bm25=(K1, B)` pesa la matriz con
+`implicit.nearest_neighbours.bm25_weight` **solo para el `modelo.fit()`**
+(la matriz que devuelve `fit_als` sigue con el rating crudo, para no
+alterar el filtrado de ya-leídos ni la co-ocurrencia ítem-ítem que se
+calcula aparte): `B` baja el peso de los usuarios con muchas
+interacciones (normalización por "largo" de la fila -- nuestra matriz es
+`usuarios × libros`, no hace falta transponer), el IDF baja el de los
+libros muy leídos, y `K1` controla la saturación de ratings altos
+repetidos. Default `None` = comportamiento histórico sin cambios. Igual
+que con cualquier hiperparámetro de este módulo: validar con varios
+seeds (`evaluation.evaluar_multisplit`), nunca uno solo.
+
 Para usuarios sin ninguna fila en la matriz (cold start real, sin
 historial) se cae a `ranking_global` de popularidad, igual que el
 fallback final de v1. Además, `recomendar_hibrido` rutea a los usuarios
@@ -37,6 +53,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from implicit.als import AlternatingLeastSquares
+from implicit.nearest_neighbours import bm25_weight
 
 from recsys.models.popularity_segmentada import recomendar_por_usuario as _recomendar_genero_global
 
@@ -83,12 +100,22 @@ def fit_als(
     iterations: int = 20,
     alpha: float | None = None,
     seed: int = 42,
+    bm25: tuple[float, float] | None = None,
 ) -> tuple[AlternatingLeastSquares, sp.csr_matrix, dict, list]:
     """Entrena ALS sobre la matriz usuario-libro pesada por confianza implícita.
 
     Default = `factors=128, regularization=0.1, alpha=None` (rating
     crudo como confianza): es la config con **mejor score confirmado en
     Kaggle** (0.03864) de todas las probadas hasta ahora.
+
+    `bm25=(K1, B)` (default `None` = sin cambios) aplica
+    `implicit.nearest_neighbours.bm25_weight` a una **copia** de la
+    matriz antes de `modelo.fit()` para bajar el peso de los power users
+    y de los libros muy leídos en la factorización -- ver el docstring
+    del módulo. La matriz que se devuelve NO lleva ese pesado (queda con
+    el rating crudo), así que el filtrado de ya-leídos y todo lo que se
+    calcule con la matriz aguas abajo (co-ocurrencia ítem-ítem, etc.) no
+    cambia: el efecto queda aislado al factorizado de ALS.
 
     Se probó (y se descartó) `factors=256, regularization=0.128,
     alpha=4.718` -- encontrada con `optuna` (30 trials) sobre el split
@@ -106,13 +133,19 @@ def fit_als(
     """
     matriz, fila_por_usuario, libros_por_columna = construir_matriz_usuario_libro(interacciones, alpha=alpha)
 
+    if bm25 is None:
+        matriz_fit = matriz
+    else:
+        k1, b = bm25
+        matriz_fit = bm25_weight(matriz, K1=k1, B=b).tocsr()
+
     modelo = AlternatingLeastSquares(
         factors=factors,
         regularization=regularization,
         iterations=iterations,
         random_state=seed,
     )
-    modelo.fit(matriz)
+    modelo.fit(matriz_fit)
 
     return modelo, matriz, fila_por_usuario, libros_por_columna
 

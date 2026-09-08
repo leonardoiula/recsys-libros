@@ -77,7 +77,7 @@ popularidad.
 ensamble de árboles de decisión entrenados en secuencia, donde cada
 árbol nuevo se ajusta al error que dejaron los anteriores. Comparado
 con una red neuronal, es lo que mejor funciona "de fábrica" sobre datos
-**tabulares heterogéneos** como los de acá: 35 columnas con escalas
+**tabulares heterogéneos** como los de acá: 39 columnas con escalas
 completamente distintas (un rank entero de 0 a 150, una similitud
 coseno en [0,1], un conteo de interacciones, un flag 0/1), sin
 normalizar nada, capturando no-linealidades e interacciones entre
@@ -97,7 +97,7 @@ escala interpretable** (no es una probabilidad ni un rating estimado),
 solo sirve para ordenar candidatos del mismo usuario entre sí.
 
 **Rol concreto acá**: es la **etapa 2**. Recibe la unión de candidatos
-de las 6 fuentes con sus 35 features y aprende a combinarlas — en vez
+de las 6 fuentes con sus 39 features y aprende a combinarlas — en vez
 de decidir a mano cómo pesar "ALS lo puso 3ro" contra "es de un autor
 que ya leyó" contra "su resumen se parece a lo que viene leyendo".
 
@@ -121,20 +121,22 @@ fuentes o del score de Kaggle, es el pipeline; si habla de features,
 ### Por qué dos etapas ("retrieval + ranking")
 
 El patrón estándar de sistemas de recomendación de producción, y la
-razón es de costo: calcular 35 features y correr LightGBM sobre los
+razón es de costo: calcular 39 features y correr LightGBM sobre los
 128.743 libros del catálogo × cada usuario es inviable, mientras que
-hacerlo sobre ~695 candidatos por usuario es barato. La etapa 1 usa
+hacerlo sobre ~780 candidatos por usuario es barato. La etapa 1 usa
 modelos rápidos y aproximados para bajar el catálogo a un puñado de
 candidatos; la etapa 2 gasta el modelo caro y preciso solo ahí. El
 corolario incómodo, y el hallazgo central de este proyecto: **la etapa
 1 fija un techo duro** — si el libro que el usuario efectivamente iba a
 leer no está entre los candidatos, no hay reranking que lo recupere
-(hoy ese techo, el *recall* del set de candidatos, es 0.512).
+(hoy ese techo, el *recall* del set de candidatos, es ~0.535).
 
 ## Récord actual
 
-**0.05262 de NDCG@20 en Kaggle** (2026-09-01), con el modelo
-`"ranker"` de `src/recsys/models/ranker.py`. Progresión completa de
+**0.06316 de NDCG@20 en Kaggle** (2026-09-07), con el modelo
+`"ranker"` de `src/recsys/models/ranker.py`: 6 fuentes de candidatos, 39
+features, `LGBMRanker`, más BM25 en la matriz de ALS y presupuesto propio
+de la fuente de autor (`n_por_fuente_autor=500`). Progresión completa de
 todos los modelos probados, con el score real de Kaggle al lado del
 local (siempre hay que mirar los dos, ver sección de validación):
 
@@ -146,7 +148,16 @@ local (siempre hay que mirar los dos, ver sección de validación):
 | Ranker, 3 fuentes de candidatos (26 features) | 0.109735 ± 0.003719 | 0.04831 |
 | Ranker, 4 fuentes (+autor ya leído, 29 features) | 0.117495 ± 0.002562 | 0.05140 |
 | Ranker, 5 fuentes (+similitud de resumen, 32 features) | 0.120547 ± 0.002674 | 0.05181 |
-| Ranker, 6 fuentes (+co-lectura ítem-ítem/kNN, 35 features) | 0.121983 ± 0.002949 | **0.05262 (récord actual)** |
+| Ranker, 6 fuentes (+co-lectura ítem-ítem/kNN, 35 features) | 0.121983 ± 0.002949 | 0.05262 |
+| Ranker, +recencia (4 feat) + refit de etapa 1 sobre todos los datos (39 features) | 0.143336 ± 0.002896 | 0.06149 |
+| Ranker, +BM25 en la matriz de ALS (`K1=10, B=0.75`) | 0.132313 ± 0.00219 (CV, `n_por_fuente=150`) | 0.06182 |
+| Ranker, +presupuesto propio de la fuente de autor (`n_por_fuente_autor=500`) | 0.134117 ± 0.00096 | **0.06316 (récord actual)** |
+
+Nota: el NDCG local de la fila de recencia/refit (0.143336) se midió con
+`n_por_fuente=75` por una limitación de memoria de esa sesión; las dos
+filas siguientes están a `n_por_fuente=150` (default de producción), por
+eso el número local "baja" pese a que el de Kaggle sube -- no son
+comparables en valor absoluto entre sí, solo dentro de cada `n_por_fuente`.
 
 ## Arquitectura: candidatos + reranking
 
@@ -154,11 +165,13 @@ No es un solo modelo — son dos etapas, el patrón estándar de sistemas
 de recomendación de producción ("*retrieval + ranking*"):
 
 1. **Generación de candidatos**: seis fuentes independientes proponen,
-   cada una, hasta 150 libros por usuario (`n_por_fuente=150`). Se unen
-   sin duplicar — cada candidato queda marcado con qué fuente(s) lo
-   propusieron.
+   cada una, hasta `n_por_fuente=150` libros por usuario -- **salvo la
+   fuente de autor, que tiene su propio tope `n_por_fuente_autor=500`**
+   (el 39% de los usuarios agotaba el de 150 en sus autores favoritos,
+   ver `decisiones.md` sección 24). Se unen sin duplicar — cada candidato
+   queda marcado con qué fuente(s) lo propusieron.
 2. **Reranking**: un `LGBMRanker` (LightGBM, gradient boosted trees)
-   toma la unión de esos candidatos, cada uno con 35 features, y
+   toma la unión de esos candidatos, cada uno con 39 features, y
    aprende a reordenarlos mejor de lo que cualquier fuente por sí sola
    podría.
 
@@ -175,12 +188,13 @@ no un reemplazo.
 | 1 | **ALS** (filtrado colaborativo) | Top-150 según `implicit.recommend`, con el rating explícito (1-10) usado directamente como confianza | `models/als.py` |
 | 2 | **Popularidad global** | Top-150 del ranking bayesiano global | `models/popularity.py` |
 | 3 | **Popularidad por género preferido** | Top-150 dentro del género literario que más leyó el usuario | `models/popularity_segmentada.py` |
-| 4 | **Autores ya leídos** | Hasta 20 libros sin leer por cada autor que el usuario ya leyó, rankeados por popularidad global | `ranker.generar_candidatos_con_features` |
+| 4 | **Autores ya leídos** | Hasta 20 libros sin leer por cada autor que el usuario ya leyó, rankeados por popularidad global, hasta un tope propio de **500 candidatos** por usuario (`n_por_fuente_autor`, no 150) | `ranker.generar_candidatos_con_features` |
 | 5 | **Similitud de resumen** | Top-150 de *todo* el catálogo con resumen (~48k libros) más parecido al perfil TF-IDF de lectura del usuario — no depende de cuánta gente más leyó el libro | `ranker._generar_candidatos_por_resumen` |
 | 6 | **Co-lectura ítem-ítem (kNN)** | Top-150 por score de co-lectura contra el historial del usuario (reusa la matriz de co-ocurrencia `cooc` ya calculada para la feature `score_coleido`) — sigue siendo colaborativo, pero trae candidatos que ALS no trae | `ranker.generar_candidatos_con_features` |
 
-Total de candidatos por usuario: unión de las 6 fuentes, media ~695
-(hasta ~820 para usuarios pesados).
+Total de candidatos por usuario: unión de las 6 fuentes, media **~780**
+(min ~390, hasta ~1140 para usuarios pesados -- el tope de 500 de la
+fuente de autor los infla respecto de las otras 5).
 
 ### El flujo completo, de los datos crudos al top-20
 
@@ -222,8 +236,8 @@ flowchart TD
     C5 --> UNION
     C6 --> UNION
 
-    UNION["UNIÓN deduplicada · ~695 candidatos/usuario<br/>se descartan los libros que el usuario ya leyó<br/>cada candidato queda marcado con qué fuente(s) lo propusieron"]
-    UNION --> FEATS["35 features por candidato<br/>score_* / rank_* / en_* de cada fuente (18)<br/>+ autor, editorial, año, macro-género, co-lectura,<br/>texto, volumen y señales cruzadas lector↔libro (17)"]
+    UNION["UNIÓN deduplicada · ~780 candidatos/usuario<br/>se descartan los libros que el usuario ya leyó<br/>cada candidato queda marcado con qué fuente(s) lo propusieron"]
+    UNION --> FEATS["39 features por candidato<br/>score_* / rank_* / en_* de cada fuente (18)<br/>+ autor, editorial, año, macro-género, co-lectura,<br/>texto, volumen y señales cruzadas lector↔libro (17)"]
 
     TR -.-> DS["armar_dataset_entrenamiento<br/>y=1 para el libro real, group = candidatos del usuario"]
     FEATS -.-> DS
@@ -244,7 +258,7 @@ diagrama comprime:
 - **Etapa 1 y features son una sola función**
   (`generar_candidatos_con_features`): las 6 fuentes llenan un dict de
   candidatos por usuario y recién después, sobre esa unión, se calculan
-  las 35 columnas. Se dibuja separado porque son dos decisiones
+  las 39 columnas. Se dibuja separado porque son dos decisiones
   distintas (qué candidatos traer vs. cómo describirlos), pero no son
   dos pasadas sobre los datos. Esa función se llama **dos veces** por
   corrida — una para los usuarios con los que se entrena el
@@ -274,14 +288,28 @@ confianza (no binarizado).
 | `iterations` | 20 |
 | `alpha` (peso `1+alpha*rating`) | `None` → confianza = rating crudo |
 | `seed` | 42 |
+| `bm25` (normalización por actividad, `(K1, B)`) | `(10.0, 0.75)` — ver abajo |
 
-Esta config es la que **mejor score dio en Kaggle real** (0.03864), no
-la que mejor NDCG local dio: una búsqueda con `optuna` (30 trials)
-encontró `factors=256, regularization=0.128, alpha=4.718` que mejoraba
-el NDCG local +11.5% pero empeoraba Kaggle a 0.03341 — sobreajuste al
-split usado en el sweep. Lección que quedó como norma del proyecto:
-nunca confiar en una mejora de un solo split/seed sin confirmar con
-validación cruzada, y desconfiar de mejoras grandes en un solo sweep.
+`factors=128, reg=0.1, alpha=None` es la que **mejor score dio en Kaggle
+real** entre las probadas para el ALS puro (0.03864), no la que mejor
+NDCG local dio: una búsqueda con `optuna` (30 trials) encontró
+`factors=256, regularization=0.128, alpha=4.718` que mejoraba el NDCG
+local +11.5% pero empeoraba Kaggle a 0.03341 — sobreajuste al split
+usado en el sweep. Lección que quedó como norma del proyecto: nunca
+confiar en una mejora de un solo split/seed sin confirmar con validación
+cruzada, y desconfiar de mejoras grandes en un solo sweep.
+
+**Normalización por actividad (BM25), `fit_als(..., bm25=(10.0, 0.75))`**
+(ronda 2026-09-07): la matriz está muy sesgada — el 11,5% de usuarios
+con 100+ interacciones concentra el 64% de la señal y domina la
+factorización. `implicit.nearest_neighbours.bm25_weight` se aplica **solo
+a la copia que va a `modelo.fit()`** (la matriz que devuelve `fit_als`
+sigue con el rating crudo, así el filtrado de ya-leídos y la
+co-ocurrencia ítem-ítem no cambian): `B` baja el peso de los power users,
+el IDF el de los libros muy leídos. `K1=10, B=0.75` salió de un
+pre-screen ALS-solo (12/12 configs de la grilla mejoraron el NDCG@20).
+CV 3 seeds: ranker 0.130273 → 0.132313 (positivo en los 3). Confirmado en
+Kaggle: **0.06182** (+0,54% sobre 0.06149). Ver `decisiones.md` sección 23.
 
 ### Popularidad (`models/popularity.py`)
 
@@ -353,11 +381,22 @@ del libro (autor/editorial/año/resumen), que no depende del split.
 ### Importancia de features medida (seed 42, una sola corrida)
 
 `scripts/evaluate_ranker.py` imprime `feature_importances_` en cada
-corrida, pero el número nunca había quedado en un documento. Esto es la
-foto del modelo actual de 35 features (seed 42: ALS 0.092851, ranker
-**0.118625** — consistente con la CV de 3 seeds, 0.121983 ± 0.002949).
+corrida.
 
-**Antes de leer la tabla, tres advertencias:**
+> **⚠️ La tabla detallada de abajo es de una versión anterior de 35
+> features** (antes de recencia/refit, BM25 y presupuesto de autor). Sigue
+> siendo útil *direccionalmente* pero los números exactos ya no aplican.
+> En el modelo actual de 39 features (nfa=500, seed 42, por `split`), el
+> top-10 es: `anio_edicion_dif`, `n_libros_autor_leidos_reciente`,
+> `n_interacciones_usuario`, `dias_desde_ultima_interaccion_usuario`,
+> `n_interacciones_libro`, `frecuencia_genero_macro_usuario`,
+> `sim_resumen_historial_reciente`, `rank_als`, `score_coleido_reciente`,
+> `score_als`. Las 4 features de recencia (`*_reciente`) entraron fuerte;
+> `rank_als`/`score_als` siguen siendo la señal candidato-dependiente más
+> importante, coherente con el resto del documento. Las 6 `en_*` de fuente
+> siguen con 0 splits.
+
+**Antes de leer la tabla (de la versión de 35 features), tres advertencias:**
 
 1. **Es una sola corrida, no un promedio de 3 seeds ni una medición con
    desvío.** Sirve para orientarse, no para decidir. Este proyecto ya
@@ -615,29 +654,33 @@ mejor todavía — pero no es requisito excluyente.
 
 ## Próximos pasos (agenda completa en `decisiones.md`)
 
-El hallazgo central de las últimas sesiones: **el cuello de botella es
-el generador de candidatos, no el reranking ni el modelo colaborativo**.
-Atacar el recall de candidatos (agregar fuentes nuevas) dio las tres
-mejoras más grandes y mejor validadas del proyecto (autor ya leído:
-+5.9% en Kaggle; similitud de resumen: +0.8%; co-lectura ítem-ítem/kNN:
-+1.56%), mientras que agregar más features sobre el mismo set de
-candidatos viene con retornos decrecientes. Pero la señal se está
-agotando: cada fuente nueva sube el recall pero baja un poco la
-eficiencia de ranking (NDCG/recall) — la de kNN fue la más chica de las
-tres, con la caída de eficiencia más marcada (-10%, vs. -22% del caso
-ya descartado de `n_por_fuente=500`). Ideas pendientes, en orden de
-prioridad:
+El hallazgo de las sesiones de agosto/septiembre — **el cuello de botella
+es el generador de candidatos** — se explotó a fondo: 6 fuentes (la 4ª,
+autor, dio +5.9% en Kaggle; resumen +0.8%; co-lectura +1.56%), después
+recencia + refit de etapa 1 (+16.9% juntas, a 0.06149), y en la sesión
+del 2026-09-07 BM25 en ALS (0.06182) + presupuesto propio de la fuente
+de autor (0.06316). Esa veta está **casi agotada**: en esa última sesión
+se descartaron, con evidencia, tres extensiones seguidas —
+`n_por_fuente_autor>500`, presupuesto propio para resumen/co-lectura, y
+features de corroboración entre fuentes (`n_fuentes_candidato`).
 
-1. Adaptar `scripts/comparar_features_pareado.py` (o un script nuevo)
-   para comparar dos *generadores de candidatos* completos, no solo
-   subconjuntos de `FEATURES` sobre el mismo contexto — hoy no hay
-   forma barata de aislar si una fuente nueva de candidatos ayuda antes
-   de correr el CV completo de 3 seeds (~20-25 min).
-2. Features ponderadas por recencia (autor/editorial/co-lectura
-   pesando más lo reciente, no todo el historial parejo).
-3. Revisar si conviene refitear la etapa 1 (ALS/popularidad) sobre
-   todos los datos después de entrenar el ranker, en vez de sobre
-   `train_candidatos` como hoy en `submit.py`.
+Lo que queda abierto:
+
+1. **La forma de U por popularidad del objetivo.** De los usuarios donde
+   el objetivo SÍ está entre los candidatos, el reranker lo mete al
+   top-20 solo el ~43% de las veces, y los que peor rankea son los de
+   popularidad MEDIA (~180 interacciones: P(top-20) 0.31 vs 0.47/0.63 en
+   los extremos). Atacada desde cobertura, BM25, presupuesto de autor y
+   corroboración — **ninguna la mueve**. El diagnóstico apunta a "falta
+   señal" para esa franja, no a "el modelo ignora señal". Sin una idea
+   nueva concreta; habría que probar un ángulo distinto (¿objetivo del
+   reranker? ¿modelo/tratamiento separado para la franja media?) o
+   aceptarlo como techo estructural de este approach.
+2. **Merge de la rama `cache-generadores-candidatos` a `main`** (varias
+   mejoras confirmadas + experimentos descartados documentados sin
+   mergear).
+3. Tuneo de LightGBM: probado 3 veces con optuna, las 3 dentro del ruido
+   — no se re-intenta salvo un cambio grande de features.
 
 ## Dónde mirar para más detalle
 

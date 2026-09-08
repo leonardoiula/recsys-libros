@@ -592,6 +592,18 @@ mejor todavía — pero no es requisito excluyente.
   y sus libros más populares ya los traían ALS/popularidad global — la
   fuente sumó candidatos mayormente redundantes, no nuevos. Ver
   `experiments/decisiones.md` sección 16 y `bitacora.md`.
+- **Presupuesto propio para las fuentes de resumen y co-lectura**
+  (`n_por_fuente_resumen`/`n_por_fuente_coleido`, mirror de
+  `n_por_fuente_autor`): `probe_presupuesto_fuentes.py` midió headroom de
+  recall solo-fuente (co-lectura 0.287→0.436 de 150 a 500). Pero el sweep
+  de co-lectura mostró el modo de fallo de `n_por_fuente=500` global: el
+  recall del set combinado sube fuerte (0.5152→0.5804) y el NDCG@20 no
+  acompaña (`nfc=500` PEOR que `nfc=300`), con la eficiencia de ranking
+  −10,7%. A diferencia de autor, resumen/co-lectura no tienen patología
+  de asignación ni candidatos de alta precisión — sus candidatos de rank
+  150-500 son distractores para el ranker. Revertido; se mantiene
+  `probe_presupuesto_fuentes.py`. Ver `decisiones.md` sección 25 y
+  `bitacora.md`.
 
 ## Próximos pasos (agenda completa en `decisiones.md`)
 

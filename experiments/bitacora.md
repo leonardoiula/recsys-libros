@@ -3424,9 +3424,79 @@ Progresión de la sesión: 0.06149 → BM25 0.06182 → `nfa=300` 0.06231 →
 
 - `n_por_fuente_autor > 500` casi seguro no aporta (`800` ya dio 0,84 σ
   incremental).
-- Aplicar el mismo análisis de presupuesto (`diagnostico_presupuesto_autor.py`
-  como molde) a otras fuentes con cola larga -- resumen, co-lectura.
 - La forma de U por popularidad del objetivo sigue sin una palanca
   propia.
 - `estado_del_arte.md` sigue desactualizado (récord 0.05262) -- pendiente
   un refresh con BM25 + presupuesto de autor.
+
+---
+
+## Presupuesto propio para resumen/co-lectura: descartado (ronda 2026-09-07)
+
+### Objetivo / hipótesis
+
+Aplicar la misma idea del presupuesto de autor a las otras dos fuentes de
+"cola larga": resumen (similitud TF-IDF contra el perfil del usuario) y
+co-lectura ítem-ítem. A diferencia de autor -- que tiene una **patología
+de asignación real** (el presupuesto total se lo comen los autores
+favoritos y los secundarios quedan en cero) --, resumen y co-lectura son
+un simple top-N por usuario, así que subirles el presupuesto es el mismo
+escenario que `n_por_fuente=500` global, ya descartado (+30% recall, NDCG
+plano). Se dejó anotado el prior antes de medir.
+
+### Chequeo barato primero (`scripts/probe_presupuesto_fuentes.py`, nuevo)
+
+Sin tocar el pipeline: recall de **cada fuente por separado**
+(`fuentes_activas={fuente}`) a `n_por_fuente` 150 vs 500 (seed=42):
+
+| fuente sola | recall@150 | recall@500 | Δ |
+|---|---|---|---|
+| co-lectura | 0.2869 | 0.4363 | **+0.1494** |
+| resumen | 0.0610 | 0.0882 | +0.0272 |
+
+Co-lectura sola tiene mucho headroom de recall; resumen bastante menos
+(y es una fuente débil de por sí). Se decidió threadear
+`n_por_fuente_resumen`/`n_por_fuente_coleido` (mismo patrón que
+`n_por_fuente_autor`) y barrer co-lectura.
+
+### Resultado del sweep de co-lectura -- el NDCG no acompaña, la eficiencia se derrumba
+
+`screen_presupuesto_autor.py` (generalizado temporalmente con
+`--fuente coleido`, revertido después), seed=42, contra el baseline
+`nfa_autor=None`:
+
+| `nfc` | recall | NDCG@20 | eficiencia | cand/u p90 |
+|---|---|---|---|---|
+| none (150) | 0.5152 | 0.129787 | 0.2519 | 764 |
+| 300 | 0.5455 | 0.131362 | **0.2408** | 872 |
+| 500 | **0.5804** | 0.130428 | **0.2247** | 1034 |
+
+- El recall del set **combinado** explota (+0.065 a `nfc=500`) pero el
+  NDCG@20 **no lo sigue**, y `nfc=500` es **peor** que `nfc=300`
+  (0.130428 < 0.131362).
+- La eficiencia de ranking (NDCG/recall) se **derrumba** −4,4% a `300` y
+  **−10,7% a `500`** -- el patrón de fallo exacto de `n_por_fuente=500`
+  global.
+- Test pareado seed=42: `nfc=300` vs none +0.00158, **1,84 σ (CI toca el
+  cero)**; `nfc=500` vs `nfc=300` **−1,07 σ** (empeora).
+- Por bucket de actividad: **ningún patrón heavy-user** como el de autor
+  (100+ sube +0.0048 plano en `300` y `500`, el resto ~ruido).
+
+### Reflexión
+
+El prior se confirmó: los candidatos que trae co-lectura entre rank 150 y
+500 **suben el recall** (el objetivo suele estar ahí) pero son de baja
+calidad -- el `LGBMRanker` no los distingue de los distractores, así que
+el NDCG no mejora y con muchos más candidatos por usuario la tarea de
+rankear se vuelve más difícil. Autor funcionó porque sus candidatos extra
+son de alta precisión (todos de un autor que el usuario demostradamente
+lee) **y** porque había una asignación mal repartida que arreglar;
+resumen/co-lectura no tienen ni lo uno ni lo otro. Además esto se midió
+contra el baseline viejo (`nfa_autor=None`); contra producción
+(`nfa_autor=500`, ya ~815 candidatos/usuario) sería peor todavía.
+
+Threading de `n_por_fuente_resumen`/`n_por_fuente_coleido` **revertido en
+su totalidad** (`ranker.py`, `submit.py`, `tests/test_ranker.py`;
+`screen_presupuesto_autor.py` vuelve a `--fuente autor` implícito). Se
+mantiene `scripts/probe_presupuesto_fuentes.py` como diagnóstico reusable
+(usa `fuentes_activas`, no depende de los params revertidos).

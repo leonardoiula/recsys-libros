@@ -53,7 +53,7 @@ def main() -> None:
     lectores = load_lectores()
 
     t0 = time.time()
-    ctx = preparar_pipeline_cacheado(interacciones, libros, lectores, SEED, n_por_fuente=N_POR_FUENTE, k=K)
+    ctx = preparar_pipeline_cacheado(interacciones, libros, lectores, SEED, n_por_fuente=N_POR_FUENTE, n_por_fuente_autor=N_POR_FUENTE_AUTOR, k=K)
     print(f"contexto listo en {time.time() - t0:.0f}s", flush=True)
 
     resultado = evaluar_con_params(ctx, None)

@@ -604,6 +604,14 @@ mejor todavía — pero no es requisito excluyente.
   150-500 son distractores para el ranker. Revertido; se mantiene
   `probe_presupuesto_fuentes.py`. Ver `decisiones.md` sección 25 y
   `bitacora.md`.
+- **Features de corroboración entre fuentes** (`n_fuentes_candidato`,
+  `rank_min_candidato`) para la franja de popularidad media (la que peor
+  rankea, forma de U). El diagnóstico mostró correlación fuerte (fuentes
+  que coinciden en el objetivo: 1.31 fuera del top-20 vs 2.63 dentro)
+  pero el test pareado dio **negativo** (`n_fuentes_candidato` −1.42 σ,
+  empeora): la señal ya está en los `rank_*`/`score_*` individuales que
+  LightGBM usa, el conteo agregado es redundante y un proxy ruidoso de
+  popularidad. Ver `decisiones.md` sección 26 y `bitacora.md`.
 
 ## Próximos pasos (agenda completa en `decisiones.md`)
 

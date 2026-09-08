@@ -43,6 +43,7 @@ from recsys.models.ranker import FEATURES, evaluar_con_params, preparar_pipeline
 
 K = 20
 N_POR_FUENTE = 150
+N_POR_FUENTE_AUTOR = 500  # config de produccion (ver submit.py)
 SEED = 42
 
 
@@ -52,7 +53,7 @@ def main() -> None:
     lectores = load_lectores()
 
     t0 = time.time()
-    ctx = preparar_pipeline_cacheado(interacciones, libros, lectores, SEED, n_por_fuente=N_POR_FUENTE, k=K)
+    ctx = preparar_pipeline_cacheado(interacciones, libros, lectores, SEED, n_por_fuente=N_POR_FUENTE, n_por_fuente_autor=N_POR_FUENTE_AUTOR, k=K)
     print(f"contexto listo en {time.time() - t0:.0f}s", flush=True)
 
     resultado = evaluar_con_params(ctx, None)

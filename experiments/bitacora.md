@@ -3500,3 +3500,83 @@ su totalidad** (`ranker.py`, `submit.py`, `tests/test_ranker.py`;
 `screen_presupuesto_autor.py` vuelve a `--fuente autor` implícito). Se
 mantiene `scripts/probe_presupuesto_fuentes.py` como diagnóstico reusable
 (usa `fuentes_activas`, no depende de los params revertidos).
+
+---
+
+## Corroboración entre fuentes: descartado (ronda 2026-09-07)
+
+### Objetivo / hipótesis
+
+Retomar la forma de U por popularidad del objetivo (los objetivos de
+popularidad MEDIA son los que peor sube el reranker al top-20). Los 3
+scripts de diagnóstico (`diagnostico_posicion_popularidad.py`,
+`diagnostico_franja_media.py`, `diagnostico_cap_autor.py`) se
+re-apuntaron al modelo de producción actual (`n_por_fuente_autor=500`,
+antes miraban el modelo pre-BM25/pre-autor).
+
+Confirmado sobre el modelo actual (seed=42):
+
+| decil de popularidad del objetivo | pop. mediana | P(top-20) |
+|---|---|---|
+| 0 | 3 | 0.472 |
+| 2 | 51 | 0.367 |
+| **4** | **180** | **0.315** (peor) |
+| 6 | 527 | 0.428 |
+| 9 | 1449 | 0.626 |
+
+Y en la franja media (deciles 3-4, n=954) el discriminador más fuerte es
+la **cantidad de fuentes distintas que proponen el objetivo**: 1.31 fuera
+del top-20 vs **2.63** dentro. Por fuente: `en_autor_candidato` 25%→83%,
+`en_coleido_candidato` 10%→42%, `en_als` 70%→95%. Medianas: `rank_als`
+86→6, `rank_autor_candidato` 20→6, `score_autor_candidato` 0→7.25.
+
+Hipótesis: agregar el conteo explícito de fuentes coincidentes
+(`n_fuentes_candidato`) + el mejor rank entre las que proponen
+(`rank_min_candidato`). Las `en_*` sueltas tienen 0 splits en LightGBM
+(redundantes con los `rank_*`), pero un conteo/mínimo es señal nueva en
+forma usable -- un solo split podría capturar "≥2 fuentes coinciden".
+Co-decidido con el usuario probar **las dos juntas** con ablación pareada
+(el test pareado aísla cada una barato, no hace falta "una por vez").
+
+### Resultado -- el test pareado dice que no
+
+`scripts/ablacion_corroboracion.py` (nuevo, un contexto seed=42 de
+producción, comparaciones pareadas de subconjuntos de `FEATURES`):
+
+| config | NDCG@20 | pareado vs base (39 feat) |
+|---|---|---|
+| base | 0.133014 | — |
+| + `n_fuentes_candidato` | 0.131846 | **−0.00117, −1.42 σ, P(mejora)=0.08** |
+| + `rank_min_candidato` | 0.132809 | −0.00020, −0.24 σ (ruido) |
+| + ambas | 0.131578 | −0.00144, −1.65 σ |
+
+`n_fuentes_candidato` **empeora** el modelo; `rank_min_candidato` es
+ruido. El paired test es el gatekeeper confiable del proyecto (~5x poder
+sobre el desvío entre 3 seeds) -- no se gastó CV ni Kaggle.
+
+### Reflexión
+
+La correlación del diagnóstico (1.31 vs 2.63) era real pero **la señal ya
+está capturada** por los `rank_*`/`score_*` individuales que LightGBM sí
+usa bien: un candidato propuesto por autor ya tiene `rank_autor_candidato`
+bajo y `score_autor_candidato` alto. El conteo agregado no agrega
+información nueva -- y es un proxy ruidoso de popularidad (los libros
+populares los proponen más fuentes) que compite con
+`n_interacciones_libro`/`rank_popularidad`, empeorando los splits.
+Mismo patrón que las `en_*` sueltas (0 splits): "cuántas/cuáles fuentes"
+no es una palanca de ranking sobre este set de features.
+
+`ranker.py` (FEATURES vuelve a 39) y `tests/test_ranker.py` revertidos;
+`scripts/ablacion_corroboracion.py` borrado. **Se mantiene** el
+re-apuntado de los 3 `diagnostico_*.py` a `n_por_fuente_autor=500`
+(reflejan producción, mejora independiente).
+
+### Estado del hilo de la forma de U
+
+Sigue **sin palanca**. Atacada por: cobertura de candidatos (autor/
+resumen/co-lectura -- ayudó al recall pero no específicamente a la franja
+media), BM25 (no la movió), presupuesto de autor (ayudó al bucket 100+,
+no al medio), y ahora features de corroboración (no aportan). El
+diagnóstico apunta a "falta señal", no a "el modelo ignora señal
+disponible" -- para la franja media puede que el techo sea estructural
+con este approach.

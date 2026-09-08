@@ -28,12 +28,17 @@ del reranking?") ya produjo **una palanca confirmada** esta sesión (el
 tope total de la fuente de autor, Diagnóstico 4 → sección 24, dos
 submissions confirmadas). BM25 **no** movió la franja media puntualmente;
 el presupuesto de autor **sí** ayuda, sobre todo al bucket 100+ (heavy
-users). Ideas que siguen sobre la mesa: `n_por_fuente_autor > 500` casi
-seguro no aporta (`800` ya dio 0,84 σ incremental, descartado); seguir
-con la forma de U por popularidad del objetivo. El presupuesto propio
-para **resumen y co-lectura** ya se probó y se descartó (sección 25 --
-suben el recall pero el NDCG no acompaña y la eficiencia de ranking se
-derrumba; no tienen la patología de asignación de autor). Resumen del
+users). Ideas descartadas esta sesión: `n_por_fuente_autor > 500` (`800` dio 0,84 σ
+incremental); presupuesto propio para **resumen y co-lectura** (sección
+25 -- suben el recall pero el NDCG no acompaña); **features de
+corroboración entre fuentes** (`n_fuentes_candidato`/`rank_min_candidato`,
+sección 26 -- correlación fuerte en el diagnóstico pero el test pareado da
+negativo, la señal ya está en los `rank_*`/`score_*` individuales). La
+**forma de U por popularidad del objetivo sigue sin palanca** tras
+atacarla desde cobertura de candidatos, BM25, presupuesto de autor y
+features de corroboración -- el diagnóstico apunta a "falta señal" para la
+franja media, no a "el modelo la ignora"; puede ser un techo estructural
+de este approach (dos etapas + LightGBM sobre estas features). Resumen del
 diagnóstico original:
 
 - De los usuarios donde el objetivo SÍ está entre los candidatos, el
@@ -425,6 +430,12 @@ catálogo de editorial" para las dos rondas más recientes.
 | Decisión | Estado sugerido | Detalle |
 |---|---|---|
 | `n_por_fuente_resumen` / `n_por_fuente_coleido` (mismo patrón que `n_por_fuente_autor`) -- tope propio para el top-N de esas dos fuentes | ❌ **descartada -- threading revertido en su totalidad, se mantiene `scripts/probe_presupuesto_fuentes.py` como diagnóstico** | Motivación: `scripts/probe_presupuesto_fuentes.py` (nuevo, usa `fuentes_activas`, no toca el pipeline) midió headroom de recall solo-fuente 150→500: **co-lectura 0.287→0.436** (+0.15), resumen 0.061→0.088 (+0.03). Se threadeó `n_por_fuente_resumen`/`n_por_fuente_coleido` y se barrió co-lectura (seed=42, `screen_presupuesto_autor.py --fuente coleido`): recall del set combinado 0.5152→0.5455 (`nfc=300`)→**0.5804** (`nfc=500`), pero **el NDCG@20 no acompañó** (0.129787→0.131362→0.130428: `500` PEOR que `300`) y la **eficiencia de ranking se derrumbó** (0.2519→0.2408→**0.2247**, −10,7% a 500). Test pareado `nfc=300` vs none: +0.00158, **1,84 σ (CI toca 0)**; `nfc=500` vs `300`: **−1,07 σ**. Sin patrón heavy-user por bucket (100+ plano en +0.0048). Es el modo de fallo exacto de `n_por_fuente=500` global: a diferencia de autor (patología de asignación real + candidatos de alta precisión), resumen/co-lectura son un top-N genérico -- los candidatos de rank 150-500 suben el recall pero el ranker no los distingue de distractores. Medido además contra el baseline VIEJO (`nfa_autor=None`); contra producción (`nfa_autor=500`) sería peor. Revertido en su totalidad: `ranker.py`/`submit.py`/`tests/test_ranker.py` y la generalización `--fuente` de `screen_presupuesto_autor.py` (vuelve a autor-only). Se mantiene `scripts/probe_presupuesto_fuentes.py`. Ver `bitacora.md`, "Presupuesto propio para resumen/co-lectura: descartado". |
+
+## 26. Features de corroboración entre fuentes para la franja de popularidad media (ronda 2026-09-07)
+
+| Decisión | Estado sugerido | Detalle |
+|---|---|---|
+| `n_fuentes_candidato` (conteo de fuentes que proponen el candidato, suma de las 6 `en_*`) + `rank_min_candidato` (mejor rank entre las fuentes que SÍ lo proponen) -- 39→41 features | ❌ **descartada por el test pareado -- revertida, sin gastar CV ni Kaggle** | Los 3 scripts de diagnóstico re-apuntados al modelo de producción (`n_por_fuente_autor=500`) confirmaron que **la forma de U por popularidad del objetivo sigue** (P(top-20) por decil: 0.47 / 0.37 / **0.31** (decil 4, ~180 interacciones) / 0.43 / 0.63) y que en la franja media el discriminador más fuerte es la **cantidad de fuentes que coinciden** en el objetivo (1.31 fuera del top-20 vs 2.63 dentro; `en_autor_candidato` 25%→83%). Hipótesis: darle a LightGBM el conteo explícito -- las `en_*` sueltas tienen 0 splits, redundantes con los `rank_*` -- ayudaría al modelo a capturar "≥2 fuentes coinciden". **Test pareado (seed=42, config de producción)**: `+n_fuentes_candidato` **−0.00117, −1.42 σ, P(mejora)=0.08** (EMPEORA); `+rank_min_candidato` −0.00020, −0.24 σ (ruido); `+ambas` −0.00144, −1.65 σ. La correlación del diagnóstico era real pero la señal ya está en los `rank_*`/`score_*` individuales que LightGBM sí usa bien (`rank_autor_candidato` 20→6, `score_autor_candidato` 0→7.25 entre fracaso y éxito); el conteo agregado no agrega info y es un proxy ruidoso de popularidad que compite con `n_interacciones_libro`/`rank_popularidad`. `ranker.py`/`tests/test_ranker.py` revertidos, `scripts/ablacion_corroboracion.py` borrado. **Se mantiene** el re-apuntado de `diagnostico_{franja_media,posicion_popularidad,cap_autor}.py` a `n_por_fuente_autor=500` (reflejan producción). Ver `bitacora.md`, "Corroboración entre fuentes: descartado". |
 
 ---
 

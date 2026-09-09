@@ -188,6 +188,16 @@ recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
   el objetivo — `test_final` es EL libro siguiente, no "cualquiera de los últimos 3", y
   compite con las features de recencia. Revertido; queda la extensión del diagnóstico de
   posición (`diagnostico_posicion_popularidad.py`).
+- **Filtrar los ejemplos de entrenamiento del reranker por historial mínimo**
+  (`min_hist` sobre las interacciones usables del usuario en `train_candidatos` — el ~20%
+  de los ejemplos vienen de usuarios con ≤3 libros de historial, features casi ruido) —
+  paired test seed=42 **monótono y negativo**: `min_hist=3` −1,99 σ, `=5` −3,72 σ, `=10`
+  −6,19 σ, `=20` −11,9 σ. El daño se concentra en los usuarios FINOS de test (~14% del
+  set) y en los objetivos populares. Como el `LGBMRanker` no usa el ID de usuario, esos
+  ejemplos "ruidosos" son la única señal sobre cómo rankear para un usuario del que se
+  sabe poco; sacarlos = sobreajuste a patrones de usuario rico, peor generalización.
+  Misma lección que `recomendar_hibrido`. Revertido; queda
+  `scripts/diagnostico_historial_ranker.py`.
 
 ---
 

@@ -100,6 +100,30 @@ def main() -> None:
     )
     print(resumen.to_string(float_format=lambda x: f"{x:.4f}"))
 
+    # --- ¿Qué tan lejos del top-20 quedan los FRACASOS? ---
+    # La pregunta clave para decidir si vale la pena seguir: si los fracasos de
+    # la franja media quedan en posición 21-40, el modelo "casi acierta" y una
+    # señal nueva / empujón tiene chance. Si quedan en 100+, no puede
+    # distinguirlos de los distractores -- techo estructural.
+    cortes = [K, 30, 50, 100, 200, 10**9]
+    etiquetas = [f"{K}-29", "30-49", "50-99", "100-199", "200+"]
+
+    def _distribucion_fracasos(sub: pd.DataFrame, nombre: str) -> None:
+        fall = sub.loc[sub["posicion"] >= K, "posicion"]
+        if fall.empty:
+            print(f"\n{nombre}: sin fracasos")
+            return
+        buckets = pd.cut(fall, bins=cortes, labels=etiquetas, right=False)
+        frac = buckets.value_counts(normalize=True).reindex(etiquetas).fillna(0)
+        print(f"\n{nombre} -- {len(fall)} fracasos (objetivo entre candidatos pero fuera del top-{K})")
+        print(f"  posición  p25={fall.quantile(.25):.0f}  mediana={fall.median():.0f}  p75={fall.quantile(.75):.0f}  p90={fall.quantile(.9):.0f}")
+        print("  reparto: " + "  ".join(f"{lab}:{frac[lab]:.0%}" for lab in etiquetas))
+
+    _distribucion_fracasos(df, "TODOS los alcanzables")
+    _distribucion_fracasos(df[df["decil"].isin([3, 4, 5])], "Franja MEDIA (deciles 3-5)")
+    _distribucion_fracasos(df[df["decil"].isin([0, 1, 2])], "Franja BAJA (deciles 0-2)")
+    _distribucion_fracasos(df[df["decil"].isin([7, 8, 9])], "Franja ALTA (deciles 7-9)")
+
 
 if __name__ == "__main__":
     main()

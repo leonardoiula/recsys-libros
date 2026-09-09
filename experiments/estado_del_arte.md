@@ -180,6 +180,14 @@ recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
   features del ranker.
 - **Rutear usuarios livianos a popularidad por género** (`als.recomendar_hibrido`) — ALS
   le gana a género en **todos** los buckets de actividad, incluso con 1 interacción.
+- **Supervisión más densa del reranker** (`n_val_ranker=3`: entrenar el `LGBMRanker` con
+  los 3 libros más recientes de cada usuario como positivos en un solo grupo, en vez de
+  1) — paired test seed=42 **catastrófico, −10,8 σ** (NDCG 0.133 → 0.113). Dos causas:
+  (a) subir `n_val_ranker` también achica `train_candidatos`, degradando la etapa 1
+  (recall 0.535 → 0.499); (b) lambdarank con 3 positivos "del pasado reciente" desdibuja
+  el objetivo — `test_final` es EL libro siguiente, no "cualquiera de los últimos 3", y
+  compite con las features de recencia. Revertido; queda la extensión del diagnóstico de
+  posición (`diagnostico_posicion_popularidad.py`).
 
 ---
 
@@ -201,11 +209,22 @@ Es pérdida en el **ranking**, no en la generación (los candidatos están). Den
 franja media, el discriminador más fuerte del éxito es que **varias fuentes coincidan** en
 el objetivo — pero agregarlo como feature no ayuda (ya está en los `rank_*`/`score_*`).
 
-Atacada esta sesión desde: cobertura de candidatos, BM25 en ALS, presupuesto de autor,
-features de corroboración — **ninguna la mueve**. El diagnóstico apunta a **"falta señal"**
-para esa franja, no a "el modelo la ignora". Ángulos sin probar: un objetivo del reranker
-distinto, un modelo/tratamiento separado para la franja media, o aceptarlo como techo
-estructural de este approach (2 etapas + LightGBM sobre estas features).
+**Los fracasos de la franja media NO son "casi aciertos"** (diagnóstico 2026-09-09): de
+los 939 fracasos en deciles 3-5, solo el 24% quedan en posición predicha 20-49; el 53% en
+100+ (mediana ~100). El modelo tiene ~100 candidatos igual de plausibles y el correcto
+está perdido en esa sopa — una feature-empujón o calibración por decil no sirven. (En
+contraste, los fracasos de la franja ALTA sí son near-misses: 49% en posición 20-49.) Hay
+además un componente **irreducible**: para un heavy user que lee amplio, "cuál es EL
+próximo libro" tiene decenas de respuestas igual de válidas, y la franja media es donde
+esa incertidumbre es máxima.
+
+Atacada desde: cobertura de candidatos, BM25 en ALS, presupuesto de autor, features de
+corroboración, supervisión más densa del reranker (`n_val_ranker=3`, −10,8 σ) —
+**ninguna la mueve**. El diagnóstico apunta a **"falta señal"** para esa franja, no a "el
+modelo la ignora". Ángulos sin probar: un modelo/tratamiento separado para la franja
+media; una señal genuinamente nueva (metadata de serie/autor). Probablemente es un techo
+estructural de este approach (2 etapas + LightGBM sobre estas features) sumado a
+incertidumbre irreducible.
 
 Herramientas de diagnóstico: `scripts/diagnostico_posicion_popularidad.py`,
 `scripts/diagnostico_franja_media.py`, `scripts/diagnostico_cap_autor.py` (apuntadas al

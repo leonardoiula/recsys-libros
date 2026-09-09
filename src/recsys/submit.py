@@ -84,7 +84,7 @@ def _recomendaciones_als(usuarios: list, k: int) -> dict:
     split corregido (temporal, n_val=1) los datos no lo respaldan: ALS le
     gana a género en *todos* los buckets de actividad medidos, incluso
     con una sola interacción de historial (ver
-    `recsys.models.als.recomendar_hibrido` y `experiments/bitacora.md`
+    `recsys.models.als.recomendar_hibrido` y `experiments/legacy/bitacora.md`
     para el detalle). Se mantiene ALS puro acá.
     """
     interacciones = load_interacciones()
@@ -113,7 +113,7 @@ agotaba el presupuesto de 150 en sus autores favoritos (ver
 fuente agrega candidatos de alta precisión. `300` se confirmó en Kaggle
 (0.06231); `500` mejora el CV de 3 seeds otro poco (0.133475 -> 0.134117,
 positivo en los 3 seeds, desvío entre seeds bajando) -- ver
-`experiments/bitacora.md`."""
+`experiments/legacy/bitacora.md`."""
 
 
 def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
@@ -125,7 +125,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     Validado con validación cruzada sobre 3 seeds antes de wirear acá:
     le ganó a ALS solo en los 3 seeds (+3.9% de NDCG@20 en promedio, con
     menor desvío entre seeds que ALS) -- ver `scripts/evaluate_ranker.py`
-    y `experiments/bitacora.md`.
+    y `experiments/legacy/bitacora.md`.
 
     Las señales de etapa 1 (ALS/popularidad/género/`calcular_features_auxiliares`)
     se fittean sobre `train_candidatos` para entrenar el ranker (evita que
@@ -139,7 +139,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     los 3 seeds, muy por encima del desvío entre seeds -- refitear con la
     interacción más reciente de cada usuario (que antes solo se usaba
     para filtrar libros ya leídos, nunca como señal) aporta bastante. Ver
-    `experiments/bitacora.md`.
+    `experiments/legacy/bitacora.md`.
 
     Tanto el armado del dataset de entrenamiento como la generación de
     los candidatos finales van por lotes de usuarios

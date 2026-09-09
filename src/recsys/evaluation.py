@@ -90,7 +90,7 @@ def evaluar_multisplit(fn_entrenar_y_evaluar: Callable[[int], float], seeds: lis
     +11.5% pero empeoraba el score real de Kaggle -13.5% -- sobreajuste
     al ruido específico de ese split. Evaluar sobre varios seeds y mirar
     el desvío, no solo la media, ayuda a detectar mejoras frágiles que no
-    generalizan antes de confiar en ellas (ver `experiments/bitacora.md`,
+    generalizan antes de confiar en ellas (ver `experiments/legacy/bitacora.md`,
     sección "Regresión en Kaggle").
 
     Devuelve {"valores": [...], "media": ..., "desvio": ...} (`desvio` es
@@ -158,7 +158,7 @@ def pesos_por_actividad(n_interacciones_referencia: pd.Series, bins: list = BINS
     población general activa.
 
     Esto es un DIAGNÓSTICO, no una corrección: ya se investigó a fondo
-    (`experiments/bitacora.md`, sección "Investigando el sesgo
+    (`experiments/legacy/bitacora.md`, sección "Investigando el sesgo
     sistemático") que reponderar por actividad no cambia el signo de
     ninguna comparación -- la brecha local-vs-Kaggle es sobre todo ruido
     de muestra chica (832 usuarios), no composición de población. Se

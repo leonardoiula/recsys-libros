@@ -12,7 +12,7 @@ que esta sesión confirmó en Kaggle con +0.5%), el efecto resultó
 estadísticamente indistinguible de ruido (bootstrap 95% CI de la
 diferencia incluye el 0) -- pese a que esas 3 features sí habían
 "pasado" el criterio de "casi positivo en los 3 seeds". Ver
-`experiments/modelo_actual.md`, sección "Recomendación: ¿cambiar de
+`experiments/legacy/modelo_actual.md`, sección "Recomendación: ¿cambiar de
 paradigma?", para el detalle completo y por qué el criterio anterior
 (desvío entre 3 seeds) tiene ~5x menos poder que este test pareado.
 

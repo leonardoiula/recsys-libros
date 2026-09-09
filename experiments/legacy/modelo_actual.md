@@ -26,7 +26,7 @@ de cada uno en Kaggle real, solo localmente):
    **+12.3%, positivo en los 3 seeds**, la mejora más grande y menos
    ambigua de la sesión.
 
-Ver `experiments/decisiones.md` secciones 18-19 y `bitacora.md`,
+Ver `experiments/legacy/decisiones.md` secciones 18-19 y `bitacora.md`,
 secciones "Ítem 1"/"Ítem 2 de los pendientes", para el detalle completo.
 
 ## Idea básica: candidatos + reranking

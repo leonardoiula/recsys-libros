@@ -42,7 +42,7 @@ def _normalizar_genero(generos: pd.Series) -> pd.Series:
 
 # Macro-géneros (taxonomía de dominio, acordada con el usuario a partir de
 # la distribución real de las 52 categorías granulares limpias -- ver
-# `experiments/bitacora.md`). Se listan explícitamente las categorías de
+# `experiments/legacy/bitacora.md`). Se listan explícitamente las categorías de
 # las 9 familias con identidad temática propia; todo lo que no aparezca acá
 # (~27 categorías minúsculas: humor, autoayuda, cocina, economía, música,
 # deportes, medicina, derecho, idiomas, ...) cae en el catch-all por
@@ -164,7 +164,7 @@ def _extraer_pais(vive_en: pd.Series) -> pd.Series:
     acentos) para no separar variantes de tildeo ("México"/"Mexico") en
     países distintos -- confirmado con los datos reales que, después de
     normalizar así, no queda ningún caso de colisión entre países
-    temáticamente distintos (ver `experiments/bitacora.md`).
+    temáticamente distintos (ver `experiments/legacy/bitacora.md`).
 
     A diferencia de género/franja de nacimiento, acá "desconocido" es una
     categoría propia en vez de un valor que se descarta: ~9% de los
@@ -216,7 +216,7 @@ lectores que caerían en la franja "1910s", 415 tienen el valor *exacto*
 1910 (vs. 1 a 9 casos para 1911-1917) -- un patrón consistente con un
 default de formulario, no con una década real (implicaría más de 110
 años en un dataset de lectura activa). Confirmado con el usuario antes
-de tratarlo así (ver `experiments/bitacora.md`)."""
+de tratarlo así (ver `experiments/legacy/bitacora.md`)."""
 
 
 def franja_nacimiento_por_usuario(lectores: pd.DataFrame) -> dict:

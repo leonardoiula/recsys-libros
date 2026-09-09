@@ -13,7 +13,7 @@ hiperparámetro que controla cuánta más confianza da cada punto de rating
 interacción quedan en 0, consistente con lo que espera `implicit`.
 
 **Historial de hiperparámetros, confirmado con Kaggle real (no solo
-NDCG local) -- ver `experiments/bitacora.md`:**
+NDCG local) -- ver `experiments/legacy/bitacora.md`:**
 - `factors=128, regularization=0.1`, rating crudo (`alpha=None`):
   **0.03864 en Kaggle, el mejor confirmado hasta ahora.** Es el default
   actual.
@@ -123,7 +123,7 @@ def fit_als(
     mejoraba el NDCG@20 **local** +11.5%, pero dio **0.03341 en Kaggle
     real, peor** que el default actual. Es sobreajuste al único split
     usado en la búsqueda, no una mejora genuina -- ver
-    `experiments/bitacora.md`, sección "Regresión en Kaggle". Sirve como
+    `experiments/legacy/bitacora.md`, sección "Regresión en Kaggle". Sirve como
     lección para cualquier tuneo futuro de este módulo: validar siempre
     con varios seeds (`evaluation.evaluar_multisplit`), nunca un solo
     split, antes de confiar en una mejora local.
@@ -238,7 +238,7 @@ def recomendar_hibrido(
     incluidos usuarios con una sola interacción en train (NDCG@20:
     0.086 ALS vs 0.016 género con n=1; la brecha se mantiene o crece con
     más actividad). No hay ningún `umbral` donde rutear a género mejore
-    el resultado -- ver `experiments/bitacora.md` para la tabla completa.
+    el resultado -- ver `experiments/legacy/bitacora.md` para la tabla completa.
     Se deja esta función implementada y testeada por si el escenario
     cambia (ej. un dataset con usuarios de mucha menos actividad
     promedio, donde el argumento original sí podría sostenerse), pero hoy
@@ -250,7 +250,7 @@ def recomendar_hibrido(
     `popularity_segmentada.recomendar_por_usuario` tal cual pero con
     `ranking_por_franja={}` y `franja_por_usuario={}` -- se confirmó que
     franja de nacimiento aporta candidatos a ~0.03% de los usuarios en la
-    práctica (ver `experiments/decisiones.md`), así que no vale la
+    práctica (ver `experiments/legacy/decisiones.md`), así que no vale la
     complejidad de llevarla a este ruteo; con esos diccionarios vacíos la
     cadena colapsa directo a género -> global.
     """

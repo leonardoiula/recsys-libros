@@ -6,7 +6,7 @@ Uso: uv run python scripts/tune_ranker.py
 Cada trial de optuna se evalúa con `SEEDS_TUNING` (2 seeds, no 1 -- nunca
 menos, después del episodio de ALS+optuna donde un sweep sobre un único
 split mejoró el NDCG local pero empeoró el score real de Kaggle, ver
-`experiments/bitacora.md`). Al terminar la búsqueda, confirma el mejor
+`experiments/legacy/bitacora.md`). Al terminar la búsqueda, confirma el mejor
 config encontrado con los 3 seeds completos (`SEEDS_FINAL`, mismos de
 `scripts/evaluate_ranker.py`).
 

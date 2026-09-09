@@ -8,7 +8,7 @@ Por qué existe: el NDCG@20 del ranker es aproximadamente
 últimas rondas de features (género macro, tamaño de editorial, señales
 cruzadas lector↔libro) movieron el segundo factor menos del 2% cada
 vez, mientras que el primero está muy por debajo de 1 (ver
-`experiments/modelo_actual.md`, sección "Recomendación: ¿cambiar de
+`experiments/legacy/modelo_actual.md`, sección "Recomendación: ¿cambiar de
 paradigma?") -- este script mide justamente ese primer factor, para
 decidir sobre la etapa 1 (candidatos) sin correr el pipeline completo
 del ranker en cada intento. Compara distintos `n_por_fuente` editando

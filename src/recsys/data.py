@@ -49,7 +49,7 @@ def split_train_val(
     futuro del usuario hacia train: sobre el mismo modelo (ALS), pasar de
     split aleatorio a split temporal bajó el NDCG@20 local de 0.260068 a
     0.122789 sin cambiar nada más, evidenciando ese leakage (ver
-    `experiments/bitacora.md`). Además se usa un `n_val` fijo en vez de
+    `experiments/legacy/bitacora.md`). Además se usa un `n_val` fijo en vez de
     una fracción proporcional a la actividad de cada usuario: con
     `frac_val` proporcional, un usuario con mucho historial terminaba con
     muchos más libros "relevantes" simultáneos en validación que uno

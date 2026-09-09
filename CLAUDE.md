@@ -22,6 +22,16 @@ k filas por usuario, EL ORDEN IMPORTA (es el ranking, primera fila = más recome
 
 
 
+\## Para retomar contexto
+
+\- Empezá por `experiments/estado_del_arte.md`: modelo actual, cómo se valida, qué se probó y no funcionó, y el problema abierto. Es lo único que hace falta leer para retomar.
+
+\- `experiments/legacy/` es el registro histórico completo (bitácora ronda por ronda, decisiones #1–26, análisis técnico), congelado al 2026-09-07. Se consulta bajo demanda, no se lee entero.
+
+\- `experiments/log.csv` es el ledger: una fila por corrida, NDCG local vs Kaggle + nota.
+
+
+
 \## Comandos clave
 
 \- `uv run pytest` corre los tests

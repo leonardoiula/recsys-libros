@@ -3,7 +3,7 @@
 Índice de las decisiones de diseño tomadas en v0/v1/v2, para revisar qué
 sigue teniendo sentido, qué se llevó a la versión siguiente y qué quedó
 sin resolver. Es un complemento *de referencia rápida* a
-`experiments/bitacora.md` (que tiene el razonamiento completo de cada
+`experiments/legacy/bitacora.md` (que tiene el razonamiento completo de cada
 una) — acá no se repite el "por qué" en detalle, solo se linkea a dónde
 está.
 
@@ -58,7 +58,7 @@ diagnóstico original:
   el repo como herramientas reusables) y las ideas para retomar al
   final de esa sección de `bitacora.md`.
 
-Ideas concretas más viejas (siguen vigentes, ver `experiments/modelo_actual.md`
+Ideas concretas más viejas (siguen vigentes, ver `experiments/legacy/modelo_actual.md`
 para el detalle completo -- documento algo desactualizado, pre-fecha la
 investigación de arriba):
 
@@ -199,7 +199,7 @@ distintas -- no se adopta, se mantienen los hiperparámetros
 conservadores. Ver `bitacora.md`, sección "Tuneo de LightGBM sobre 23
 features: tercera vez que no se adopta".
 
-Ver `experiments/bitacora.md`, sección "Se retoma el ranker", para el
+Ver `experiments/legacy/bitacora.md`, sección "Se retoma el ranker", para el
 detalle de por qué se priorizaron features sobre hiperparámetros, y
 secciones "Co-lectura, editorial, resumen y género macro" y "Tamaño de
 catálogo de editorial" para las dos rondas más recientes.

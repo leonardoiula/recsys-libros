@@ -452,7 +452,7 @@ próximos pasos.
 ### Objetivo / hipótesis
 
 Surgió de una ronda de feedback sobre la documentación (ver
-`experiments/decisiones.md`), con dos hallazgos concretos:
+`experiments/legacy/decisiones.md`), con dos hallazgos concretos:
 
 1. `split_train_val` ignoraba `fecha` y retenía a val una fracción
    (`frac_val=0.2`) de las interacciones de cada usuario elegida al azar.
@@ -567,7 +567,7 @@ achicó muchísimo la sobreestimación de v2 sobre Kaggle: de **+573%**
 **Pista extra sobre lo que queda de brecha:** los usuarios que Kaggle
 efectivamente califica (`ejemplo.csv`) tienen una actividad muchísimo
 mayor que la población general (mediana 74 interacciones en train contra
-9 en la población general activa — ver `experiments/decisiones.md`). Si
+9 en la población general activa — ver `experiments/legacy/decisiones.md`). Si
 se reordena el NDCG local ponderando por la distribución de actividad
 real de `ejemplo.csv` en vez de promediar parejo sobre todos los
 usuarios de validación, el estimado baja de 0.101473 a **0.064008**
@@ -1329,7 +1329,7 @@ unilateralmente. Con los datos reales:
   el usuario con la distribución real de libros por familia (de 14.746
   en "narrativa y clásicos" a 1.799 repartidos en un catch-all
   "práctico y misceláneo" de 27 categorías minúsculas). Ver
-  `experiments/decisiones.md` para la tabla completa.
+  `experiments/legacy/decisiones.md` para la tabla completa.
 - Dos features nuevas confirmadas por el usuario (las dos juntas, no una
   sola): `popularidad_genero_macro_candidato` (score bayesiano tipo
   `fit_popularity`, pero pooleado a las 10 familias en vez de las 52
@@ -1841,7 +1841,7 @@ referencia del proyecto.
 ### Objetivo
 
 Implementar la recomendación #1 del análisis de generador de candidatos
-(`experiments/modelo_actual.md`, sección "Recomendación: ¿cambiar de
+(`experiments/legacy/modelo_actual.md`, sección "Recomendación: ¿cambiar de
 paradigma?"): agregar una 4ª fuente de candidatos (no solo feature)
 para libros de autores que el usuario ya leyó. El análisis midió que
 28.6% de los targets de validación son de un autor ya leído, señal que

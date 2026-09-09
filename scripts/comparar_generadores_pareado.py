@@ -14,7 +14,7 @@ ranker aprovecha las 3 features de *tracking* de una fuente nueva (ej.
 activa en ambos casos), así que nunca aisló si la fuente en sí (los
 candidatos NUEVOS que trae, no sus 3 features) mueve el NDCG con el poder
 estadístico del test pareado. Quedó anotado explícitamente como pendiente
-en `experiments/decisiones.md` tras la ronda de la 6ª fuente (co-lectura
+en `experiments/legacy/decisiones.md` tras la ronda de la 6ª fuente (co-lectura
 ítem-ítem/kNN), confirmada en Kaggle con el criterio de "positivo en los 3
 seeds" (que en el pasado confirmó casos que después resultaron ruido).
 

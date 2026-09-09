@@ -20,7 +20,7 @@ NDCG@k del pipeline completo.
 Este módulo se evalúa con validación cruzada sobre varios splits/seeds
 (`evaluation.evaluar_multisplit`), no un solo split -- después del
 episodio en el que un sweep de ALS sobre un único split mejoró el NDCG
-local pero empeoró el score real de Kaggle, ver `experiments/bitacora.md`.
+local pero empeoró el score real de Kaggle, ver `experiments/legacy/bitacora.md`.
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ lotes de este tamaño (~500 x 48.320 x 8 bytes ~ 194MB por lote,
 liberado antes del siguiente) para acotar el pico de memoria. Mismo
 espíritu que el tope de la fuente de autor y el descarte de
 `n_por_fuente=500`: no repetir un problema de memoria ya visto dos
-veces esta sesión (ver `experiments/bitacora.md`)."""
+veces esta sesión (ver `experiments/legacy/bitacora.md`)."""
 
 TAMANO_LOTE_USUARIOS = 1000
 """Usuarios procesados por lote en `armar_dataset_entrenamiento_por_lotes`/
@@ -128,7 +128,7 @@ Con ~9k usuarios y hasta ~820 candidatos cada uno, armar la unión de
 candidatos de TODA la población en un solo DataFrame (hasta ~6M filas)
 llegó a fallar con `ArrayMemoryError` pese a tener RAM de sobra en la
 máquina (fragmentación del proceso, no falta de memoria real -- ver
-`experiments/bitacora.md`). Procesar por lotes de este tamaño acota el
+`experiments/legacy/bitacora.md`). Procesar por lotes de este tamaño acota el
 pico de memoria al tamaño de UN lote, no de la población completa."""
 
 BM25_ALS: tuple[float, float] | None = (10.0, 0.75)
@@ -140,7 +140,7 @@ desactiva (comportamiento histórico). `K1=10, B=0.75` salió de un
 pre-screen ALS-solo (`scripts/screen_bm25_als.py`, seed=42): +7,9% NDCG@20
 sobre `bm25=None`, con Recall@200 todavía levemente positivo -- el mejor
 punto de una grilla donde las 12 configs mejoraron el NDCG. Ver
-`experiments/bitacora.md`."""
+`experiments/legacy/bitacora.md`."""
 
 
 def _pesos_por_recencia(interacciones: pd.DataFrame) -> pd.Series:
@@ -151,7 +151,7 @@ def _pesos_por_recencia(interacciones: pd.DataFrame) -> pd.Series:
     `ndcg_at_k` en `evaluation.py`, elegido a propósito para no introducir
     una escala de tiempo nueva (días/vida media de un decaimiento
     exponencial) que habría que barrer/validar aparte (co-diseñado con el
-    usuario, ver `experiments/decisiones.md`). Fechas inválidas se tratan
+    usuario, ver `experiments/legacy/decisiones.md`). Fechas inválidas se tratan
     como las MÁS ANTIGUAS del usuario (mismo criterio que
     `split_train_val`), nunca como las más recientes.
 
@@ -295,7 +295,7 @@ def _generar_candidatos_por_resumen(
     libro, solo de su contenido. Motivada por medir que los libros
     objetivo que las otras 4 fuentes fallan en capturar son ~11x menos
     populares (mediana de interacciones) que los que sí capturan -- ver
-    `experiments/modelo_actual.md`.
+    `experiments/legacy/modelo_actual.md`.
 
     Se procesa en lotes de `TAMANO_LOTE_RESUMEN` usuarios (ver docstring
     de esa constante) en vez de un solo producto denso
@@ -605,7 +605,7 @@ def generar_candidatos_con_features(
     la ventana de esa fuente") -- la fuente de autor usa su propia ventana
     `n_por_autor` como sentinel, no `n_por_fuente`.
 
-    La fuente de autor (`experiments/modelo_actual.md`, sección
+    La fuente de autor (`experiments/legacy/modelo_actual.md`, sección
     "Recomendación: ¿cambiar de paradigma?" -- 28.6% de los libros
     objetivo son de un autor que el usuario ya leyó, y antes de esto esa
     señal solo existía como *feature*, nunca proponía candidatos nuevos
@@ -630,7 +630,7 @@ def generar_candidatos_con_features(
     esto. Subirlo solo para esta fuente agrega candidatos de alta
     precisión (todos de un autor que el usuario demostradamente lee), a
     diferencia de subir `n_por_fuente` global (probado y descartado con
-    `n_por_fuente=500`). Ver `experiments/bitacora.md`.
+    `n_por_fuente=500`). Ver `experiments/legacy/bitacora.md`.
 
     La fuente de resumen (ver `_generar_candidatos_por_resumen`): top-
     `n_por_fuente` libros de todo el catálogo con resumen más similares
@@ -1120,7 +1120,7 @@ def fit_ranker(
 
     Hiperparámetros conservadores por default -- sin un sweep agresivo
     tipo optuna en esta primera versión, para no repetir el sobreajuste
-    al proxy local que ya se vio con ALS (ver `experiments/bitacora.md`).
+    al proxy local que ya se vio con ALS (ver `experiments/legacy/bitacora.md`).
     Si se pasa un `X_eval`/`y_eval`/`group_eval`, se usa para early
     stopping (frena el boosting cuando deja de mejorar), no para buscar
     hiperparámetros.
@@ -1309,7 +1309,7 @@ def preparar_pipeline(
     (el "contexto") y lo reusa.
 
     Por qué está separado de `evaluar_con_params`: medido con el set de
-    23 features (`experiments/bitacora.md`, sección "Separar armado de
+    23 features (`experiments/legacy/bitacora.md`, sección "Separar armado de
     candidatos de tuneo de LightGBM"), una corrida de esta función tarda
     ~280-300s (fit de ALS/popularidad/género, `calcular_features_auxiliares`
     -- TF-IDF/co-lectura/macro-género --, y sobre todo las dos llamadas a

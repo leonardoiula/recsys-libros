@@ -29,7 +29,7 @@ def fit_popularity(interacciones: pd.DataFrame, C: float | None = None) -> pd.Da
     (leave-one-out estricto), lo que más ayuda es un ranking dominado por
     libros de atractivo ampliamente comprobado; un `C` chico deja subir
     demasiado a libros de nicho con 2-3 ratings altos por azar, diluyendo
-    el top-k. Ver `experiments/bitacora.md` para el detalle del sweep.
+    el top-k. Ver `experiments/legacy/bitacora.md` para el detalle del sweep.
 
     Devuelve un DataFrame con columnas [id_libro, n, avg_rating, score],
     ordenado por score descendente.

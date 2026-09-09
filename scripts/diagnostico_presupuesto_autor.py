@@ -5,7 +5,7 @@ deja a usuarios sin candidatos de sus autores "secundarios"?
 Uso: uv run python scripts/diagnostico_presupuesto_autor.py
 
 Continúa la investigación abierta del límite del reranking (ver
-`experiments/bitacora.md`). `scripts/diagnostico_cap_autor.py` ya midió el
+`experiments/legacy/bitacora.md`). `scripts/diagnostico_cap_autor.py` ya midió el
 OTRO tope de la fuente (`n_por_autor=20` libros por autor) y encontró que
 explica <½ del subgrupo puntual. Acá se mira el tope total: la fuente
 recorre los autores del usuario de más leído a menos leído y corta al

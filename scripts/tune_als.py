@@ -3,7 +3,7 @@
 Uso: uv run python scripts/tune_als.py
 
 Corre dos estudios de optuna (maximizando NDCG@20 personalizado sobre el
-split temporal corregido, `n_val=1`/`seed=42`, ver `experiments/bitacora.md`):
+split temporal corregido, `n_val=1`/`seed=42`, ver `experiments/legacy/bitacora.md`):
 
 - ALS: busca `factors`, `regularization` y `alpha` (la fórmula de
   confianza `1 + alpha*rating`, ver `src/recsys/models/als.py`).
@@ -20,7 +20,7 @@ Recall@200 de cada uno como diagnóstico de cobertura (¿el modelo ubica
 al libro correcto en un candidato amplio, aunque no en el top-20?).
 
 Este script NO decide solo qué va a `submit.py` -- eso se define después
-de ver los resultados (ver experiments/bitacora.md).
+de ver los resultados (ver experiments/legacy/bitacora.md).
 """
 
 from __future__ import annotations

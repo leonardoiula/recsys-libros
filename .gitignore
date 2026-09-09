@@ -16,3 +16,10 @@ outputs/
 # Caché de contexto del ranker (preparar_pipeline_cacheado, ver ranker.py) --
 # se regenera solo, no tiene sentido versionarlo
 data/cache/
+
+# Subproyecto comics (ver comics/CLAUDE.md) -- misma lógica: la BD scrapeada, el
+# cache de HTML crudo y las tapas descargadas se regeneran corriendo el scraper,
+# no tiene sentido versionarlos (y las tapas son imágenes con copyright de terceros)
+comics/data/raw/comics.db
+comics/data/cache/
+comics/static/covers/

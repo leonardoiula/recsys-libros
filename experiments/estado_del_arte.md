@@ -198,10 +198,24 @@ recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
   sabe poco; sacarlos = sobreajuste a patrones de usuario rico, peor generalización.
   Misma lección que `recomendar_hibrido`. Revertido; queda
   `scripts/diagnostico_historial_ranker.py`.
+- **Features relativas dentro del usuario / cascade** (`score_als_pct_usuario`,
+  `score_coleido_reciente_pct_usuario` = percentil del score entre los candidatos del
+  mismo usuario; `n_candidatos_usuario` = tamaño del campo) — el paso barato del ángulo
+  "cascade / re-rank en dos pasos". Paired test seed=42: **todas juntas −0,09 σ (plano
+  total)**, cada una sola entre −1,44 σ y +0,26 σ (ruido). Sin patrón por decil de
+  popularidad. Cierra también el cascade completo: si las features relativas/listwise que
+  un cascade explotaría no dan señal en el modelo de una etapa, dos `LGBMRanker`s no lo
+  cambian. LightGBM no está perdiéndose esta clase de señal. Revertido.
 
 ---
 
-## Problema abierto: la forma de U por popularidad del objetivo
+## La forma de U por popularidad del objetivo (cerrada como techo estructural)
+
+**Estado (2026-09-09): dada por cerrada.** 7 ángulos, ninguno la mueve — ver el detalle
+más abajo. El diagnóstico apunta a que no es un problema de features/representación:
+LightGBM no está ignorando señal disponible, y hay un componente aleatorio irreducible.
+Retomarla solo tendría sentido con una fuente de datos genuinamente nueva (metadata de
+serie/saga), que es un mini-proyecto de payoff incierto.
 
 De los usuarios cuyo objetivo **sí está entre los candidatos** (~4760, recall 0.535), el
 reranker lo mete al top-20 solo el **~43%** de las veces. Y la relación entre popularidad
@@ -228,13 +242,15 @@ además un componente **irreducible**: para un heavy user que lee amplio, "cuál
 próximo libro" tiene decenas de respuestas igual de válidas, y la franja media es donde
 esa incertidumbre es máxima.
 
-Atacada desde: cobertura de candidatos, BM25 en ALS, presupuesto de autor, features de
-corroboración, supervisión más densa del reranker (`n_val_ranker=3`, −10,8 σ) —
-**ninguna la mueve**. El diagnóstico apunta a **"falta señal"** para esa franja, no a "el
-modelo la ignora". Ángulos sin probar: un modelo/tratamiento separado para la franja
-media; una señal genuinamente nueva (metadata de serie/autor). Probablemente es un techo
-estructural de este approach (2 etapas + LightGBM sobre estas features) sumado a
-incertidumbre irreducible.
+**7 ángulos, ninguno la mueve** (detalle en "Qué se probó y NO funcionó"): (1) cobertura
+de candidatos, (2) BM25 en ALS, (3) presupuesto de autor, (4) features de corroboración
+(`n_fuentes_candidato`, −1,42 σ), (5) supervisión más densa (`n_val_ranker=3`, −10,8 σ),
+(6) filtrar el entrenamiento por historial (`min_hist`, monótono negativo hasta −11,9 σ),
+(7) features relativas dentro del usuario / cascade (−0,09 σ, plano). Los que tocan el
+entrenamiento salen fuerte negativos; los que agregan features salen ruido. **No es un
+problema de representación de features** — LightGBM no está ignorando señal disponible.
+Sumado a la incertidumbre irreducible de la franja media, se toma como **techo
+estructural** de este approach (2 etapas + LightGBM sobre estas features + este dataset).
 
 Herramientas de diagnóstico: `scripts/diagnostico_posicion_popularidad.py`,
 `scripts/diagnostico_franja_media.py`, `scripts/diagnostico_cap_autor.py` (apuntadas al
@@ -253,8 +269,9 @@ modelo de producción, `n_por_fuente_autor=500`).
 - `uv run python scripts/recall_candidatos.py` — recall del set + posición del objetivo.
 - `scripts/comparar_features_pareado.py` / `comparar_generadores_pareado.py` — test pareado
   (editar `FEATURES_A`/`FEATURES_B` o `FUENTES_A`/`FUENTES_B`).
-- Familias `diagnostico_*.py` (forma de U, franja media, presupuesto de autor),
-  `screen_*.py` (barridos de presupuesto/BM25), `probe_*.py`.
+- Familias `diagnostico_*.py` (posición/popularidad del objetivo, franja media,
+  presupuesto de autor, historial de entrenamiento del ranker), `screen_*.py` (barridos
+  de presupuesto/BM25), `probe_*.py`.
 
 **Cache de contexto**: `preparar_pipeline_cacheado` guarda el contexto en `data/cache/`
 (~3 GB c/u, gitignored). La clave = `seed` + `n_por_fuente*` + hash de los bytes de

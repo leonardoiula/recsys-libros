@@ -206,6 +206,11 @@ recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
   popularidad. Cierra también el cascade completo: si las features relativas/listwise que
   un cascade explotaría no dan señal en el modelo de una etapa, dos `LGBMRanker`s no lo
   cambian. LightGBM no está perdiéndose esta clase de señal. Revertido.
+- **Metadata de serie/saga derivada de los títulos** (`scripts/eda_series.py`) — falla por
+  **cobertura**, no por mecanismo: solo el 2,0% de los libros con interacción tiene un
+  patrón de serie limpio, y de los 8904 test targets solo el **0,8%** es "el siguiente de
+  una saga que el usuario viene leyendo". Techo de ganancia ~+0,0005 en Kaggle. No se
+  implementó el parser.
 
 ---
 
@@ -282,6 +287,9 @@ modelo de producción, `n_por_fuente_autor=500`).
 
 ## Dónde mirar más detalle
 
+- **`experiments/estrategias.md`** — análisis de estrategias de mayor calibre para superar
+  el plateau (ventana rodante de entrenamiento, retrieval aprendido, ensamble, rating
+  predicho, retrieval por grafo), con recomendación priorizada.
 - **`experiments/legacy/`** — historia congelada al 2026-09-07: `bitacora.md` (narrativa
   ronda por ronda), `decisiones.md` (tabla numerada #1–26 + investigación abierta del
   límite del reranking), `modelo_actual.md` (técnico + análisis "¿cambiar de paradigma?").

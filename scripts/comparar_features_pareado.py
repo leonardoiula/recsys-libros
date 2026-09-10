@@ -50,21 +50,16 @@ from recsys.models import ranker as R
 
 K = 20
 N_POR_FUENTE = 150
+N_POR_FUENTE_AUTOR = 500  # config de produccion -- el episodio de rating enseño que a nfadef el pareado engaña
 SEED = 42
 N_BOOTSTRAP = 2000
 
-# Comparación activa: las 39 features actuales (incluye las 4 variantes
-# "recencia-ponderadas" de autor/editorial/co-lectura/resumen, ver
-# `_pesos_por_recencia` en ranker.py) vs. esas mismas 39 sin esas 4 --
-# para confirmar con rigor si priorizar lo que el usuario leyó hace poco
-# aporta señal real, antes de correr el CV de 3 seeds o pensar en Kaggle.
+# Comparación activa: las 40 features vs esas mismas sin `score_difusion_candidato`
+# (difusión multi-hop K=2 sobre el grafo de co-lectura podado -- estrategia 5
+# de estrategias.md). Aísla si "cercanía en cadena" agrega señal
+# discriminativa sobre `score_coleido` (1 hop).
 FEATURES_A = R.FEATURES
-FEATURES_EXCLUIR_EN_B = [
-    "n_libros_autor_leidos_reciente",
-    "n_libros_editorial_leidos_reciente",
-    "score_coleido_reciente",
-    "sim_resumen_historial_reciente",
-]
+FEATURES_EXCLUIR_EN_B = ["score_difusion_candidato"]
 FEATURES_B = [f for f in R.FEATURES if f not in FEATURES_EXCLUIR_EN_B]
 
 
@@ -74,7 +69,10 @@ def main() -> None:
     lectores = load_lectores()
 
     t0 = time.time()
-    ctx = R.preparar_pipeline_cacheado(interacciones, libros, lectores, SEED, n_por_fuente=N_POR_FUENTE, k=K)
+    ctx = R.preparar_pipeline_cacheado(
+        interacciones, libros, lectores, SEED,
+        n_por_fuente=N_POR_FUENTE, n_por_fuente_autor=N_POR_FUENTE_AUTOR, k=K,
+    )
     print(f"contexto listo en {time.time()-t0:.0f}s", flush=True)
 
     ndcg_a = R.ndcg_por_usuario(ctx, FEATURES_A)

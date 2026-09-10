@@ -74,6 +74,7 @@ def _features_auxiliares_vacias() -> dict:
         "score_por_libro_por_genero_lector": {},
         "afinidad_genero_macro_por_genero_lector": {},
         "nacimiento_por_lector": {},
+        "cooc_difusion": None,
     }
 
 
@@ -475,6 +476,45 @@ def test_generar_candidatos_incluye_score_coleido_reciente():
     assert fila_c["score_coleido"] == pytest.approx(5.0 + 2.0)  # sin ponderar: cooc[a,c]+cooc[b,c]
     # score_coleido_reciente(u1, c) = 0.1*cooc[a,c] + 0.9*cooc[b,c] = 0.1*5 + 0.9*2
     assert fila_c["score_coleido_reciente"] == pytest.approx(0.1 * 5 + 0.9 * 2)
+
+
+def test_generar_candidatos_score_difusion_alcanza_a_2_hops():
+    # grafo a--b--c (a co-leido con b, b con c; a NO con c). z aislado.
+    # u1 leyo solo "a": la difusion debe alcanzar "c" (2 hops via b) y NO "z".
+    import recsys.models.ranker as R
+
+    modelo = _ModeloALSFalso({0: ([2, 3], [0.9, 0.5])})  # ALS propone "c","z"
+    matriz = np.array([[1.0, 0, 0, 0]])  # u1 leyo "a"
+    cooc_difusion = sp.csr_matrix(
+        np.array([[0, 1.0, 0, 0], [0.5, 0, 0.5, 0], [0, 1.0, 0, 0], [0, 0, 0, 0]])
+    )  # row-stochastic: row a->b, row b->{a,c}, row c->b, row z aislado
+    aux = {
+        **_features_auxiliares_vacias(),
+        "cooc_difusion": cooc_difusion,
+        "columna_por_libro": {"a": 0, "b": 1, "c": 2, "z": 3},
+    }
+
+    candidatos = generar_candidatos_con_features(
+        usuarios=["u1"],
+        modelo_als=modelo,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario={"u1": 0},
+        libros_por_columna=["a", "b", "c", "z"],
+        stats_popularidad=_stats_popularidad(["c", "z"], [5.0, 5.0]),
+        stats_por_genero={},
+        genero_por_usuario={},
+        libros_leidos={},
+        n_interacciones_por_usuario={},
+        features_auxiliares=aux,
+        n_por_fuente=150,
+    )
+
+    fila_c = candidatos[candidatos["id_libro"] == "c"].iloc[0]
+    fila_z = candidatos[candidatos["id_libro"] == "z"].iloc[0]
+    # c: alcanzado en el hop 2 (a->b->c). masa = alpha^2 * 0.5  (+ hops pares mas lejanos)
+    esperado_c = R.ALPHA_DIFUSION**2 * 0.5
+    assert fila_c["score_difusion_candidato"] == pytest.approx(esperado_c, rel=1e-6)
+    assert fila_z["score_difusion_candidato"] == 0.0  # desconectado
 
 
 def test_generar_candidatos_incluye_sim_resumen_historial():

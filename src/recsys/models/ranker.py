@@ -96,6 +96,7 @@ FEATURES = [
     "n_libros_editorial_leidos_reciente",
     "score_coleido_reciente",
     "sim_resumen_historial_reciente",
+    "score_difusion_candidato",
 ]
 
 FUENTES_CANDIDATOS = frozenset({"als", "popularidad", "genero", "autor", "resumen", "coleido"})
@@ -109,6 +110,21 @@ MIN_DF_TFIDF = 2
 MAX_DF_TFIDF = 0.8
 
 SENTINEL_DIAS_DESCONOCIDO = 99999
+
+# Difusión multi-hop sobre el grafo de co-lectura (estrategia 5 de
+# `experiments/estrategias.md`): `score_coleido` es co-lectura a 1 hop
+# (`X @ cooc`); `score_difusion_candidato` propaga `K_DIFUSION` hops sobre
+# `cooc` podada (aristas con < `MIN_COREAD_PPR` usuarios) y normalizada por
+# fila, con decaimiento `ALPHA_DIFUSION**t` por hop -- reweightea la señal
+# colaborativa por cercanía en cadena, distinto del conteo crudo de 1 hop.
+# Poda FUERTE (>=8 co-lectores): el grafo crudo tiene 73M aristas y a 1 hop
+# ya alcanza el 43% del catálogo -- sin podar, la difusión solo difumina y
+# cuesta ~74s/1000 usuarios (prohibitivo). `>=8` deja 2,1% de las aristas
+# (asociaciones con evidencia real, no coincidencias de 1-2 personas),
+# ~3,5s/1000 usuarios.
+MIN_COREAD_PPR = 8
+K_DIFUSION = 2
+ALPHA_DIFUSION = 0.85
 
 CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "cache"
 """Directorio default de `preparar_pipeline_cacheado` -- no se commitea (ver
@@ -414,6 +430,9 @@ def calcular_features_auxiliares(
       usuario, relativa a la fecha más reciente de todo `interacciones`.
     - `cooc` / `columna_por_libro`: matriz ítem×ítem de co-lectura y el
       índice para consultarla -- ver `_calcular_cooccurrencia`.
+    - `cooc_difusion`: `cooc` podada (aristas de < `MIN_COREAD_PPR` usuarios)
+      y row-stochastic, para la difusión multi-hop `score_difusion_candidato`
+      (`generar_candidatos_con_features`) -- ver `MIN_COREAD_PPR`/`K_DIFUSION`.
     - `tfidf_norm` / `fila_por_libro_texto` / `perfil_usuario_norm`:
       similitud de texto entre historial y candidato -- ver
       `_calcular_perfil_texto`.
@@ -546,6 +565,15 @@ def calcular_features_auxiliares(
     )
 
     cooc, columna_por_libro = _calcular_cooccurrencia(matriz_usuario_libro, libros_por_columna)
+
+    # Grafo de co-lectura podado (aristas de < MIN_COREAD_PPR usuarios = ruido)
+    # y row-stochastic (D^-1 . cooc), para la difusión multi-hop
+    # `score_difusion_candidato` -- ver `MIN_COREAD_PPR`/`K_DIFUSION`.
+    cooc_podada = cooc.multiply(cooc >= MIN_COREAD_PPR).tocsr()
+    grados = np.asarray(cooc_podada.sum(axis=1)).ravel()
+    inv_grados = np.divide(1.0, grados, out=np.zeros_like(grados, dtype=np.float64), where=grados > 0)
+    cooc_difusion = (sp.diags(inv_grados) @ cooc_podada).tocsr()
+
     perfil_texto = _calcular_perfil_texto(interacciones, libros, fila_por_usuario, pesos_recencia)
 
     # Matriz usuario x libro "reciente" (mismo shape/índice que
@@ -614,6 +642,7 @@ def calcular_features_auxiliares(
         "n_generos_distintos_por_usuario": n_generos_distintos_por_usuario,
         "dias_desde_ultima_interaccion_por_usuario": dias_desde_ultima_interaccion_por_usuario,
         "cooc": cooc,
+        "cooc_difusion": cooc_difusion,
         "columna_por_libro": columna_por_libro,
         "matriz_recencia": matriz_recencia,
         "genero_macro_por_libro": genero_macro_por_libro,
@@ -752,6 +781,7 @@ def generar_candidatos_con_features(
     dias_desde_ultima_interaccion_por_usuario = features_auxiliares["dias_desde_ultima_interaccion_por_usuario"]
     cooc = features_auxiliares.get("cooc")
     columna_por_libro = features_auxiliares.get("columna_por_libro", {})
+    cooc_difusion = features_auxiliares.get("cooc_difusion")
     matriz_recencia = features_auxiliares.get("matriz_recencia")
     tfidf_norm = features_auxiliares.get("tfidf_norm")
     fila_por_libro_texto = features_auxiliares.get("fila_por_libro_texto", {})
@@ -813,6 +843,24 @@ def generar_candidatos_con_features(
         co_scores_batch = (X_batch @ cooc).tocsr()
         for id_lector, fila_row in zip(usuarios_con_als, co_scores_batch):
             co_scores_por_usuario[id_lector] = dict(zip(fila_row.indices, fila_row.data))
+
+    # Difusión multi-hop sobre `cooc_difusion` (podada + row-stochastic, ver
+    # `MIN_COREAD_PPR`): `acc[u,j] = Σ_{t=1}^{K_DIFUSION} α^t (Hᵗ)[u,j]` con
+    # `H⁰` = historial binario del usuario. Alcanza libros conectados al
+    # historial por una cadena de 2-3 co-lecturas que el 1-hop
+    # (`score_coleido`) no ve. `H` se densifica en el hop 2-3 (dense
+    # n_lote x n_libros, se libera al terminar el lote).
+    difusion_por_usuario: dict = {}
+    if usuarios_con_als and cooc_difusion is not None:
+        H = sp.csr_matrix(matriz_usuario_libro[filas] > 0, dtype=np.float64)
+        acc = None
+        for t in range(1, K_DIFUSION + 1):
+            H = H @ cooc_difusion
+            term = (ALPHA_DIFUSION ** t) * H
+            acc = term if acc is None else acc + term
+        acc = acc.tocsr()
+        for id_lector, fila_row in zip(usuarios_con_als, acc):
+            difusion_por_usuario[id_lector] = dict(zip(fila_row.indices, fila_row.data))
 
     # Variante "reciente" de co-lectura (ver `matriz_recencia` en
     # `calcular_features_auxiliares`): mismo `cooc` poblacional, pero el
@@ -943,6 +991,7 @@ def generar_candidatos_con_features(
         # para usuarios con mucho historial) cuando solo hace falta el
         # top-n_por_fuente.
         co_scores_usuario = co_scores_por_usuario.get(id_lector, {})
+        difusion_usuario = difusion_por_usuario.get(id_lector, {})
         if "coleido" in fuentes_activas:
             top_coleido = heapq.nlargest(n_por_fuente, co_scores_usuario.items(), key=lambda kv: kv[1])
             for rank_coleido, (columna_candidato, score) in enumerate(top_coleido):
@@ -1024,6 +1073,7 @@ def generar_candidatos_con_features(
             score_coleido_reciente = (
                 co_scores_recencia_usuario.get(columna_candidato, 0.0) if columna_candidato is not None else 0.0
             )
+            score_difusion = difusion_usuario.get(columna_candidato, 0.0) if columna_candidato is not None else 0.0
 
             genero_macro_candidato = genero_macro_por_libro.get(id_libro)
             popularidad_genero_macro = score_por_libro_genero_macro.get(id_libro, 0.0)
@@ -1086,6 +1136,7 @@ def generar_candidatos_con_features(
                 "n_libros_editorial_leidos_reciente": float(n_editorial_leidos_reciente),
                 "score_coleido_reciente": float(score_coleido_reciente),
                 "sim_resumen_historial_reciente": float(sim_resumen_reciente_por_candidato.get(id_libro, 0.0)),
+                "score_difusion_candidato": float(score_difusion),
             }
             for columna, valor in fila.items():
                 columnas_datos[columna].append(valor)

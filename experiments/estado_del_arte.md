@@ -5,7 +5,8 @@ y no funcionó, y el problema abierto. El razonamiento completo ronda por ronda 
 **congelado** en `experiments/legacy/` (ver `experiments/legacy/README.md`); no hace falta
 leerlo para retomar contexto.
 
-**Récord: 0.06753 de NDCG@20 en Kaggle** (2026-09-10, ventana rodante multi-corte `n_cortes=5`).
+**Récord: 0.06824 de NDCG@20 en Kaggle** (2026-09-10, ventana rodante `n_cortes=5` +
+feature de difusión 2-hop en el grafo de co-lectura).
 
 ---
 
@@ -90,7 +91,7 @@ de la unión (~10 GB medido para `n_cortes=7`, ~16 GB de sistema libre), no ~2×
 `pd.concat` de todas las particiones (que hacía OOM). `RANKER_LOG_RSS=1` imprime el RSS en
 cada corte.
 
-### 39 features
+### 40 features
 
 - **Score / rank / en de cada una de las 6 fuentes** (18).
 - **Volumen**: interacciones del libro y del usuario (2).
@@ -99,8 +100,14 @@ cada corte.
 - **Año**: diferencia contra el año promedio que lee el usuario (1).
 - **Diversidad / recencia del usuario**: géneros distintos leídos; días desde la última
   interacción (2).
-- **Co-lectura / resumen**: `score_coleido` (co-ocurrencia); `sim_resumen_historial`
+- **Co-lectura / resumen**: `score_coleido` (co-ocurrencia a 1 hop); `sim_resumen_historial`
   (TF-IDF coseno contra el perfil) (2).
+- **Difusión 2-hop** (`score_difusion_candidato`, 1): `Σ_{t=1}^{2} 0,85ᵗ (Hᵗ)[u,j]` sobre el
+  grafo de co-lectura **podado** (aristas de <8 co-lectores fuera — el grafo crudo tiene 73M
+  aristas y a 1 hop ya toca el 43% del catálogo) y row-normalizado. Reweightea la señal
+  colaborativa por cercanía en cadena. Pareado seed 42 (`nfa=500`) +1,17 σ; Kaggle 0.06753 →
+  **0.06824** (chico, confianza modesta — ambos instrumentos coinciden en dirección). Ver
+  `MIN_COREAD_PPR`/`K_DIFUSION` en `ranker.py`.
 - **Macro-género**: popularidad del candidato pooleada a 10 familias de dominio + qué tan
   seguido lee el usuario ese macro-género (2).
 - **Señales cruzadas lector↔libro**: popularidad segmentada por género *declarado* del
@@ -135,7 +142,8 @@ candidatos va **por lotes de usuarios** (`TAMANO_LOTE_USUARIOS`, evita `ArrayMem
 | Ranker, +BM25 en la matriz de ALS (`K1=10, B=0.75`) | 0.132313 ± 0.00219 (`n_por_fuente=150`) | 0.06182 |
 | Ranker, +presupuesto de autor (`n_por_fuente_autor=500`) | 0.134117 ± 0.00096 | 0.06316 |
 | Ranker, +ventana rodante multi-corte (`n_cortes=3`) | 0.136561 ± 0.00178 | 0.06667 |
-| Ranker, ventana rodante `n_cortes=5` | 0.137854 ± 0.00148 | **0.06753** |
+| Ranker, ventana rodante `n_cortes=5` | 0.137854 ± 0.00148 | 0.06753 |
+| Ranker, +feature de difusión 2-hop (`score_difusion_candidato`) | pareado seed 42 +1,17 σ | **0.06824** |
 
 Nota: los NDCG locales solo son comparables **dentro** del mismo `n_por_fuente` (la fila de
 recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
@@ -336,7 +344,7 @@ modelo de producción, `n_por_fuente_autor=500`).
 
 ## Cómo correr
 
-- `uv run pytest` — suite (122 tests).
+- `uv run pytest` — suite (124 tests).
 - `uv run python -m src.recsys.submit --model ranker` — genera el CSV en
   `outputs/submissions/` (usa `--tag` para un sufijo descriptivo; los nombres nunca se
   pisan). Entrena con ventana rodante `n_cortes=5` (`N_CORTES_RANKER_SUBMISSION`).

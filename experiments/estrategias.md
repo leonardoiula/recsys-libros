@@ -1,4 +1,4 @@
-# Estrategias para superar el plateau (récord actual 0.06753)
+# Estrategias para superar el plateau (récord actual 0.06824)
 
 Análisis para decidir el próximo paso grande. Escrito con el modelo en el plateau 0.06316
 (6 fuentes → `LGBMRanker`, 7 ángulos contra la forma de U fallados, generación de
@@ -132,14 +132,25 @@ muchos libros que ratearía 7–9), y a `nfa=500` se vuelve un casi-constante qu
 ranker lejos de la señal buena. Ver el detalle en `estado_del_arte.md`. Como **fuente de
 candidatos** tiene aún menos chance — las 7ª fuentes fallaron 3 veces.
 
-### 5. Retrieval por grafo (personalized PageRank / random walks)  ·  esfuerzo bajo-medio, riesgo bajo
+### 5. Retrieval por grafo (difusión multi-hop)  ·  APLICADA como feature (récord 0.06824)
 
-Co-lectura es ítem-ítem a **1 hop**. Personalized PageRank desde el historial del usuario
-sobre el grafo bipartito usuario-ítem (o el grafo ítem-ítem) propaga 2-3 hops y alcanza
-libros relevantes que las fuentes de 1 hop no ven — sobre todo la franja media (libros de
-nicho conectados por una cadena). Iteración de potencia sobre matriz dispersa, barato.
+**Estado (2026-09-10): probada como feature, adoptada con confianza modesta.**
+`score_difusion_candidato` (`ranker.py`, `MIN_COREAD_PPR`/`K_DIFUSION`/`ALPHA_DIFUSION`):
+`Σ_{t=1}^{2} 0,85ᵗ (Hᵗ)[u,j]` sobre el grafo de co-lectura **podado** y row-normalizado, con
+`H⁰` = historial binario del usuario. Es la extensión 2-hop de `score_coleido` (1 hop).
 
-- **Magnitud esperada**: bump de recall, posiblemente significativo.
+- **La poda importa**: el grafo crudo tiene 73M aristas y a 1 hop ya alcanza el 43% del
+  catálogo — sin podar, la difusión solo difumina y cuesta ~74s/1000 usuarios. Podando a
+  `≥8` co-lectores (2,1% de las aristas, asociaciones con evidencia real) baja a
+  ~3,5s/1000. Con `K=2` en vez de 3.
+- **Feature-only** (candidatos de las 6 fuentes, sin cambiar el pool). Test pareado seed 42
+  `nfa=500`: **+1,17 σ, P=0.88** (borderline, por debajo del ~1,5 σ que suele pedirse).
+  Kaggle 0.06753 → **0.06824** (+0,0007, chico — dentro del SE de una submission por sí
+  solo, pero **misma dirección** que el pareado, a diferencia de seed-bag). Se adopta por
+  eso; confianza modesta.
+- **Como fuente de candidatos** (top-N por `score_difusion`): no probado; las 7ª fuentes
+  fallaron 3 veces, pero acá la señal *sí* mostró algo, así que queda como posible
+  siguiente paso.
 
 ### 6. Modelo secuencial revisado (masked-item / BERT4Rec)  ·  esfuerzo alto, riesgo medio-alto
 
@@ -166,14 +177,18 @@ capturan solo groseramente. Encoder tipo BERT4Rec → fuente de candidatos + una
    Kaggle.** El cuello de botella es el recall *distinguible*, no el crudo.
 4. ~~estrategia 4 — rating predicho (feature)~~ **probada: +1,67 σ a `nfadef` pero −0,35 σ
    a `nfa=500`, revertida.** "Le pondría ≥8" no discrimina *cuál* next-read elige el usuario.
-5. **Lo que queda**: estrategia 5 (grafo / PPR) — pero la lección de la 2 acota: sube recall,
-   la pregunta es si es *distinguible*. Y estrategia 6 (BERT4Rec / masked-item) como fuente
-   de candidatos + feature de "interés actual" — mayor ceiling, mayor costo/riesgo (461k
-   interacciones es poca data para un transformer). **A esta altura casi todo lo barato se
-   probó**; lo que queda son builds grandes de payoff incierto.
+5. ~~estrategia 5 — difusión 2-hop (feature)~~ **APLICADA: pareado +1,17 σ, Kaggle 0.06753 →
+   0.06824.** Efecto chico, confianza modesta, pero ambos instrumentos coinciden. Pendiente:
+   probarla como **fuente de candidatos** (top-N por `score_difusion`) — es la única señal
+   nueva que mostró algo.
+6. **Lo que queda**: estrategia 6 (BERT4Rec / masked-item) como fuente de candidatos +
+   feature de "interés actual" — mayor ceiling, mayor costo/riesgo (461k interacciones es
+   poca data para un transformer). **Casi todo lo barato se probó**; lo demás son builds
+   grandes de payoff incierto.
 
 **Observación meta**: el proyecto había sobre-invertido en el *set de features* del reranker
 (y esta ronda lo confirmó: LMF-feature, corroboración, relativas, rating predicho — todas
-ruido). El único lever que rindió fue **más señal de entrenamiento** (estrategia 1). Sigue
-abierto pero sin idea barata clara: (b) calidad del pool de candidatos (retrieval que traiga
+ruido; solo la difusión 2-hop movió algo, y apenas). El lever que rindió de verdad fue
+**más señal de entrenamiento** (estrategia 1). Sigue abierto sin idea barata clara: (b)
+calidad del pool de candidatos (retrieval que traiga
 candidatos *distinguibles*, no solo más recall) y (c) ensamblado de familias distintas.

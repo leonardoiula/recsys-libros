@@ -30,7 +30,7 @@ from recsys.models.popularity_segmentada import (
 from recsys.models.ranker import (
     BM25_ALS,
     N_BAG_RANKER,
-    _dataset_de_un_corte,
+    _ensamblar_dataset_ventana_rodante,
     armar_dataset_entrenamiento_por_lotes,
     calcular_features_auxiliares,
     fit_ranker,
@@ -113,11 +113,12 @@ N_CORTES_RANKER_SUBMISSION = 5
 del corte `x_{m-1}` por usuario, se agregan `x_{m-2}`…`x_{m-5}`, cada uno
 con su propia etapa 1 fiteada solo sobre historial anterior al corte.
 
-Progresión CV 3 seeds (positivo en los 3 en cada salto): `n_cortes=1`
-0.134117 → `=3` 0.136561 (Kaggle 0.06316 → 0.06667) → `=5` 0.137854
-(+0,95% sobre 3, desvío más bajo, sin regresión por bucket de actividad).
-`=5` fue posible tras cambiar el loop a concat incremental (antes hacía
-OOM: ~26M filas de unión + las N particiones vivas a la vez).
+Progresión CV 3 seeds (positivo en los 3 en cada salto) / Kaggle:
+`n_cortes=1` 0.134117 → `=3` 0.136561 (0.06316 → 0.06667) → `=5` 0.137854
+(0.06753). Sin regresión por bucket de actividad -- los buckets casuales
+mejoran a más profundidad. El armado de la unión vuelca cada corte a
+disco (`ranker._ensamblar_dataset_ventana_rodante`), así que subir
+`n_cortes` no hace OOM; el CV seguía subiendo en `=5`.
 
 Se fija acá y no en la constante de `ranker.py` (que queda en 1) porque
 `preparar_pipeline_cacheado` con `n_cortes>1` es N× más lento y pesa
@@ -214,36 +215,24 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
         n_por_autor=N_POR_AUTOR_RANKER,
     )
 
-    # Ventana rodante (ver N_CORTES_RANKER_SUBMISSION): cortes j=2..N. Mismo
-    # loop que `ranker.preparar_pipeline` -- `cur` empieza en train_candidatos
-    # y cada iteración pela una interacción más, así el corte j entrena con
-    # etiqueta x_{m-j} y una etapa 1 fiteada solo sobre x_1..x_{m-1-j}.
-    # Concat INCREMENTAL + `del X_j` en cada vuelta (no acumular las N
-    # particiones) -- ver el comentario en `ranker.preparar_pipeline`.
-    if N_CORTES_RANKER_SUBMISSION > 1:
-        cur = train_candidatos
-        for j in range(2, N_CORTES_RANKER_SUBMISSION + 1):
-            cur, labels_j = split_train_val(cur, n_val=1, seed=42 + 1000 + j)
-            if labels_j.empty:
-                break
-            X_j, y_j, group_j = _dataset_de_un_corte(
-                cur, labels_j, libros, lectores,
-                N_POR_FUENTE_RANKER, N_POR_AUTOR_RANKER, N_POR_FUENTE_AUTOR_RANKER, None,
-            )
-            X = pd.concat([X, X_j], ignore_index=True)
-            y = pd.concat([y, y_j], ignore_index=True)
-            group = group + group_j
-            del X_j, y_j
-            gc.collect()
+    # La etapa 1 del corte principal ya no hace falta: cada corte de la
+    # ventana rodante fitea la suya, y la etapa 1 de los candidatos
+    # finales se refitea sobre `interacciones` completo más abajo.
+    # Liberarla ANTES de la ventana rodante saca ~1,5 GB del pico del
+    # ensamblado (mismo criterio que `refit_para_test=True`).
+    del args_candidatos, features_auxiliares, matriz, modelo_als, fila_por_usuario, libros_por_columna
+    gc.collect()
+
+    # Ventana rodante (ver N_CORTES_RANKER_SUBMISSION y
+    # `ranker._ensamblar_dataset_ventana_rodante`): suma los cortes
+    # j=2..N al (X, y, group) del corte principal, volcando cada
+    # partición a disco para acotar el pico de memoria.
+    X, y, group = _ensamblar_dataset_ventana_rodante(
+        X, y, group, train_candidatos, libros, lectores, 42, N_CORTES_RANKER_SUBMISSION,
+        N_POR_FUENTE_RANKER, N_POR_AUTOR_RANKER, N_POR_FUENTE_AUTOR_RANKER, None,
+    )
 
     modelo_ranker = fit_ranker(X, y, group, n_bag=N_BAG_RANKER)
-
-    # La etapa 1 fiteada sobre train_candidatos ya no hace falta -- se
-    # refitea sobre todos los datos más abajo. Liberarla antes evita
-    # tener las dos versiones (cada una con su propia matriz de
-    # co-ocurrencia/TF-IDF) vivas a la vez (mismo ajuste que
-    # `ranker.preparar_pipeline` con `refit_para_test=True`).
-    del args_candidatos, features_auxiliares, matriz, modelo_als, fila_por_usuario, libros_por_columna
     gc.collect()
 
     # Refit de etapa 1 sobre TODOS los datos (no solo train_candidatos)

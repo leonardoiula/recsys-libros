@@ -75,15 +75,20 @@ por grupo**. Los usuarios con poco historial se caen solos de los cortes profund
 
 Progresión CV 3 seeds (positivo en los 3 en cada salto) / Kaggle: `n_cortes=1` 0.134117 →
 `=3` **0.136561** (Kaggle 0.06316 → **0.06667**) → `=5` **0.137854** (Kaggle → **0.06753**).
-Sin regresión por bucket de actividad — de hecho los buckets casuales (2-4, 5-9) *mejoran* a
-más profundidad (más diversidad de profundidad-de-historial en el entrenamiento → mejor
-generalización a usuarios de historial corto). `n_interacciones_usuario` sube en importancia.
+`=7` **0.137783** — **plano** (media baja un pelo, positivo solo en 1/3): el CV plateaua en
+profundidad 5, es la config de producción. Sin regresión por bucket de actividad — de hecho
+los buckets casuales (2-4, 5-9) *mejoran* a más profundidad (más diversidad de
+profundidad-de-historial en el entrenamiento → mejor generalización a usuarios de historial
+corto). `n_interacciones_usuario` sube en importancia.
 
 Distinto del `n_val_ranker` fallido (ver más abajo): aquel metía N positivos en un grupo y
 compartía una etapa 1. `N_CORTES_RANKER` queda en **1** de default (dev rápido: un contexto
 `n_cortes=5` pesa ~11 GB y tarda ~34 min/seed); `submit.py` y `evaluate_ranker.py` usan 5.
-El loop hace **concat incremental** (`X = pd.concat([X, X_j])` + `del X_j` por vuelta) — la
-versión que acumulaba las N particiones para un concat final hacía OOM.
+La unión de cortes se arma volcando cada `X_j` a un `.npy` temporal y leyéndolos con `mmap`
+a un array `float32` preasignado (`_ensamblar_dataset_ventana_rodante`) — pico ~1× el tamaño
+de la unión (~10 GB medido para `n_cortes=7`, ~16 GB de sistema libre), no ~2× como un
+`pd.concat` de todas las particiones (que hacía OOM). `RANKER_LOG_RSS=1` imprime el RSS en
+cada corte.
 
 ### 39 features
 

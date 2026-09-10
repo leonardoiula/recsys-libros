@@ -28,7 +28,10 @@ from __future__ import annotations
 import gc
 import hashlib
 import heapq
+import os
 import pickle
+import shutil
+import tempfile
 from pathlib import Path
 
 import lightgbm as lgb
@@ -181,7 +184,15 @@ etiquetas viejas + `train_candidatos` global achicado en N.
 Costo: ~N× el armado del dataset de entrenamiento por seed (etapa 1 +
 candidatos por corte; los cortes profundos tienen menos usuarios, así que
 < N× en la práctica). El entrenamiento de LightGBM y el test-side no
-cambian. Default 1 hasta confirmar en Kaggle. Ver
+cambian. La unión se arma volcando cada corte a disco (ver
+`_ensamblar_dataset_ventana_rodante`), así que el pico de memoria es ~1×
+el tamaño de la unión (no ~2×) -- `n_cortes` alto no hace OOM.
+
+Récord en Kaggle: `n_cortes=1` 0.06316 → `=3` 0.06667 → `=5` 0.06753
+(CV 3 seeds positivo en los 3 en cada salto). `N_CORTES_RANKER` queda en
+**1** de default (dev rápido; un contexto `n_cortes=5` pesa ~11 GB y
+tarda ~34 min/seed); `submit.py` y `evaluate_ranker.py` usan
+`N_CORTES_RANKER_SUBMISSION` / `N_CORTES`. Ver
 `scripts/comparar_cortes_pareado.py`."""
 
 
@@ -1417,6 +1428,106 @@ def _dataset_de_un_corte(
     )
 
 
+def _log_rss(etiqueta: str) -> None:
+    """Imprime el RSS del proceso si `RANKER_LOG_RSS` está seteado -- para
+    perfilar el pico de memoria del armado de la ventana rodante
+    (`n_cortes` alto) sin instrumentar a mano cada corrida."""
+    if not os.environ.get("RANKER_LOG_RSS"):
+        return
+    try:
+        import psutil  # dependencia opcional; solo para este diagnóstico
+
+        vm = psutil.virtual_memory()
+        rss = psutil.Process().memory_info().rss / 2**30
+        print(f"[rss] {etiqueta}: proceso {rss:.1f} GB | sistema libre {vm.available / 2**30:.1f} GB", flush=True)
+    except Exception:
+        pass
+
+
+def _ensamblar_dataset_ventana_rodante(
+    X: pd.DataFrame,
+    y: pd.Series,
+    group: list,
+    train_candidatos: pd.DataFrame,
+    libros: pd.DataFrame,
+    lectores: pd.DataFrame,
+    seed: int,
+    n_cortes: int,
+    n_por_fuente: int,
+    n_por_autor: int,
+    n_por_fuente_autor: int | None,
+    fuentes_activas: frozenset[str] | None,
+) -> tuple[pd.DataFrame, pd.Series, list]:
+    """Suma al `(X, y, group)` del corte principal (etiqueta `x_{m-1}`) los
+    cortes `j = 2..n_cortes` de la ventana rodante (ver `N_CORTES_RANKER`).
+    `cur` empieza en `train_candidatos` y cada vuelta pela una interacción:
+    el corte `j` entrena con etiqueta `x_{m-j}` y una etapa 1 fiteada solo
+    sobre `x_1..x_{m-1-j}`.
+
+    Memoria: cada `X_j` (y el `X` principal) se vuelca a un `.npy`
+    temporal y se libera de RAM **ni bien se arma**; al final se leen con
+    `mmap` y se copian a un único array `float32` **F-contiguo**
+    preasignado, del que la `DataFrame` final toma vistas sin copiar. Así
+    el pico es ~1× el tamaño de la unión (~5 GB con `n_cortes=7`), no ~2×
+    como tendría un `pd.concat` de todas las particiones a la vez -- eso
+    hacía OOM a partir de `n_cortes=5`. Todas las columnas quedan en
+    `float32` (la fila sintética de etiqueta faltante de
+    `armar_dataset_entrenamiento` mete ints que si no promoverían algunas
+    a `float64`).
+    """
+    if n_cortes <= 1:
+        return X, y, group
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)  # el .npy temporal va acá (misma unidad que el cache, gitignored)
+    tmp = Path(tempfile.mkdtemp(prefix="cortes_", dir=CACHE_DIR))
+    try:
+        spill: list[tuple[Path, int]] = []
+        y_partes = [y]
+
+        def _volcar(x_df: pd.DataFrame) -> None:
+            arr = x_df[FEATURES].to_numpy(dtype=np.float32)
+            ruta = tmp / f"cut{len(spill):02d}.npy"
+            np.save(ruta, arr)
+            spill.append((ruta, len(arr)))
+
+        _volcar(X)
+        del X
+        gc.collect()
+        _log_rss("corte 1 volcado")
+
+        cur = train_candidatos
+        for j in range(2, n_cortes + 1):
+            cur, labels_j = split_train_val(cur, n_val=1, seed=seed + 1000 + j)
+            if labels_j.empty:
+                break
+            X_j, y_j, group_j = _dataset_de_un_corte(
+                cur, labels_j, libros, lectores,
+                n_por_fuente, n_por_autor, n_por_fuente_autor, fuentes_activas,
+            )
+            _volcar(X_j)
+            del X_j
+            y_partes.append(y_j)
+            group = group + group_j
+            gc.collect()
+            _log_rss(f"corte {j} volcado ({spill[-1][1]} filas)")
+
+        total = sum(n for _, n in spill)
+        out = np.empty((total, len(FEATURES)), dtype=np.float32, order="F")
+        pos = 0
+        for ruta, n in spill:
+            src = np.load(ruta, mmap_mode="r")
+            out[pos : pos + n] = src
+            del src
+            ruta.unlink()
+            pos += n
+        X = pd.DataFrame({feat: out[:, i] for i, feat in enumerate(FEATURES)}, copy=False)
+        y = pd.concat(y_partes, ignore_index=True)
+        _log_rss(f"union ensamblada ({total} filas, {len(spill)} cortes)")
+        return X, y, group
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def preparar_pipeline(
     interacciones: pd.DataFrame,
     libros: pd.DataFrame,
@@ -1524,33 +1635,14 @@ def preparar_pipeline(
         n_por_autor=n_por_autor,
     )
 
-    # Ventana rodante (ver N_CORTES_RANKER): cortes j=2..n_cortes. `cur`
-    # empieza en train_candidatos (x_1..x_{m-2}) y cada iteración pela una
-    # interacción más -> corte j entrena con etiqueta x_{m-j} y etapa 1
-    # fiteada solo sobre x_1..x_{m-1-j}.
-    #
-    # `X` se hace crecer con un concat INCREMENTAL (no se acumula una lista
-    # de N frames para concatenarla al final): con `n_cortes=5` la unión
-    # llega a ~26M filas y mantener las 5 particiones vivas a la vez ADEMÁS
-    # del resultado del concat hacía OOM (~2x el tamaño final + la etapa 1
-    # transitoria del corte en curso). Concatenar y `del X_j` en cada
-    # vuelta deja como mucho `X` + un `X_j` vivos, y libera cada partición
-    # apenas se absorbe -- menos pico y menos fragmentación.
-    if n_cortes > 1:
-        cur = train_candidatos
-        for j in range(2, n_cortes + 1):
-            cur, labels_j = split_train_val(cur, n_val=1, seed=seed + 1000 + j)
-            if labels_j.empty:
-                break
-            X_j, y_j, group_j = _dataset_de_un_corte(
-                cur, labels_j, libros, lectores,
-                n_por_fuente, n_por_autor, n_por_fuente_autor, fuentes_activas,
-            )
-            X = pd.concat([X, X_j], ignore_index=True)
-            y = pd.concat([y, y_j], ignore_index=True)
-            group = group + group_j
-            del X_j, y_j
-            gc.collect()
+    # Ventana rodante (ver N_CORTES_RANKER y `_ensamblar_dataset_ventana_rodante`):
+    # con n_cortes>1 se suman los cortes j=2..n_cortes al (X, y, group) del
+    # corte principal, volcando cada partición a disco para no tener toda
+    # la unión + sus copias vivas a la vez.
+    X, y, group = _ensamblar_dataset_ventana_rodante(
+        X, y, group, train_candidatos, libros, lectores, seed, n_cortes,
+        n_por_fuente, n_por_autor, n_por_fuente_autor, fuentes_activas,
+    )
 
     libros_leidos_hasta_ranker = libros_leidos_por_usuario(train_candidatos_full)
     usuarios_test = test_final["id_lector"].unique().tolist()

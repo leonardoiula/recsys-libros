@@ -18,8 +18,8 @@ se probaron y no rindieron.
    usuario lee **y le gusta**", no cualquier lectura.
 4. ~~El `LGBMRanker` entrena con **7.932 queries** (1 por usuario). Es muy poca supervisión
    para 39 features.~~ **Saldado por la estrategia 1**: la ventana rodante multi-corte lo
-   subió a ~21.900 queries con `n_cortes=3` (récord 0.06667) y más con `=5` (0.06753). El
-   CV sigue subiendo con la profundidad — queda margen para probar `n_cortes` > 5.
+   subió a ~37M filas / ~37k queries con `n_cortes=5` (récord 0.06753). El CV plateaua ahí
+   (`n_cortes=7` plano) — la supervisión ya no es el cuello de botella.
 
 ## Ya descartado (no re-intentar)
 
@@ -56,11 +56,16 @@ cortes profundos. `test_final` y el recall del set de candidatos no cambian.
   y compartía **una sola** etapa 1 (fiteada sobre datos recientes) para todos los cortes →
   leakage en las etiquetas viejas + `train_candidatos` global achicado. La versión buena da
   a cada corte su etapa 1 correcta.
-- **OOM resuelto**: el loop hace concat **incremental** (`X = pd.concat([X, X_j])` + `del
-  X_j` por vuelta); la versión que acumulaba las N particiones para un concat final hacía
-  OOM a `n_cortes=5` (~26M filas de unión + N particiones vivas + etapa 1 transitoria).
-- **Pendiente**: probar `n_cortes` > 5 (el CV sigue subiendo; cada contexto ~11 GB y ~34
-  min/seed). Y un `n_cortes` adaptativo por usuario (más cortes para los de historial largo).
+- **Memoria**: el armado de la unión vuelca cada corte a un `.npy` temporal y lo libera de
+  RAM ni bien lo arma (`_ensamblar_dataset_ventana_rodante`); al final se leen con `mmap` a
+  un único array `float32` F-contiguo del que la `DataFrame` toma vistas sin copiar. Pico
+  ~1× el tamaño de la unión (~10 GB medido para `n_cortes=7`, con ~16 GB de sistema libre),
+  no ~2× como un `pd.concat` de todas las particiones. `n_cortes` alto ya no hace OOM.
+- **Profundidad óptima ≈ 5**: `n_cortes=7` CV 3 seeds 0.137783 vs 0.137854 de `=5` — **plano**
+  (media baja un pelo, positivo solo en 1/3). Los cortes `x_{m-6}`/`x_{m-7}` están más lejos
+  del target real y vienen de un slice cada vez más angosto de usuarios de historial largo.
+  Producción queda en **`n_cortes=5`**. Un `n_cortes` adaptativo por usuario (más cortes solo
+  para los de historial largo) queda como idea, pero el plateau sugiere poco upside.
 
 ### 2. Retrieval aprendido (dual-encoder / two-tower como fuente de candidatos)  ·  esfuerzo alto, riesgo medio
 
@@ -147,11 +152,11 @@ capturan solo groseramente. Encoder tipo BERT4Rec → fuente de candidatos + una
 
 ## Recomendación
 
-1. ~~estrategia 1 — ventana rodante~~ **APLICADA: Kaggle 0.06316 → 0.06667 (`n_cortes=3`) →
-   0.06753 (`=5`), récord.** El reranker estaba hambriento (7.932 queries); darle supervisión
-   next-item con cada corte a su estado de etapa 1 correcto fue el lever estructural más
-   grande. El CV sube monótono con la profundidad — **probar `n_cortes` > 5** es lo primero
-   pendiente (cada contexto ~11 GB, ~34 min/seed; el OOM ya se resolvió con concat incremental).
+1. ~~estrategia 1 — ventana rodante~~ **APLICADA y agotada: Kaggle 0.06316 → 0.06667
+   (`n_cortes=3`) → 0.06753 (`=5`), récord.** El reranker estaba hambriento (7.932 queries);
+   darle supervisión next-item con cada corte a su estado de etapa 1 correcto fue el lever
+   estructural más grande. El CV plateaua en profundidad 5 (`=7` plano). El OOM se resolvió
+   volcando cada corte a disco. **No queda upside claro en esta dirección.**
 2. ~~estrategia 3 — seed-bag~~ **probada: +1,64% CV, plano en Kaggle.** Código opt-in.
 3. ~~estrategia 2 — retrieval aprendido (vía barata)~~ **probada: recall +0,02, regresión en
    Kaggle.** El cuello de botella es el recall *distinguible*, no el crudo.

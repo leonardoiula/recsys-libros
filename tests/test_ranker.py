@@ -1302,6 +1302,52 @@ def test_refit_para_test_true_incluye_libros_de_train_ranker():
     assert "f" in ctx["ranking_global"]
 
 
+def test_n_cortes_1_es_identico_al_default():
+    interacciones = _interacciones_para_refit()
+    libros, lectores = _libros_lectores_para_refit()
+
+    ctx_default = preparar_pipeline(interacciones, libros, lectores, seed=1, n_por_fuente=10)
+    ctx_1 = preparar_pipeline(interacciones, libros, lectores, seed=1, n_por_fuente=10, n_cortes=1)
+
+    assert ctx_1["group"] == ctx_default["group"]
+    pd.testing.assert_frame_equal(ctx_1["X"], ctx_default["X"])
+    pd.testing.assert_series_equal(ctx_1["y"], ctx_default["y"])
+
+
+def test_n_cortes_mayor_agrega_grupos_sin_tocar_el_test_side():
+    interacciones = _interacciones_para_refit()
+    libros, lectores = _libros_lectores_para_refit()
+
+    ctx_1 = preparar_pipeline(interacciones, libros, lectores, seed=1, n_por_fuente=10, n_cortes=1)
+    ctx_2 = preparar_pipeline(interacciones, libros, lectores, seed=1, n_por_fuente=10, n_cortes=2)
+
+    # mas grupos de entrenamiento y mas positivos (u1 aporta tambien el corte x_{m-2})
+    assert len(ctx_2["group"]) > len(ctx_1["group"])
+    assert int(ctx_2["y"].sum()) > int(ctx_1["y"].sum())
+
+    # el test-side no depende de n_cortes
+    assert ctx_2["usuarios_test"] == ctx_1["usuarios_test"]
+    pd.testing.assert_frame_equal(
+        ctx_2["candidatos_test"].reset_index(drop=True),
+        ctx_1["candidatos_test"].reset_index(drop=True),
+    )
+    assert ctx_2["ndcg_als"] == ctx_1["ndcg_als"]
+
+
+def test_n_cortes_cada_grupo_tiene_exactamente_un_positivo():
+    interacciones = _interacciones_para_refit()
+    libros, lectores = _libros_lectores_para_refit()
+
+    ctx = preparar_pipeline(interacciones, libros, lectores, seed=1, n_por_fuente=10, n_cortes=3)
+
+    y = ctx["y"].to_numpy()
+    inicio = 0
+    for tam in ctx["group"]:
+        assert y[inicio : inicio + tam].sum() == 1  # 1 positivo por grupo (la propiedad que n_val_ranker rompia)
+        inicio += tam
+    assert inicio == len(y)
+
+
 def test_recall_de_candidatos():
     ctx = {
         "candidatos_test": pd.DataFrame(

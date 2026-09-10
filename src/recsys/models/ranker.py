@@ -158,6 +158,32 @@ no se pone de default porque haría cada `evaluar_con_params` /
 `ndcg_por_usuario` 5× más lento en el día a día. Ver
 `scripts/comparar_ensamble_pareado.py` y `experiments/estrategias.md`."""
 
+N_CORTES_RANKER = 1
+"""Cantidad de cortes temporales por usuario para entrenar el `LGBMRanker`
+(ventana rodante, estrategia 1 de `experiments/estrategias.md`). `1` =
+comportamiento histórico byte-idéntico (1 ejemplo `historial → próximo`
+por usuario, la interacción `x_{m-1}` con features sobre `x_1..x_{m-2}`).
+
+Con `>1`, `preparar_pipeline` agrega, para cada usuario, ejemplos de los
+cortes más recientes: el corte `j` predice `x_{m-j}` con una etapa 1
+(ALS/popularidad/género/co-lectura/TF-IDF) fiteada **solo sobre
+`x_1..x_{m-1-j}`** y features calculadas sobre ese mismo historial -- cada
+corte es una tarea next-item genuina, sin leakage, con **1 solo positivo
+por grupo de ranking**. Los usuarios con poco historial se caen solos de
+los cortes profundos (`split_train_val` nunca vacía el train). `test_final`
+y todo el test-side NO cambian.
+
+Distinto del experimento `n_val_ranker` (revertido, −10 σ): aquel metía N
+positivos "del pasado reciente" en UN grupo y compartía una sola etapa 1
+(fiteada sobre datos recientes) para todos los cortes -- leakage en las
+etiquetas viejas + `train_candidatos` global achicado en N.
+
+Costo: ~N× el armado del dataset de entrenamiento por seed (etapa 1 +
+candidatos por corte; los cortes profundos tienen menos usuarios, así que
+< N× en la práctica). El entrenamiento de LightGBM y el test-side no
+cambian. Default 1 hasta confirmar en Kaggle. Ver
+`scripts/comparar_cortes_pareado.py`."""
+
 
 def _pesos_por_recencia(interacciones: pd.DataFrame) -> pd.Series:
     """Peso de descuento por posición en el historial de cada usuario:
@@ -1343,6 +1369,54 @@ def recomendar_por_usuario_por_lotes(
     return recomendaciones
 
 
+def _dataset_de_un_corte(
+    train_cand: pd.DataFrame,
+    labels_df: pd.DataFrame,
+    libros: pd.DataFrame,
+    lectores: pd.DataFrame,
+    n_por_fuente: int,
+    n_por_autor: int,
+    n_por_fuente_autor: int | None,
+    fuentes_activas: frozenset[str] | None,
+) -> tuple[pd.DataFrame, pd.Series, list]:
+    """Fitea la etapa 1 sobre `train_cand` y arma `(X, y, group)` para las
+    etiquetas de `labels_df` -- un corte de la ventana rodante (ver
+    `N_CORTES_RANKER`). Mismas llamadas que el corte principal de
+    `preparar_pipeline`, empaquetadas para reusarlas por corte. Los
+    artefactos de etapa 1 (matriz de ALS, co-ocurrencia, TF-IDF) son
+    locales y se liberan al volver."""
+    stats_popularidad = fit_popularity(train_cand)
+    stats_por_genero = fit_popularity_por_genero(train_cand, libros)
+    genero_por_usuario = genero_preferido_por_usuario(train_cand, libros)
+    modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train_cand, bm25=BM25_ALS)
+    features_auxiliares = calcular_features_auxiliares(
+        train_cand, libros, lectores, matriz, fila_por_usuario, libros_por_columna
+    )
+    args_candidatos = dict(
+        modelo_als=modelo_als,
+        matriz_usuario_libro=matriz,
+        fila_por_usuario=fila_por_usuario,
+        libros_por_columna=libros_por_columna,
+        stats_popularidad=stats_popularidad,
+        stats_por_genero=stats_por_genero,
+        genero_por_usuario=genero_por_usuario,
+        n_interacciones_por_usuario=train_cand.groupby("id_lector").size().to_dict(),
+        features_auxiliares=features_auxiliares,
+        n_por_fuente=n_por_fuente,
+        n_por_autor=n_por_autor,
+        n_por_fuente_autor=n_por_fuente_autor,
+        fuentes_activas=fuentes_activas,
+    )
+    return armar_dataset_entrenamiento_por_lotes(
+        labels_df["id_lector"].unique().tolist(),
+        labels_df[["id_lector", "id_libro"]],
+        libros_leidos_por_usuario(train_cand),
+        args_candidatos,
+        n_por_fuente=n_por_fuente,
+        n_por_autor=n_por_autor,
+    )
+
+
 def preparar_pipeline(
     interacciones: pd.DataFrame,
     libros: pd.DataFrame,
@@ -1354,6 +1428,7 @@ def preparar_pipeline(
     k: int = 20,
     fuentes_activas: frozenset[str] | None = None,
     refit_para_test: bool = False,
+    n_cortes: int = N_CORTES_RANKER,
 ) -> dict:
     """Arma todo lo que necesita el pipeline del ranker para un seed,
     **excepto** entrenar el `LGBMRanker` en sí -- eso queda para
@@ -1400,6 +1475,14 @@ def preparar_pipeline(
     (`submit.py`, que no tiene un `test_final` que reservar y podría
     refitear sobre absolutamente todos los datos antes de generar la
     entrega real). Ver `scripts/comparar_refit_etapa1.py`.
+
+    `n_cortes` (default `N_CORTES_RANKER`, ver esa constante): con `>1`,
+    ventana rodante -- al `(X, y, group)` del corte principal (etiqueta
+    `x_{m-1}`) se le suman los cortes `j = 2..n_cortes` (etiqueta `x_{m-j}`,
+    con su propia etapa 1 fiteada solo sobre `x_1..x_{m-1-j}`). Cada corte
+    aporta 1 positivo por grupo. `n_cortes=1` = comportamiento histórico
+    byte-idéntico. Solo afecta el `(X, y, group)` de entrenamiento: el
+    test-side (`candidatos_test`/`ndcg_als`/`refit_para_test`) no cambia.
     """
     train_candidatos_full, test_final = split_train_val(interacciones, n_val=1, seed=seed)
     train_candidatos, train_ranker = split_train_val(train_candidatos_full, n_val=1, seed=seed + 1000)
@@ -1440,6 +1523,31 @@ def preparar_pipeline(
         n_por_fuente=n_por_fuente,
         n_por_autor=n_por_autor,
     )
+
+    # Ventana rodante (ver N_CORTES_RANKER): cortes j=2..n_cortes. `cur`
+    # empieza en train_candidatos (x_1..x_{m-2}) y cada iteración pela una
+    # interacción más -> corte j entrena con etiqueta x_{m-j} y etapa 1
+    # fiteada solo sobre x_1..x_{m-1-j}. Un solo concat al final (la
+    # fragmentación por muchos concats chicos es el problema, no la RAM).
+    if n_cortes > 1:
+        X_partes, y_partes = [X], [y]
+        cur = train_candidatos
+        for j in range(2, n_cortes + 1):
+            cur, labels_j = split_train_val(cur, n_val=1, seed=seed + 1000 + j)
+            if labels_j.empty:
+                break
+            X_j, y_j, group_j = _dataset_de_un_corte(
+                cur, labels_j, libros, lectores,
+                n_por_fuente, n_por_autor, n_por_fuente_autor, fuentes_activas,
+            )
+            X_partes.append(X_j)
+            y_partes.append(y_j)
+            group = group + group_j
+            gc.collect()
+        X = pd.concat(X_partes, ignore_index=True)
+        y = pd.concat(y_partes, ignore_index=True)
+        del X_partes, y_partes
+        gc.collect()
 
     libros_leidos_hasta_ranker = libros_leidos_por_usuario(train_candidatos_full)
     usuarios_test = test_final["id_lector"].unique().tolist()
@@ -1565,6 +1673,7 @@ def evaluar_pipeline(
     n_por_fuente_autor: int | None = None,
     lgbm_params: dict | None = None,
     k: int = 20,
+    n_cortes: int = N_CORTES_RANKER,
 ) -> dict:
     """Corre el pipeline completo del ranker de dos etapas para un seed:
     split de **tres niveles** (`train_candidatos`/`train_ranker`/`test_final`,
@@ -1595,7 +1704,7 @@ def evaluar_pipeline(
     contexto = preparar_pipeline(
         interacciones, libros, lectores, seed,
         n_por_fuente=n_por_fuente, n_por_autor=n_por_autor,
-        n_por_fuente_autor=n_por_fuente_autor, k=k,
+        n_por_fuente_autor=n_por_fuente_autor, k=k, n_cortes=n_cortes,
     )
     return evaluar_con_params(contexto, lgbm_params)
 
@@ -1611,6 +1720,7 @@ def preparar_pipeline_cacheado(
     k: int = 20,
     fuentes_activas: frozenset[str] | None = None,
     refit_para_test: bool = False,
+    n_cortes: int = N_CORTES_RANKER,
     cache_dir: str | Path | None = None,
 ) -> dict:
     """Wrapper de `preparar_pipeline` que cachea el contexto resultante a
@@ -1622,7 +1732,7 @@ def preparar_pipeline_cacheado(
     `scripts/comparar_generadores_pareado.py`.
 
     La clave de caché combina `seed`/`n_por_fuente`/`n_por_autor`/
-    `n_por_fuente_autor`/`k`/`fuentes_activas` con un hash corto del
+    `n_por_fuente_autor`/`k`/`fuentes_activas`/`n_cortes` con un hash corto del
     *código fuente* de este módulo
     (`ranker.py`): cualquier cambio en la lógica de generación de
     candidatos/features invalida el caché automáticamente, sin depender de
@@ -1649,9 +1759,10 @@ def preparar_pipeline_cacheado(
     fuentes_label = "todas" if fuentes_activas is None else "+".join(sorted(fuentes_activas))
     refit_label = "refit" if refit_para_test else "sinrefit"
     nfa_label = "def" if n_por_fuente_autor is None else str(n_por_fuente_autor)
+    cortes_label = "" if n_cortes == 1 else f"_cortes{n_cortes}"
     nombre = (
         f"ranker_ctx_seed{seed}_nf{n_por_fuente}_na{n_por_autor}_nfa{nfa_label}_k{k}"
-        f"_fuentes-{fuentes_label}_{refit_label}"
+        f"_fuentes-{fuentes_label}_{refit_label}{cortes_label}"
         f"_n{len(interacciones)}-{len(libros)}-{len(lectores)}"
         f"_{hash_codigo}.pkl"
     )
@@ -1672,6 +1783,7 @@ def preparar_pipeline_cacheado(
         k=k,
         fuentes_activas=fuentes_activas,
         refit_para_test=refit_para_test,
+        n_cortes=n_cortes,
     )
     with open(ruta, "wb") as f:
         pickle.dump(contexto, f, protocol=pickle.HIGHEST_PROTOCOL)

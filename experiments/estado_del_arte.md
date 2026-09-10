@@ -1,309 +1,248 @@
 # Estado del arte — recsys-libros
 
-Punto de entrada para retomar el proyecto: el modelo actual, cómo se valida, qué se probó
-y no funcionó, y el problema abierto. El razonamiento completo ronda por ronda está
-**congelado** en `experiments/legacy/` (ver `experiments/legacy/README.md`); no hace falta
-leerlo para retomar contexto.
+Punto de entrada para retomar el proyecto: cómo funciona el sistema, cómo se valida, qué se
+probó y no funcionó, y el problema abierto. Es lo único que hace falta leer para retomar
+contexto. El razonamiento ronda por ronda hasta 2026-09-07 está **congelado** en
+`experiments/legacy/` (ver `experiments/legacy/README.md`); lo posterior está en
+`experiments/log.csv` (una fila por corrida).
 
-**Récord: 0.06824 de NDCG@20 en Kaggle** (2026-09-10, ventana rodante `n_cortes=5` +
-feature de difusión 2-hop en el grafo de co-lectura).
+**Récord: 0.06824 de NDCG@20 en Kaggle** (2026-09-10).
 
 ---
 
 ## El problema
 
 Competencia de Kaggle: recomendar libros, evaluada con **NDCG@20**. Para cada lector se
-entrega un ranking de 20 libros (el orden importa) y se puntúa según dónde cae el libro
-que ese lector efectivamente leyó después.
+entrega un ranking de 20 libros (el orden importa) y se puntúa según dónde cae el libro que
+ese lector efectivamente leyó después.
 
 Datos (`data/raw/data.db`): 461.408 interacciones, 10.673 lectores con actividad, 128.743
-libros (48.137 con ≥1 interacción). Matriz usuario×libro **99.91% vacía**. Rating explícito
+libros (48.137 con ≥1 interacción). Matriz usuario×libro **99,91 % vacía**. Rating explícito
 1–10. Metadata de libro: autor, editorial, año, género, resumen.
 
-El set de evaluación de Kaggle (`data/raw/ejemplo.csv`) son **~832 usuarios sesgados a
-alta actividad** (mediana ~95 interacciones vs ~9 en la evaluación local).
+El set de evaluación de Kaggle (`data/raw/ejemplo.csv`) son **~832 usuarios sesgados a alta
+actividad** (mediana ~95 interacciones vs ~9 en la evaluación local). Span mediano
+primera→última interacción por usuario: **26 días** (la mayoría lee en una ráfaga y se va).
 
 ---
 
-## El modelo actual (`--model ranker`, `src/recsys/models/ranker.py` + `submit.py`)
+## Cómo funciona el sistema (`--model ranker`)
 
-Dos etapas: **6 fuentes de candidatos → `LGBMRanker`**.
+Ranker de **dos etapas**: 6 fuentes heurísticas generan un pool de candidatos por usuario,
+un `LGBMRanker` los reordena.
 
-### Etapa 1: 6 fuentes de candidatos
+```
+ interacciones --> split leave-one-out TEMPORAL por usuario  (x_1 .. x_m, m = la ultima)
+                        |
+        +---------------+--------------------------------+
+        v               v                                v
+  train_candidatos   train_ranker                     test_final
+  (fitea etapa 1)    (etiqueta = x_{m-1};             (x_m; solo local,
+        |             ventana rodante: tambien          para NDCG@20)
+        |             x_{m-2} .. x_{m-5})
+        v
+  +--------------------- ETAPA 1 - candidatos ----------------------+
+  |  1  ALS (implicit, factors=128, BM25 en la matriz)             |
+  |  2  popularidad global (score bayesiano)                       |
+  |  3  popularidad del genero preferido del usuario               |   union dedup.
+  |  4  libros de autores ya leidos (<=20/autor, <=500 total)      +--> ~780 cand/usuario
+  |  5  similitud de resumen (TF-IDF perfil <-> catalogo)          |   marcados por fuente
+  |  6  co-lectura item-item kNN  (X . cooc, 1 hop)                |
+  +--------------------------------+------------------------------+
+                                   |  + 40 features por (usuario, candidato)
+                                   v
+  +--------------------- ETAPA 2 - LGBMRanker ---------------------+
+  |  objective=lambdarank, 200 arboles, hiperparametros conserv.  |
+  |  entrenado con ~37M filas  (ventana rodante n_cortes=5)       +--> top-20 por usuario
+  +--------------------------------------------------------------+
 
-Cada fuente propone hasta `n_por_fuente=150` libros sin leer por usuario, **salvo autor**
-(`n_por_fuente_autor=500`). Unión deduplicada: media **~780** candidatos/usuario (hasta
-~1140 para heavy users). Cada candidato queda marcado con qué fuente(s) lo propusieron.
+ Produccion (submit.py): la etapa 1 se REFITEA sobre `interacciones` completo antes de
+ generar los candidatos finales (usa la ultima interaccion de cada usuario como senal).
+ Cold-start (usuario sin fila en ALS) -> fallback a popularidad global.
+```
+
+### Etapa 1 — las 6 fuentes
+
+Cada una propone hasta `n_por_fuente=150` libros sin leer, **salvo la 4 (autor)** que tiene
+presupuesto propio `n_por_fuente_autor=500`. Las fuentes 1/5/6 solo alcanzan usuarios con
+fila en la matriz de ALS.
 
 | # | Fuente | Qué propone |
 |---|---|---|
-| 1 | **ALS** | top-150 de `implicit` (filtrado colaborativo) |
-| 2 | **Popularidad global** | top-150 del ranking bayesiano global |
+| 1 | **ALS** | top-150 de `implicit` |
+| 2 | **Popularidad global** | top-150 del ranking bayesiano |
 | 3 | **Popularidad por género preferido** | top-150 dentro del género que más leyó el usuario |
-| 4 | **Autores ya leídos** | hasta 20 libros por autor que el usuario ya leyó (por popularidad global), hasta **500** en total por usuario |
-| 5 | **Similitud de resumen** | top-150 del catálogo con resumen más parecido al perfil TF-IDF del usuario — no depende de popularidad |
-| 6 | **Co-lectura ítem-ítem (kNN)** | top-150 por score de co-lectura contra el historial (matriz `X.T @ X`) |
+| 4 | **Autores ya leídos** | ≤20 libros/autor leído (por popularidad global), ≤500 total/usuario |
+| 5 | **Similitud de resumen** | top-150 del catálogo con `resumen` más parecido al perfil TF-IDF |
+| 6 | **Co-lectura ítem-ítem (kNN)** | top-150 por `X·cooc` (`cooc[i,j]` = # usuarios que leyeron `i` y `j`) |
 
-Limitación: las fuentes 1/5/6 solo alcanzan usuarios con fila en la matriz de ALS; sin
-historial → fallback a popularidad.
+**ALS** (`models/als.py`): `factors=128, reg=0.1, iters=20`, confianza = rating crudo
+(`alpha=None` — se probó tuneado y empeoró en Kaggle). **BM25 en la matriz**
+(`BM25_ALS=(10.0, 0.75)`): `bm25_weight` solo sobre la copia que va a `.fit()` — baja el
+peso de los power users (11,5 % de usuarios = 64 % de la señal) en la factorización sin
+tocar el filtro de ya-leídos ni `cooc`.
 
-### ALS (`models/als.py`)
+### Etapa 2 — LGBMRanker (`fit_ranker`)
 
-`implicit.als.AlternatingLeastSquares`, `factors=128, regularization=0.1, iterations=20`,
-`seed=42`. Confianza = **rating crudo** (`alpha=None`; se probó `1+alpha*rating` tuneado y
-empeoró en Kaggle).
+`objective="lambdarank"`, `num_leaves=31, learning_rate=0.05, n_estimators=200`.
+Hiperparámetros **conservadores a propósito** (optuna probado 3 veces, siempre ruido).
 
-**BM25 en la matriz** (`fit_als(..., bm25=(10.0, 0.75))`, constante `BM25_ALS` en
-`ranker.py`): `implicit.nearest_neighbours.bm25_weight` se aplica **solo a la copia que va
-a `modelo.fit()`** — la matriz que devuelve `fit_als` sigue con el rating crudo (así el
-filtro de ya-leídos y la co-ocurrencia ítem-ítem no cambian). Baja el peso de los power
-users (11,5% de usuarios = 64% de la señal) y de los libros muy leídos en la factorización.
+**Ventana rodante multi-corte** (`N_CORTES_RANKER_SUBMISSION=5`, `N_CORTES=5` en
+`evaluate_ranker.py`; `N_CORTES_RANKER=1` de default para el dev). Además del ejemplo
+`(historial → x_{m-1})` por usuario, se agregan los cortes `x_{m-2}…x_{m-5}`: **el corte `j`
+predice `x_{m-j}` con su propia etapa 1** fiteada solo sobre `x_1…x_{m-1-j}` y sus features
+sobre ese mismo historial — cada uno es un next-item genuino, sin leakage, **1 positivo por
+grupo**. ~2,8×–5× la supervisión (7.932 → ~37M filas). `test_final` y el recall del set de
+candidatos no cambian. El CV sube monótono hasta `n_cortes=5` y **plateaua ahí** (`=7`
+plano). Los buckets casuales (2-4, 5-9 interacciones) *mejoran* a más profundidad. Es el
+lever que más movió Kaggle (0.06316 → 0.06753). Detalle en `experiments/log.csv`.
 
-### Etapa 2: LightGBM (`models/ranker.py`, `fit_ranker`)
+La unión de los cortes se arma volcando cada `X_j` a un `.npy` temporal y leyéndolos con
+`mmap` a un array `float32` preasignado (`_ensamblar_dataset_ventana_rodante`) — pico ~1× el
+tamaño de la unión (~10 GB para `n_cortes=7`), no ~2× como un `pd.concat`.
 
-`LGBMRanker`, `objective="lambdarank"`, `num_leaves=31, learning_rate=0.05,
-n_estimators=200`, `random_state=42`. Hiperparámetros **conservadores a propósito**:
-optuna probado 3 veces (bases de features distintas), las 3 dentro del ruido.
+### 40 features (`experiments/features.md` = catálogo)
 
-**Entrenamiento con ventana rodante multi-corte** (`N_CORTES_RANKER` en `ranker.py`,
-`N_CORTES_RANKER_SUBMISSION = 5` en `submit.py` — estrategia 1 de `estrategias.md`, récord
-2026-09-10): además del ejemplo `(historial → x_{m-1})` por usuario, se agregan los cortes
-`x_{m-2}…x_{m-5}`. El corte `j` predice `x_{m-j}` con **su propia etapa 1**
-(ALS/popularidad/género/co-lectura/TF-IDF) fiteada solo sobre `x_1…x_{m-1-j}` y sus features
-sobre ese mismo historial — cada corte es un next-item genuino, sin leakage, **1 positivo
-por grupo**. Los usuarios con poco historial se caen solos de los cortes profundos.
-`test_final` y el recall del set de candidatos no cambian.
-
-Progresión CV 3 seeds (positivo en los 3 en cada salto) / Kaggle: `n_cortes=1` 0.134117 →
-`=3` **0.136561** (Kaggle 0.06316 → **0.06667**) → `=5` **0.137854** (Kaggle → **0.06753**).
-`=7` **0.137783** — **plano** (media baja un pelo, positivo solo en 1/3): el CV plateaua en
-profundidad 5, es la config de producción. Sin regresión por bucket de actividad — de hecho
-los buckets casuales (2-4, 5-9) *mejoran* a más profundidad (más diversidad de
-profundidad-de-historial en el entrenamiento → mejor generalización a usuarios de historial
-corto). `n_interacciones_usuario` sube en importancia.
-
-Distinto del `n_val_ranker` fallido (ver más abajo): aquel metía N positivos en un grupo y
-compartía una etapa 1. `N_CORTES_RANKER` queda en **1** de default (dev rápido: un contexto
-`n_cortes=5` pesa ~11 GB y tarda ~34 min/seed); `submit.py` y `evaluate_ranker.py` usan 5.
-La unión de cortes se arma volcando cada `X_j` a un `.npy` temporal y leyéndolos con `mmap`
-a un array `float32` preasignado (`_ensamblar_dataset_ventana_rodante`) — pico ~1× el tamaño
-de la unión (~10 GB medido para `n_cortes=7`, ~16 GB de sistema libre), no ~2× como un
-`pd.concat` de todas las particiones (que hacía OOM). `RANKER_LOG_RSS=1` imprime el RSS en
-cada corte.
-
-### 40 features
-
-- **Score / rank / en de cada una de las 6 fuentes** (18).
-- **Volumen**: interacciones del libro y del usuario (2).
-- **Autor / editorial**: ¿ya leyó a este autor/editorial?, cuántos libros; + tamaño del
-  catálogo de la editorial (propiedad del libro) (5).
-- **Año**: diferencia contra el año promedio que lee el usuario (1).
-- **Diversidad / recencia del usuario**: géneros distintos leídos; días desde la última
-  interacción (2).
-- **Co-lectura / resumen**: `score_coleido` (co-ocurrencia a 1 hop); `sim_resumen_historial`
-  (TF-IDF coseno contra el perfil) (2).
-- **Difusión 2-hop** (`score_difusion_candidato`, 1): `Σ_{t=1}^{2} 0,85ᵗ (Hᵗ)[u,j]` sobre el
-  grafo de co-lectura **podado** (aristas de <8 co-lectores fuera — el grafo crudo tiene 73M
-  aristas y a 1 hop ya toca el 43% del catálogo) y row-normalizado. Reweightea la señal
-  colaborativa por cercanía en cadena. Pareado seed 42 (`nfa=500`) +1,17 σ; Kaggle 0.06753 →
-  **0.06824** (chico, confianza modesta — ambos instrumentos coinciden en dirección). Ver
-  `MIN_COREAD_PPR`/`K_DIFUSION` en `ranker.py`.
-- **Macro-género**: popularidad del candidato pooleada a 10 familias de dominio + qué tan
-  seguido lee el usuario ese macro-género (2).
-- **Señales cruzadas lector↔libro**: popularidad segmentada por género *declarado* del
-  lector, afinidad de la cohorte por macro-género, edad del lector al publicarse el libro (3).
-- **Recencia-ponderadas** (4): variantes de autor/editorial/co-lectura/resumen que pesan
-  más lo que el usuario leyó hace poco (`peso = 1/log2(rank+2)`).
-
-Catálogo detallado: `experiments/features.md`.
-
-### refit de etapa 1 (`submit.py`)
-
-Para la submission real, ALS/popularidad/género/features auxiliares se **entrenan sobre
-`train_candidatos`** para entrenar el ranker (evita leakage de etiqueta), pero se
-**REFITEAN sobre `interacciones` completo** antes de generar los candidatos finales (usa la
-última interacción de cada usuario como señal, no solo para filtrar). La generación de
-candidatos va **por lotes de usuarios** (`TAMANO_LOTE_USUARIOS`, evita `ArrayMemoryError`).
+- **score / rank / en de las 6 fuentes** (18) · **volumen** (interacciones libro/usuario, 2)
+- **autor / editorial** (¿ya lo leyó?, cuántos, + tamaño del catálogo de la editorial, 5)
+- **año** (diferencia contra el promedio del usuario, 1) · **diversidad/recencia del usuario** (2)
+- **co-lectura / resumen**: `score_coleido` (1 hop), `sim_resumen_historial` (2)
+- **`score_difusion_candidato`** (1): difusión **2-hop** sobre `cooc` **podada** (aristas de
+  <8 co-lectores fuera — el grafo crudo tiene 73M aristas y a 1 hop ya toca el 43 % del
+  catálogo; sin podar solo difumina) y row-normalizada, `Σ_{t=1}^{2} 0,85ᵗ (Hᵗ)[u,j]`.
+  Reweightea la señal colaborativa por cercanía en cadena. Pareado +1,17 σ, Kaggle 0.06753 →
+  **0.06824** (chico, confianza modesta; ambos instrumentos coinciden en dirección). Ver
+  `MIN_COREAD_PPR`/`K_DIFUSION`.
+- **macro-género** (popularidad pooleada a 10 familias + frecuencia en el historial, 2)
+- **señales cruzadas lector↔libro** (popularidad por género declarado del lector, afinidad
+  de cohorte, edad al publicarse, 3)
+- **recencia-ponderadas** (4): variantes de autor/editorial/co-lectura/resumen que pesan más
+  lo leído hace poco.
 
 ---
 
 ## Récord y progresión
 
-| Modelo | NDCG@20 local | NDCG@20 Kaggle |
+| Modelo | NDCG@20 local | Kaggle |
 |---|---|---|
 | Popularidad global (bayesiana) | 0.006620 | 0.01024 |
 | Popularidad segmentada (género → franja → global) | 0.013719 | 0.01558 |
-| ALS (factors=128, reg=0.1, rating crudo) | 0.094406 ± 0.00136 (CV 3 seeds) | 0.03864 |
-| Ranker, 3 fuentes (26 features) | 0.109735 ± 0.00372 | 0.04831 |
-| Ranker, 4 fuentes (+autor ya leído, 29 feat) | 0.117495 ± 0.00256 | 0.05140 |
-| Ranker, 5 fuentes (+similitud de resumen, 32 feat) | 0.120547 ± 0.00267 | 0.05181 |
-| Ranker, 6 fuentes (+co-lectura kNN, 35 feat) | 0.121983 ± 0.00295 | 0.05262 |
-| Ranker, +recencia (4 feat) + refit de etapa 1 (39 feat) | 0.143336 ± 0.00290 (a `n_por_fuente=75`) | 0.06149 |
-| Ranker, +BM25 en la matriz de ALS (`K1=10, B=0.75`) | 0.132313 ± 0.00219 (`n_por_fuente=150`) | 0.06182 |
-| Ranker, +presupuesto de autor (`n_por_fuente_autor=500`) | 0.134117 ± 0.00096 | 0.06316 |
-| Ranker, +ventana rodante multi-corte (`n_cortes=3`) | 0.136561 ± 0.00178 | 0.06667 |
-| Ranker, ventana rodante `n_cortes=5` | 0.137854 ± 0.00148 | 0.06753 |
-| Ranker, +feature de difusión 2-hop (`score_difusion_candidato`) | pareado seed 42 +1,17 σ | **0.06824** |
+| ALS solo | 0.094406 ± 0.00136 | 0.03864 |
+| Ranker 3 fuentes | 0.109735 ± 0.00372 | 0.04831 |
+| Ranker 4 fuentes (+autor) | 0.117495 ± 0.00256 | 0.05140 |
+| Ranker 5 fuentes (+resumen) | 0.120547 ± 0.00267 | 0.05181 |
+| Ranker 6 fuentes (+co-lectura) | 0.121983 ± 0.00295 | 0.05262 |
+| +recencia (4 feat) + refit de etapa 1 | 0.143336 ± 0.00290 (nf=75) | 0.06149 |
+| +BM25 en la matriz de ALS | 0.132313 ± 0.00219 (nf=150) | 0.06182 |
+| +presupuesto de autor (`nfa=500`) | 0.134117 ± 0.00096 | 0.06316 |
+| +ventana rodante `n_cortes=3` | 0.136561 ± 0.00178 | 0.06667 |
+| ventana rodante `n_cortes=5` | 0.137854 ± 0.00148 | 0.06753 |
+| +`score_difusion_candidato` | pareado +1,17 σ | **0.06824** |
 
-Nota: los NDCG locales solo son comparables **dentro** del mismo `n_por_fuente` (la fila de
-recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
-
-`experiments/log.csv` tiene una fila por corrida con la nota completa.
+Los NDCG locales solo comparan **dentro** del mismo `n_por_fuente`.
 
 ---
 
-## Cómo se valida
+## Cómo se valida (en orden de confianza)
 
-- **Split leave-one-out TEMPORAL** (`split_train_val`, `n_val=1`): se retiene la
-  interacción *más reciente por fecha* de cada usuario. Un split aleatorio filtra futuro y
-  sobreestima ~2× (0.260 vs 0.123, mismo modelo).
-- **Split de 3 niveles para el ranker**: `train_candidatos` (fitea señales de etapa 1) /
-  `train_ranker` (etiquetas para el `LGBMRanker`) / `test_final` (hold-out para NDCG@20).
-  El tercer tramo solo existe en evaluación local.
-- **CV sobre 3 seeds (42, 7, 123)** — media *y* desvío, nunca un solo split
-  (`scripts/evaluate_ranker.py`). Un sweep de ALS sobre un split único mejoró el NDCG local
-  +11,5% y empeoró Kaggle −13,5%.
-- **Test pareado por usuario** (`scripts/comparar_features_pareado.py` /
-  `comparar_generadores_pareado.py`): compara dos configs sobre el **mismo contexto/seed** y
-  mide la diferencia de NDCG por usuario. **~5× más poder** que el desvío entre 3 seeds — es
-  el gatekeeper real. Varias mejoras "positivas en los 3 seeds" resultaron ruido con este test.
-- **`recall_de_candidatos`** (`scripts/recall_candidatos.py`): fracción de objetivos
-  presentes entre los candidatos = techo duro del reranker (**~0.535** hoy). Regla: **no
-  toda ganancia de recall se traduce en NDCG** — candidatos sin señal distinguible solo
-  hacen más difícil el ranking (pasó con `n_por_fuente=500`).
-- **Kaggle**: ~832 usuarios, la mayoría con NDCG=0; SE ≈ 0.0065 → una sola submission no
-  distingue configs que difieren <~0.01. Confiar en el CV local para lo fino; usar Kaggle
-  para confirmar dirección. Criterio para gastar una submission: positivo en los 3 seeds
-  (aunque no supere el desvío), mejor si además pasa el test pareado.
-- **NDCG ponderado por la actividad de `ejemplo.csv`** + **desglose por bucket de
-  actividad** (`evaluate_ranker.py`): diagnóstico de generalización ("¿ayuda a los heavy
-  users sin dañar a los casuales?"), no cambia decisiones. Reponderar no cambia el signo de
-  ninguna comparación.
+1. **Test pareado por usuario** (`comparar_features_pareado.py` / `comparar_generadores_pareado.py`
+   / `comparar_cortes_pareado.py`): dos configs sobre el **mismo contexto/seed**, diferencia
+   de NDCG por usuario. **~5× el poder** del desvío entre 3 seeds — el gatekeeper real.
+   Varias mejoras "positivas en los 3 seeds" resultaron ruido acá. **Medir a `nfa=500`**
+   (config de producción): a `nfadef` engaña (el episodio de rating dio +1,67 σ a `nfadef` y
+   −2,34 σ a `nfa=500`).
+2. **CV sobre 3 seeds (42, 7, 123)** — media *y* desvío (`evaluate_ranker.py`). Nunca un
+   solo split: un sweep de ALS sobre un split único mejoró el NDCG local +11,5 % y empeoró
+   Kaggle −13,5 %.
+3. **Kaggle**: ~832 usuarios, SE ≈ 0.0065 → una submission no distingue configs que difieren
+   <~0.01. Confiar en el pareado/CV para lo fino, Kaggle para confirmar **dirección**.
+   Criterio para gastar una submission: pareado positivo (aunque sea borderline). Casos
+   donde local y Kaggle **discreparon en dirección** = rechazar (seed-bag: pareado +1,77 σ,
+   Kaggle en contra).
+4. **`recall_de_candidatos`** (`recall_candidatos.py`): fracción de objetivos en el pool =
+   techo duro del reranker (**~0.535**). Regla dura: **subir recall no se traduce en NDCG**
+   si los candidatos nuevos no son *distinguibles* (pasó con `n_por_fuente=500`, LMF, 7ª
+   fuente usuario-usuario).
+5. **NDCG ponderado por actividad + bucket de actividad** (`evaluate_ranker.py`): diagnóstico
+   de generalización, no cambia decisiones.
+
+**Splits**: leave-one-out **temporal** (`split_train_val`, `n_val=1`) — un split aleatorio
+filtra futuro y sobreestima ~2×. Para el ranker, **3 niveles**: `train_candidatos` (fitea
+etapa 1) / `train_ranker` (etiquetas) / `test_final` (hold-out, solo local).
 
 ---
 
 ## Qué se probó y NO funcionó (para no repetirlo)
 
-- **Tunear LightGBM con optuna** — 3 veces, siempre dentro del ruido entre seeds.
-- **ALS tuneado con optuna** (`factors=256, reg=0.128, alpha=4.718`) — +11,5% local,
-  **peor** en Kaggle (0.03341 vs 0.03864). Sobreajuste a un split.
-- **País (`vive_en`) y franja de nacimiento** como features — empeoran en 2/3 seeds.
-- **`n_por_fuente=500` global** (todas las fuentes) — +30% recall, NDCG plano, 2× cómputo.
-- **`n_por_fuente_autor > 500`** — `800` dio +0,84 σ incremental sobre `500` (ruido), +67%
-  candidatos/usuario.
-- **Presupuesto propio para resumen / co-lectura** (`n_por_fuente_resumen/coleido`) —
-  co-lectura sube el recall del set combinado (0.5152→0.5804) pero el NDCG no acompaña
-  (`nfc=500` peor que `nfc=300`), eficiencia de ranking −10,7%. No tienen la patología de
-  asignación de autor ni candidatos de alta precisión. Revertido; queda
-  `scripts/probe_presupuesto_fuentes.py`.
-- **Features de corroboración entre fuentes** (`n_fuentes_candidato` = conteo de fuentes
-  que proponen el candidato; `rank_min_candidato`) — el diagnóstico mostró correlación
-  fuerte (fuentes coincidentes: 1,31 fuera del top-20 vs 2,63 dentro) pero el test pareado
-  dio **negativo** (`n_fuentes_candidato` −1,42 σ). La señal ya está en los `rank_*`/`score_*`
-  individuales; el conteo agregado es redundante y proxy ruidoso de popularidad.
-- **7ª fuente por editorial ya leída** (mirror de autor) — 50,6% de los targets son de
-  editorial ya leída, pero el recall casi no se movió: catálogos de editorial dispersos,
-  sus libros populares ya los traían ALS/popularidad. Candidatos redundantes.
-- **7ª fuente por similitud usuario-usuario** (kNN de usuarios) — CV 2/3 seeds positivo,
-  **regresión en Kaggle** (0.06017 vs 0.06149). Revertida.
-- **Embeddings semánticos (`sentence-transformers`) vs TF-IDF** para el perfil de
-  contenido — recall casi igual (0.5115→0.5099), NDCG peor (−1,74 σ pareado). Casi no
-  traen candidatos distintos.
-- **Modelos secuenciales (SASRec / GRU4Rec)** — descartados por los datos: 67,5% de los
-  gaps entre interacciones consecutivas son 0 días, el "orden" intradía es arbitrario.
-- **LightFM / dos torres / factorization machines** — reemplazarían a ALS (que no es el
-  cuello de botella) para meter metadata en el embedding; esa metadata ya está en las
-  features del ranker.
-- **Rutear usuarios livianos a popularidad por género** (`als.recomendar_hibrido`) — ALS
-  le gana a género en **todos** los buckets de actividad, incluso con 1 interacción.
-- **Supervisión más densa del reranker, versión ingenua** (`n_val_ranker=3`: los 3 libros
-  más recientes de cada usuario como positivos **en un solo grupo**, con **una sola etapa 1**
-  compartida) — paired test seed=42 **catastrófico, −10,8 σ** (NDCG 0.133 → 0.113). Dos
-  causas: (a) subir `n_val_ranker` también achica `train_candidatos`, degradando la etapa 1
-  (recall 0.535 → 0.499); (b) lambdarank con 3 positivos "del pasado reciente" desdibuja el
-  objetivo — `test_final` es EL libro siguiente, no "cualquiera de los últimos 3".
-  Revertido. **La versión bien hecha SÍ funcionó** (ventana rodante multi-corte, récord
-  0.06753 — ver "El modelo actual · Etapa 2"): 1 positivo por grupo y **una etapa 1 propia
-  por corte** que solo achica su propio historial. La lección del fallo: no es que "más
-  supervisión" esté mal, es que hay que darle a cada ejemplo su estado de etapa 1 correcto.
-- **Filtrar los ejemplos de entrenamiento del reranker por historial mínimo**
-  (`min_hist` sobre las interacciones usables del usuario en `train_candidatos` — el ~20%
-  de los ejemplos vienen de usuarios con ≤3 libros de historial, features casi ruido) —
-  paired test seed=42 **monótono y negativo**: `min_hist=3` −1,99 σ, `=5` −3,72 σ, `=10`
-  −6,19 σ, `=20` −11,9 σ. El daño se concentra en los usuarios FINOS de test (~14% del
-  set) y en los objetivos populares. Como el `LGBMRanker` no usa el ID de usuario, esos
-  ejemplos "ruidosos" son la única señal sobre cómo rankear para un usuario del que se
-  sabe poco; sacarlos = sobreajuste a patrones de usuario rico, peor generalización.
-  Misma lección que `recomendar_hibrido`. Revertido; queda
-  `scripts/diagnostico_historial_ranker.py`.
-- **Features relativas dentro del usuario / cascade** (`score_als_pct_usuario`,
-  `score_coleido_reciente_pct_usuario` = percentil del score entre los candidatos del
-  mismo usuario; `n_candidatos_usuario` = tamaño del campo) — el paso barato del ángulo
-  "cascade / re-rank en dos pasos". Paired test seed=42: **todas juntas −0,09 σ (plano
-  total)**, cada una sola entre −1,44 σ y +0,26 σ (ruido). Sin patrón por decil de
-  popularidad. Cierra también el cascade completo: si las features relativas/listwise que
-  un cascade explotaría no dan señal en el modelo de una etapa, dos `LGBMRanker`s no lo
-  cambian. LightGBM no está perdiéndose esta clase de señal. Revertido.
-- **Metadata de serie/saga derivada de los títulos** (`scripts/eda_series.py`) — falla por
-  **cobertura**, no por mecanismo: solo el 2,0% de los libros con interacción tiene un
-  patrón de serie limpio, y de los 8904 test targets solo el **0,8%** es "el siguiente de
-  una saga que el usuario viene leyendo". Techo de ganancia ~+0,0005 en Kaggle. No se
-  implementó el parser.
-- **Seed-bag del `LGBMRanker`** (`N_BAG_RANKER`, `n_bag` en `fit_ranker`, `_RankerBag` —
-  N modelos con `random_state`/`subsample`/`colsample` distintos, promedio de scores) —
-  paired test seed=42 +1,77 σ, CV 3 seeds **+1,64% positivo en las 3** (0.134117→0.136318),
-  ponderado por actividad +5,7%. Pero **plano en Kaggle** (0.06307 vs 0.06316, dentro del
-  ruido de una submission ~0.0065). El mecanismo no puede empeorar en esperanza → el
-  código **queda** (`comparar_ensamble_pareado.py`, `_RankerBag`) con `N_BAG_RANKER=1` de
-  default (dev rápido) y opt-in a 5 para submissions finales. El valor real de la
-  estrategia de ensamble está en un blend de familias de modelos distintas, no en el
-  seed-bag solo. Ver `experiments/estrategias.md`.
-- **Retrieval aprendido como 7ª fuente de candidatos** (estrategia 2 de `estrategias.md`;
-  `scripts/tune_retrievers.py`) — se optimizaron con optuna 4 familias de `implicit` (BPR,
-  LMF, cosine-kNN, BM25-kNN) maximizando el recall@200 **complementario a ALS** (recall de
-  `ALS-top200 ∪ retriever-top200`). Ganó **LMF** (`factors=33, lr=0.985, reg=1.73,
-  iter=105`): recall complementario 0.4048 → 0.5025 en el split standalone. Cableado como
-  7ª fuente (mismo patrón que autor/resumen/co-lectura, +3 features, 39→42): recall del set
-  completo 0.5346 → 0.5547 (seed 42, nfa=500); CV 3 seeds NDCG@20 0.134117 → 0.134412
-  (**+0,22%, dentro del ruido**); test pareado seed 42 **+1,48 σ / P=0.93** (borderline).
-  **Kaggle: 0.06164 vs 0.06316 — regresión.** Mismo patrón que la 7ª fuente usuario-usuario
-  y `n_por_fuente=500`: el recall sube pero los candidatos nuevos son ruido que el
-  `LGBMRanker` no distingue y **desplazan** candidatos mejores en el set de Kaggle (heavy
-  users). El cuello de botella no es el recall crudo sino el recall *distinguible*.
-  Revertido el cableado (`ranker.py`/`submit.py`/tests, `models/lmf.py`); queda
-  `scripts/tune_retrievers.py` (la optimización, reutilizable).
-- **Feature de rating predicho** (estrategia 4 de `estrategias.md`; `models/rating.py`, ALS
-  de feedback explícito `mu + b_u + b_i + p_u·q_i` sobre los ratings 1–10, RMSE in-sample
-  0.97 vs 1.82). La feature `rating_predicho_candidato` (`b_u + b_i + p_u·q_i`, desviación de
-  la media) + `rating_medio_usuario` (el sesgo del usuario aislado). Motivación: la métrica
-  premia "leído **y** gustado" y el **sesgo del usuario** no estaba en las features
-  (`score_popularidad` ya cubre el del libro). Test pareado seed 42: con candidatos `nfadef`
-  daba **+1,67 σ** (borderline), pero con `nfa=500` (config de producción, mismo contexto)
-  `rating_predicho_candidato` sola vs base es **−2,34 σ, P(mejora)=0.005** (0.133014 →
-  0.131131) — **significativamente dañina**; con las dos features −0,35 σ (`rating_medio_usuario`
-  enmascara parte del daño). El +1,67 σ era ruido dependiente de config. **Perjudica** — mismo
-  patrón que LMF / corroboración / relativas, pero más marcado. Interpretación: el ranking de
-  "qué se lee próximo" ya está dominado por señal colaborativa/recencia; "le pondría ≥8" no
-  discrimina *cuál* de los muchos next-reads plausibles elige, y a `nfa=500` (más candidatos
-  de autor, todos con rating predicho alto) se vuelve un casi-constante que empuja al ranker
-  lejos de la señal buena. Revertido (`models/rating.py` eliminado). Un Kaggle submission no
-  se justifica: el pareado a config de producción (~8.900 usuarios, ~5× el poder de 3 seeds)
-  es más fino que una submission (SE ≈ 0.0065, ~832 usuarios) para un efecto de este tamaño,
-  y esta misma ronda un pareado **+1,48 σ** (LMF) no aguantó en Kaggle.
+### Tuning / candidatos
+
+- **Optuna sobre LightGBM** — 3 veces, siempre ruido. **Optuna sobre ALS** (`factors=256,
+  alpha=4.718`) — +11,5 % local, **peor** en Kaggle (sobreajuste a un split).
+- **País / franja de nacimiento** como features — empeoran en 2/3 seeds.
+- **`n_por_fuente=500` global** — +30 % recall, NDCG plano. **`n_por_fuente_autor>500`** —
+  `800` +0,84 σ sobre `500` (ruido). **Presupuesto propio resumen/co-lectura** — sube recall,
+  NDCG no acompaña.
+- **Features de corroboración** (`n_fuentes_candidato`, `rank_min_candidato`) — pareado
+  **−1,42 σ**. La señal ya está en los `rank_*`/`score_*` individuales.
+- **7ª fuente por editorial ya leída** — recall no se movió (catálogos dispersos, sus
+  populares ya los traían ALS/popularidad).
+- **7ª fuente por similitud usuario-usuario (kNN)** — CV 2/3 seeds positivo, **regresión en
+  Kaggle** (0.06017 vs 0.06149).
+- **Retrieval aprendido como 7ª fuente** (estrategia 2; `scripts/tune_retrievers.py` optimizó
+  BPR/LMF/cosine-kNN/BM25-kNN por recall complementario a ALS — ganó **LMF**). Cableado:
+  recall del set 0.5346 → 0.5547, CV +0,22 % (ruido), pareado **+1,48 σ**, **Kaggle 0.06164
+  vs 0.06316 — regresión**. El recall sube pero los candidatos nuevos son ruido que el
+  ranker no distingue y **desplazan** candidatos mejores. Revertido; queda `tune_retrievers.py`.
+
+### Features del reranker
+
+- **Embeddings semánticos vs TF-IDF** para el perfil — recall igual, NDCG **−1,74 σ**.
+- **Features relativas dentro del usuario / cascade** (percentiles de score entre los
+  candidatos del usuario) — pareado **−0,09 σ** (plano). Cierra el cascade completo: si esa
+  señal listwise no aparece en un modelo de 1 etapa, dos `LGBMRanker`s no la crean.
+- **Feature de rating predicho** (estrategia 4; `models/rating.py`, ALS de feedback explícito
+  `μ + b_u + b_i + p_u·q_i`, RMSE in-sample 0.97 vs 1.82). `rating_predicho_candidato` +
+  `rating_medio_usuario`. Pareado seed 42: **+1,67 σ a `nfadef`** pero
+  **−2,34 σ / P=0.005 a `nfa=500`** (`rating_predicho_candidato` sola, 0.133014 → 0.131131)
+  — **significativamente dañina** a config real. "Le pondría ≥8" no discrimina *cuál* de los
+  muchos next-reads plausibles elige el usuario. Revertida (`models/rating.py` eliminado).
+
+### Entrenamiento del reranker
+
+- **`n_val_ranker=3` (versión ingenua)**: los 3 libros más recientes como positivos **en un
+  solo grupo**, con **una sola etapa 1** compartida — pareado **−10,8 σ**. Causas: (a)
+  achica `train_candidatos`, degrada la etapa 1; (b) lambdarank con 3 positivos desdibuja el
+  objetivo. **La versión bien hecha SÍ funcionó** — ventana rodante multi-corte (1 positivo
+  por grupo, una etapa 1 propia por corte). Lección: no es que "más supervisión" esté mal,
+  hay que darle a cada ejemplo su estado de etapa 1 correcto.
+- **Filtrar el entrenamiento por historial mínimo** (`min_hist`) — pareado **monótono
+  negativo** (`min_hist=20` → −11,9 σ). Los ejemplos de usuarios finos son la única señal
+  sobre cómo rankear para un usuario del que se sabe poco; sacarlos = sobreajuste a usuario
+  rico.
+- **Seed-bag del `LGBMRanker`** (`N_BAG_RANKER`, `_RankerBag`) — pareado **+1,77 σ**, CV
+  **+1,64 % positivo en los 3**, pero **plano en Kaggle** (0.06307 vs 0.06316) — y local vs
+  Kaggle discreparon en dirección. Código **queda** opt-in (`N_BAG_RANKER=1` de default, 5
+  para submissions finales). El valor real del ensamble estaría en blend de familias
+  distintas, no en 5 copias del mismo modelo.
+
+### Otras direcciones
+
+- **Modelos secuenciales (SASRec / GRU4Rec)** — 67,5 % de los gaps entre interacciones son 0
+  días: el "orden" intradía es arbitrario.
+- **LightFM / dos torres / FM** — reemplazarían a ALS (que no es el cuello de botella); su
+  metadata ya está en las features.
+- **Rutear usuarios livianos a popularidad por género** (`recomendar_hibrido`) — ALS le gana
+  a género en **todos** los buckets, incluso con 1 interacción.
+- **Metadata de serie/saga por títulos** — falla por **cobertura**: 2,0 % de los libros con
+  patrón limpio, 0,8 % de los targets son "el siguiente de una saga". Techo ~+0,0005.
 
 ---
 
-## La forma de U por popularidad del objetivo (cerrada como techo estructural)
-
-**Estado (2026-09-09): dada por cerrada.** 7 ángulos, ninguno la mueve — ver el detalle
-más abajo. El diagnóstico apunta a que no es un problema de features/representación:
-LightGBM no está ignorando señal disponible, y hay un componente aleatorio irreducible.
-Retomarla solo tendría sentido con una fuente de datos genuinamente nueva (metadata de
-serie/saga), que es un mini-proyecto de payoff incierto.
+## La forma de U por popularidad del objetivo (techo estructural, cerrada 2026-09-09)
 
 De los usuarios cuyo objetivo **sí está entre los candidatos** (~4760, recall 0.535), el
-reranker lo mete al top-20 solo el **~43%** de las veces. Y la relación entre popularidad
-del objetivo y P(top-20) tiene **forma de U**: los peores son los de **popularidad MEDIA**.
+reranker lo mete al top-20 solo el **~43 %** de las veces, y la relación con la popularidad
+del objetivo tiene **forma de U** — los peores son los de **popularidad media**:
 
 | decil de popularidad del objetivo | pop. mediana | P(top-20) |
 |---|---|---|
@@ -313,74 +252,69 @@ del objetivo y P(top-20) tiene **forma de U**: los peores son los de **popularid
 | 6 | 527 | 0.43 |
 | 9 (más popular) | 1449 | 0.63 |
 
-Es pérdida en el **ranking**, no en la generación (los candidatos están). Dentro de la
-franja media, el discriminador más fuerte del éxito es que **varias fuentes coincidan** en
-el objetivo — pero agregarlo como feature no ayuda (ya está en los `rank_*`/`score_*`).
+Es pérdida en el **ranking**, no en la generación. Los fracasos de la franja media **no son
+near-misses**: de 939 fracasos en deciles 3-5, el 53 % queda en posición predicha 100+
+(mediana ~100) — el modelo tiene ~100 candidatos igual de plausibles y el correcto está
+perdido en esa sopa. Hay además un componente **irreducible**: para un heavy user que lee
+amplio, "cuál es EL próximo libro" tiene decenas de respuestas válidas.
 
-**Los fracasos de la franja media NO son "casi aciertos"** (diagnóstico 2026-09-09): de
-los 939 fracasos en deciles 3-5, solo el 24% quedan en posición predicha 20-49; el 53% en
-100+ (mediana ~100). El modelo tiene ~100 candidatos igual de plausibles y el correcto
-está perdido en esa sopa — una feature-empujón o calibración por decil no sirven. (En
-contraste, los fracasos de la franja ALTA sí son near-misses: 49% en posición 20-49.) Hay
-además un componente **irreducible**: para un heavy user que lee amplio, "cuál es EL
-próximo libro" tiene decenas de respuestas igual de válidas, y la franja media es donde
-esa incertidumbre es máxima.
+**7 ángulos, ninguno la mueve**: cobertura de candidatos, BM25 en ALS, presupuesto de autor,
+features de corroboración (−1,42 σ), `n_val_ranker=3` (−10,8 σ), `min_hist` (hasta −11,9 σ),
+features relativas / cascade (−0,09 σ). Los que tocan el entrenamiento salen fuerte
+negativos; los que agregan features salen ruido. **No es un problema de representación** —
+LightGBM no ignora señal disponible. Techo estructural de este approach.
 
-**7 ángulos, ninguno la mueve** (detalle en "Qué se probó y NO funcionó"): (1) cobertura
-de candidatos, (2) BM25 en ALS, (3) presupuesto de autor, (4) features de corroboración
-(`n_fuentes_candidato`, −1,42 σ), (5) supervisión más densa (`n_val_ranker=3`, −10,8 σ),
-(6) filtrar el entrenamiento por historial (`min_hist`, monótono negativo hasta −11,9 σ),
-(7) features relativas dentro del usuario / cascade (−0,09 σ, plano). Los que tocan el
-entrenamiento salen fuerte negativos; los que agregan features salen ruido. **No es un
-problema de representación de features** — LightGBM no está ignorando señal disponible.
-Sumado a la incertidumbre irreducible de la franja media, se toma como **techo
-estructural** de este approach (2 etapas + LightGBM sobre estas features + este dataset).
+Diagnóstico: `scripts/diagnostico_posicion_popularidad.py`, `diagnostico_franja_media.py`,
+`diagnostico_cap_autor.py`.
 
-Herramientas de diagnóstico: `scripts/diagnostico_posicion_popularidad.py`,
-`scripts/diagnostico_franja_media.py`, `scripts/diagnostico_cap_autor.py` (apuntadas al
-modelo de producción, `n_por_fuente_autor=500`).
+---
+
+## Qué queda por probar (`experiments/estrategias.md`)
+
+Casi todo lo barato se probó (esta ronda: LMF-feature, corroboración, relativas, rating —
+todo ruido o negativo; solo la difusión 2-hop movió algo, y apenas). Lo pendiente:
+
+- **`score_difusion` como fuente de candidatos** (top-N por difusión, no solo feature) — es
+  la única señal nueva que mostró algo.
+- **Estrategia 6 — BERT4Rec / masked-item** como fuente + feature de "interés actual". Mayor
+  ceiling, mayor costo/riesgo (461k interacciones es poca data para un transformer).
+- Blend de **familias de modelos distintas** (no seed-bag).
+
+El lever que rindió de verdad esta ronda fue **más señal de entrenamiento** (ventana
+rodante). El set de features está saturado.
 
 ---
 
 ## Cómo correr
 
 - `uv run pytest` — suite (124 tests).
-- `uv run python -m src.recsys.submit --model ranker` — genera el CSV en
-  `outputs/submissions/` (usa `--tag` para un sufijo descriptivo; los nombres nunca se
-  pisan). Entrena con ventana rodante `n_cortes=5` (`N_CORTES_RANKER_SUBMISSION`).
-- `uv run python scripts/evaluate_ranker.py` — CV 3 seeds + NDCG por bucket de actividad +
-  `feature_importances_` (`N_CORTES = 5`, refleja producción; ~34 min/seed en frío).
+- `uv run python -m src.recsys.submit --model ranker [--tag ...]` — CSV en
+  `outputs/submissions/` (nombres con timestamp, nunca se pisan). Entrena con
+  `n_cortes=5` + refit de etapa 1. ~40 min.
+- `uv run python scripts/evaluate_ranker.py` — CV 3 seeds (`N_CORTES=5`, ~34 min/seed en
+  frío) + NDCG por bucket + `feature_importances_`.
 - `uv run python scripts/recall_candidatos.py` — recall del set + posición del objetivo.
-- `scripts/comparar_features_pareado.py` / `comparar_generadores_pareado.py` — test pareado
-  (editar `FEATURES_A`/`FEATURES_B` o `FUENTES_A`/`FUENTES_B`).
-- `scripts/comparar_cortes_pareado.py` — test pareado `n_cortes=1` vs `3` (ventana rodante,
-  estrategia 1 — **aplicada**, récord 0.06753 con `n_cortes=5`). Editar `CORTES` para otras
-  profundidades; con `ctx_base` (`n_cortes=1`) vivo, `n_cortes=5` es límite de RAM.
-- `scripts/tune_retrievers.py` — optuna sobre retrievers colaborativos alternativos (BPR /
-  LMF / cosine-kNN / BM25-kNN) maximizando recall@200 complementario a ALS. Escribe
-  `data/cache/tune_retrievers.json`. (Estrategia 2 — probada y descartada, ver arriba.)
-- Familias `diagnostico_*.py` (posición/popularidad del objetivo, franja media,
-  presupuesto de autor, historial de entrenamiento del ranker), `screen_*.py` (barridos
-  de presupuesto/BM25), `probe_*.py`.
+- `scripts/comparar_features_pareado.py` / `comparar_generadores_pareado.py` /
+  `comparar_cortes_pareado.py` — tests pareados (editar las listas / `FUENTES_*` / `CORTES`).
+  A `nfa=500`.
+- `scripts/tune_retrievers.py` — optuna sobre retrievers alternativos (estrategia 2,
+  descartada).
+- Familias `diagnostico_*.py`, `screen_*.py`, `probe_*.py`.
 
-**Cache de contexto**: `preparar_pipeline_cacheado` guarda el contexto en `data/cache/`
-(~3 GB c/u con `n_cortes=1`, ~7 GB con `=3`, ~11 GB con `=5`, gitignored). La clave = `seed`
-+ `n_por_fuente*` + `n_cortes` + hash de los bytes de `ranker.py` → editar `ranker.py`
-invalida todo. Para **barridos**: un proceso por valor (los contextos no se liberan bien
-entre iteraciones y agotan la RAM). `evaluate_ranker.py` con `n_cortes=5` corre los 3 seeds
-en un proceso porque libera cada contexto antes del siguiente.
+**Cache de contexto** (`preparar_pipeline_cacheado`, `data/cache/`, gitignored): ~3 GB con
+`n_cortes=1`, ~7 GB con `=3`, ~11 GB con `=5`. Clave = `seed` + `n_por_fuente*` + `n_cortes`
++ hash de los bytes de `ranker.py` (editar `ranker.py` invalida todo). En cada llamada barre
+los contextos con hash de código viejo, así el caché no acumula sin techo. Para barridos: un
+proceso por valor (los contextos no se liberan bien entre iteraciones).
 
 ---
 
 ## Dónde mirar más detalle
 
-- **`experiments/estrategias.md`** — análisis de estrategias de mayor calibre para superar
-  el plateau (ventana rodante de entrenamiento, retrieval aprendido, ensamble, rating
-  predicho, retrieval por grafo), con recomendación priorizada.
-- **`experiments/legacy/`** — historia congelada al 2026-09-07: `bitacora.md` (narrativa
-  ronda por ronda), `decisiones.md` (tabla numerada #1–26 + investigación abierta del
-  límite del reranking), `modelo_actual.md` (técnico + análisis "¿cambiar de paradigma?").
-- **`experiments/log.csv`** — una fila por corrida (NDCG local vs Kaggle + nota completa).
+- **`experiments/estrategias.md`** — estrategias de mayor calibre + recomendación priorizada.
+- **`experiments/log.csv`** — una fila por corrida (NDCG local vs Kaggle + nota completa),
+  desde 2026-09-07 en adelante.
 - **`experiments/features.md`** — catálogo feature por feature.
-- **`experiments/eda.md`** — análisis exploratorio (cola larga, calidad de datos, géneros,
-  demografía).
+- **`experiments/legacy/`** — historia congelada al 2026-09-07: `bitacora.md` (narrativa),
+  `decisiones.md` (#1–26), `modelo_actual.md` (técnico + "¿cambiar de paradigma?").
+- **`experiments/eda.md`** — análisis exploratorio.

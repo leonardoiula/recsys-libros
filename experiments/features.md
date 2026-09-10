@@ -1,12 +1,18 @@
 # Catálogo de features del ranker
 
-Lista única y legible de las 35 features que usa `"ranker"` (`FEATURES`
+Lista única y legible de las **40** features que usa `"ranker"` (`FEATURES`
 en `src/recsys/models/ranker.py`), para revisar de un vistazo qué hay y
 pensar qué falta o vale la pena mejorar. El detalle de *por qué* se
 agregó cada una, los resultados de validación cruzada y de Kaggle están
-en `experiments/legacy/decisiones.md` (secciones 6, 7 y 8) y
-`experiments/legacy/bitacora.md` — acá no se repite eso, solo qué mide cada
-feature y cómo se calcula.
+en `experiments/legacy/decisiones.md` (secciones 6, 7 y 8),
+`experiments/legacy/bitacora.md` y `experiments/log.csv` (lo posterior a
+2026-09-07) — acá no se repite eso, solo qué mide cada feature y cómo se
+calcula.
+
+> OJO: este catálogo puede quedar atrás de `FEATURES`. La lista corta
+> agrupada y al día está en `experiments/estado_del_arte.md` ("40
+> features"). Faltan detallar acá: las 4 "recencia-ponderadas" y las de
+> tracking `*_candidato` de resumen/co-lectura.
 
 Todas se calculan **solo con `train_candidatos`** (nunca con datos que
 el ranker vea como etiqueta) excepto donde se aclara que son metadata
@@ -135,7 +141,8 @@ con fila en la matriz (`usuarios_con_als`).
 
 | Feature | Qué mide | Si falta |
 |---|---|---|
-| `score_coleido` | Cuántos usuarios leyeron *tanto* algún libro del historial del propio usuario *como* este candidato — señal tipo "quien leyó X también leyó Y", vía matriz dispersa ítem×ítem sobre la matriz binaria de ALS. | `0.0` (usuario sin fila ALS, o sin co-lectura) |
+| `score_coleido` | Cuántos usuarios leyeron *tanto* algún libro del historial del propio usuario *como* este candidato — señal tipo "quien leyó X también leyó Y", vía matriz dispersa ítem×ítem (`cooc`) sobre la matriz binaria de ALS. **1 hop.** | `0.0` (usuario sin fila ALS, o sin co-lectura) |
+| `score_difusion_candidato` | Difusión **2-hop** sobre `cooc` **podada** (aristas de <8 co-lectores fuera — el grafo crudo tiene 73M aristas y a 1 hop ya toca el 43% del catálogo) y row-normalizada: `Σ_{t=1}^{2} 0,85ᵗ (Hᵗ)[u,j]`, con `H⁰` = historial binario. Reweightea la señal colaborativa por cercanía en cadena (libros de nicho conectados por 2 co-lecturas). Estrategia 5 de `estrategias.md`; récord 0.06824. Ver `MIN_COREAD_PPR`/`K_DIFUSION`/`ALPHA_DIFUSION`. | `0.0` (usuario sin fila ALS, o candidato no alcanzado por la difusión) |
 
 ## Editorial (historial del usuario)
 

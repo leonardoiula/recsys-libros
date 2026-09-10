@@ -264,6 +264,18 @@ recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
   users). El cuello de botella no es el recall crudo sino el recall *distinguible*.
   Revertido el cableado (`ranker.py`/`submit.py`/tests, `models/lmf.py`); queda
   `scripts/tune_retrievers.py` (la optimización, reutilizable).
+- **Feature de rating predicho** (estrategia 4 de `estrategias.md`; `models/rating.py`, ALS
+  de feedback explícito `mu + b_u + b_i + p_u·q_i` sobre los ratings 1–10, RMSE in-sample
+  0.97 vs 1.82). La feature `rating_predicho_candidato` (`b_u + b_i + p_u·q_i`, desviación de
+  la media) + `rating_medio_usuario` (el sesgo del usuario aislado). Motivación: la métrica
+  premia "leído **y** gustado" y el **sesgo del usuario** no estaba en las features
+  (`score_popularidad` ya cubre el del libro). Test pareado seed 42: con candidatos `nfadef`
+  daba **+1,67 σ** (borderline), pero con `nfa=500` (config de producción) + ambas features
+  **−0,35 σ**, y `FEATURES` sin rating (0.133014) le **gana** a con rating (0.132742). El
+  +1,67 σ era ruido dependiente de config. **No ayuda** — mismo patrón que LMF / features de
+  corroboración / relativas. Interpretación: el ranking de "qué se lee próximo" ya está
+  dominado por señal colaborativa/recencia; "le pondría ≥8" no discrimina *cuál* de los
+  muchos next-reads plausibles elige. Revertido (`models/rating.py` eliminado).
 
 ---
 

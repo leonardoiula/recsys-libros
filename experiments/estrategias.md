@@ -117,16 +117,19 @@ blend:
 
 - **Magnitud esperada**: +2–5% relativo, de forma confiable. Bajísimo riesgo.
 
-### 4. Señal explícita de rating predicho  ·  esfuerzo bajo-medio, riesgo bajo
+### 4. Señal explícita de rating predicho  ·  probada como feature, NO ayuda
 
-76% de los held-out están rateados ≥7. El proyecto usa el rating solo como *confianza* de
-ALS. Un modelo que **prediga el rating** que un usuario le daría a un libro (BiasedMF /
-SVD++ sobre la matriz 1-10, o un GBDT `P(rating ≥ 8)`) da una señal alineada con el
-objetivo real ("leído **y** gustado"). Como fuente de candidatos (top predicted-rating sin
-leer) y como feature del reranker.
-
-- **Por qué podría ganar**: señal ortogonal y hoy desaprovechada; alineada con la métrica.
-- **Magnitud esperada**: modesta pero real.
+**Estado (2026-09-10): probada como feature, revertida.** `models/rating.py` (ALS de
+feedback explícito `mu + b_u + b_i + p_u·q_i` sobre los ratings 1–10, RMSE in-sample 0.97
+vs 1.82). Features `rating_predicho_candidato` + `rating_medio_usuario` (el sesgo del usuario
+aislado — lo único que faltaba, `score_popularidad` ya es el sesgo del libro). Test pareado
+seed 42: **+1,67 σ** con candidatos `nfadef`, pero **−0,35 σ** con `nfa=500` (config de
+producción) — el signo se da vuelta al pasar a la config real. Ruido dependiente de config,
+no señal. Interpretación: el ranking de "qué se lee próximo" ya está dominado por señal
+colaborativa/recencia; "le pondría ≥8" no discrimina *cuál* de los muchos next-reads
+plausibles elige un usuario (lee muchos libros que ratearía 7–9). Ver el detalle en
+`estado_del_arte.md`. Como **fuente de candidatos** (top predicted-rating sin leer) tiene
+aún menos chance — las 7ª fuentes fallaron 3 veces.
 
 ### 5. Retrieval por grafo (personalized PageRank / random walks)  ·  esfuerzo bajo-medio, riesgo bajo
 
@@ -160,13 +163,16 @@ capturan solo groseramente. Encoder tipo BERT4Rec → fuente de candidatos + una
 2. ~~estrategia 3 — seed-bag~~ **probada: +1,64% CV, plano en Kaggle.** Código opt-in.
 3. ~~estrategia 2 — retrieval aprendido (vía barata)~~ **probada: recall +0,02, regresión en
    Kaggle.** El cuello de botella es el recall *distinguible*, no el crudo.
-4. **Lo que queda**: estrategia 4 (rating predicho) y 5 (grafo / PPR) como fuentes/features
-   baratas — pero la lección de la 2 acota: solo valen si traen señal *ortogonal*, no más
-   recall del mismo tipo. Y estrategia 6 (BERT4Rec / masked-item) como fuente de candidatos
-   + feature de "interés actual" — ahora con más razón, dado que subir la supervisión
-   secuencial (estrategia 1) rindió.
+4. ~~estrategia 4 — rating predicho (feature)~~ **probada: +1,67 σ a `nfadef` pero −0,35 σ
+   a `nfa=500`, revertida.** "Le pondría ≥8" no discrimina *cuál* next-read elige el usuario.
+5. **Lo que queda**: estrategia 5 (grafo / PPR) — pero la lección de la 2 acota: sube recall,
+   la pregunta es si es *distinguible*. Y estrategia 6 (BERT4Rec / masked-item) como fuente
+   de candidatos + feature de "interés actual" — mayor ceiling, mayor costo/riesgo (461k
+   interacciones es poca data para un transformer). **A esta altura casi todo lo barato se
+   probó**; lo que queda son builds grandes de payoff incierto.
 
-**Observación meta** (parcialmente saldada): el proyecto había sobre-invertido en el *set
-de features* del reranker y sub-invertido en cuántos datos ve. La estrategia 1 corrigió lo
-segundo. Sigue abierto: (b) calidad del pool de candidatos y (c) ensamblado de familias
-distintas.
+**Observación meta**: el proyecto había sobre-invertido en el *set de features* del reranker
+(y esta ronda lo confirmó: LMF-feature, corroboración, relativas, rating predicho — todas
+ruido). El único lever que rindió fue **más señal de entrenamiento** (estrategia 1). Sigue
+abierto pero sin idea barata clara: (b) calidad del pool de candidatos (retrieval que traiga
+candidatos *distinguibles*, no solo más recall) y (c) ensamblado de familias distintas.

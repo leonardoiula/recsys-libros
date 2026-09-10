@@ -123,13 +123,14 @@ blend:
 feedback explícito `mu + b_u + b_i + p_u·q_i` sobre los ratings 1–10, RMSE in-sample 0.97
 vs 1.82). Features `rating_predicho_candidato` + `rating_medio_usuario` (el sesgo del usuario
 aislado — lo único que faltaba, `score_popularidad` ya es el sesgo del libro). Test pareado
-seed 42: **+1,67 σ** con candidatos `nfadef`, pero **−0,35 σ** con `nfa=500` (config de
-producción) — el signo se da vuelta al pasar a la config real. Ruido dependiente de config,
-no señal. Interpretación: el ranking de "qué se lee próximo" ya está dominado por señal
-colaborativa/recencia; "le pondría ≥8" no discrimina *cuál* de los muchos next-reads
-plausibles elige un usuario (lee muchos libros que ratearía 7–9). Ver el detalle en
-`estado_del_arte.md`. Como **fuente de candidatos** (top predicted-rating sin leer) tiene
-aún menos chance — las 7ª fuentes fallaron 3 veces.
+seed 42: **+1,67 σ** con candidatos `nfadef`, pero **−2,34 σ / P=0.005** con `nfa=500`
+(config de producción, `rating_predicho_candidato` sola) — no es borderline, es
+**significativamente dañina** a la config real. El +1,67 σ era ruido dependiente de config.
+Interpretación: el ranking de "qué se lee próximo" ya está dominado por señal
+colaborativa/recencia; "le pondría ≥8" no discrimina *cuál* next-read elige un usuario (lee
+muchos libros que ratearía 7–9), y a `nfa=500` se vuelve un casi-constante que empuja al
+ranker lejos de la señal buena. Ver el detalle en `estado_del_arte.md`. Como **fuente de
+candidatos** tiene aún menos chance — las 7ª fuentes fallaron 3 veces.
 
 ### 5. Retrieval por grafo (personalized PageRank / random walks)  ·  esfuerzo bajo-medio, riesgo bajo
 

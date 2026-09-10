@@ -270,12 +270,18 @@ recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
   la media) + `rating_medio_usuario` (el sesgo del usuario aislado). Motivación: la métrica
   premia "leído **y** gustado" y el **sesgo del usuario** no estaba en las features
   (`score_popularidad` ya cubre el del libro). Test pareado seed 42: con candidatos `nfadef`
-  daba **+1,67 σ** (borderline), pero con `nfa=500` (config de producción) + ambas features
-  **−0,35 σ**, y `FEATURES` sin rating (0.133014) le **gana** a con rating (0.132742). El
-  +1,67 σ era ruido dependiente de config. **No ayuda** — mismo patrón que LMF / features de
-  corroboración / relativas. Interpretación: el ranking de "qué se lee próximo" ya está
-  dominado por señal colaborativa/recencia; "le pondría ≥8" no discrimina *cuál* de los
-  muchos next-reads plausibles elige. Revertido (`models/rating.py` eliminado).
+  daba **+1,67 σ** (borderline), pero con `nfa=500` (config de producción, mismo contexto)
+  `rating_predicho_candidato` sola vs base es **−2,34 σ, P(mejora)=0.005** (0.133014 →
+  0.131131) — **significativamente dañina**; con las dos features −0,35 σ (`rating_medio_usuario`
+  enmascara parte del daño). El +1,67 σ era ruido dependiente de config. **Perjudica** — mismo
+  patrón que LMF / corroboración / relativas, pero más marcado. Interpretación: el ranking de
+  "qué se lee próximo" ya está dominado por señal colaborativa/recencia; "le pondría ≥8" no
+  discrimina *cuál* de los muchos next-reads plausibles elige, y a `nfa=500` (más candidatos
+  de autor, todos con rating predicho alto) se vuelve un casi-constante que empuja al ranker
+  lejos de la señal buena. Revertido (`models/rating.py` eliminado). Un Kaggle submission no
+  se justifica: el pareado a config de producción (~8.900 usuarios, ~5× el poder de 3 seeds)
+  es más fino que una submission (SE ≈ 0.0065, ~832 usuarios) para un efecto de este tamaño,
+  y esta misma ronda un pareado **+1,48 σ** (LMF) no aguantó en Kaggle.
 
 ---
 

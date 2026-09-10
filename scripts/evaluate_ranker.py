@@ -56,7 +56,7 @@ from recsys.models.ranker import (
 K = 20
 N_POR_FUENTE = 150
 N_POR_FUENTE_AUTOR = 500  # tope propio de la fuente de autor (None = usar N_POR_FUENTE); ver scripts/screen_presupuesto_autor.py
-N_CORTES = 1  # ventana rodante del reranker (ver N_CORTES_RANKER en ranker.py); subir a 3/5 para validar la estrategia 1
+N_CORTES = 3  # ventana rodante del reranker (ver N_CORTES_RANKER en ranker.py); estrategia 1 -- validando en CV
 SEEDS = [42, 7, 123]
 EJEMPLO_PATH = Path(__file__).resolve().parents[1] / "data" / "raw" / "ejemplo.csv"
 

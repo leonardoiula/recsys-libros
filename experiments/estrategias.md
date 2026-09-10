@@ -1,8 +1,9 @@
-# Estrategias para superar el plateau (0.06316)
+# Estrategias para superar el plateau (récord actual 0.06667)
 
-Análisis para decidir el próximo paso grande. El modelo actual (6 fuentes → `LGBMRanker`)
-está en un plateau: 7 ángulos contra la forma de U fallaron, la generación de candidatos
-por heurísticas está agotada, y el score de Kaggle (0.06316) no es competitivo-alto.
+Análisis para decidir el próximo paso grande. Escrito con el modelo en el plateau 0.06316
+(6 fuentes → `LGBMRanker`, 7 ángulos contra la forma de U fallados, generación de
+candidatos por heurísticas agotada). **La estrategia 1 (ventana rodante) lo rompió: Kaggle
+0.06316 → 0.06667** (ver más abajo). Las estrategias 2 y 3 se probaron y no rindieron.
 
 ## Dónde está la pérdida
 
@@ -14,8 +15,10 @@ por heurísticas está agotada, y el score de Kaggle (0.06316) no es competitivo
 3. La tarea real, medida sobre los held-out: **76% de los "próximos libros" están
    calificados ≥7, 62% ≥8** (mediana 8). O sea el objetivo es "el próximo libro que el
    usuario lee **y le gusta**", no cualquier lectura.
-4. El `LGBMRanker` entrena con **7.932 queries** (1 por usuario). Es muy poca supervisión
-   para 42 features.
+4. ~~El `LGBMRanker` entrena con **7.932 queries** (1 por usuario). Es muy poca supervisión
+   para 39 features.~~ **Saldado por la estrategia 1**: la ventana rodante multi-corte lo
+   subió a ~21.900 queries (2,76×) y dio el récord 0.06667. Sigue habiendo margen para más
+   cortes si se resuelve el OOM.
 
 ## Ya descartado (no re-intentar)
 
@@ -32,22 +35,27 @@ por heurísticas está agotada, y el score de Kaggle (0.06316) no es competitivo
 
 Ordenadas por (leverage × probabilidad) / esfuerzo.
 
-### 1. Entrenamiento del reranker con ventana rodante (multi-corte)  ·  esfuerzo medio, riesgo bajo
+### 1. Entrenamiento del reranker con ventana rodante (multi-corte)  ·  APLICADA (récord 0.06667)
 
-Hoy: 1 ejemplo (`historial → próximo`) por usuario. Con ventana rodante, para cada
-usuario se predice la interacción *i* a partir de las 1..*i*-1, para varios *i* (p.ej. los
-últimos 5-10 cortes). **~434.000 pares posibles (55× la supervisión actual)**; incluso con
-5 cortes/usuario son ~40k queries (5×). Cada corte es una tarea genuina de next-item con
-sus features calculadas sobre historial estrictamente anterior — **sin leakage** (distinto
-del experimento `n_val_ranker=3`, que metía varios positivos "del pasado reciente" en un
-solo grupo y desdibujaba el objetivo).
+**Estado (2026-09-10): implementada y adoptada — el mayor salto desde recencia+refit.**
+`N_CORTES_RANKER` en `ranker.py` (default 1, dev), `N_CORTES_RANKER_SUBMISSION = 3` en
+`submit.py`. Además del ejemplo `(historial → x_{m-1})` por usuario, se agregan los cortes
+`x_{m-2}` y `x_{m-3}`: el corte `j` predice `x_{m-j}` con **su propia etapa 1** fiteada solo
+sobre `x_1…x_{m-1-j}` y sus features sobre ese mismo historial — next-item genuino, sin
+leakage, **1 positivo por grupo**. ~2,76× la supervisión (7.932 → ~21.900 queries).
+`test_final` y el recall del set de candidatos no cambian.
 
-- **Por qué podría ganar**: los GBDT-rankers escalan bien con más grupos de query; el
-  modelo actual está claramente hambriento (7.932 queries, 42 features). Es el lever más
-  grande sin tocar.
-- **Costo**: recalcular features por corte es la parte cara (dependen del estado del
-  historial). Factible con pocos cortes por usuario (los últimos N).
-- **Magnitud esperada**: potencialmente del orden de la ronda recencia+refit (+16,9%).
+- **Resultado**: test pareado seed 42 **+2,32 σ / P=0.985**; CV 3 seeds 0.134117 →
+  **0.136561** (+1,82%, positivo en los 3); Kaggle 0.06316 → **0.06667** (+5,6%). Sin
+  regresión por bucket de actividad (los cortes profundos son power-user-heavy pero el
+  bucket casual 2-4 quedó plano). `n_interacciones_usuario` sube en importancia — el modelo
+  ve al usuario a varias profundidades de historial.
+- **Por qué el `n_val_ranker` barato había fallado** (−10 σ): metía N positivos en un grupo
+  y compartía **una sola** etapa 1 (fiteada sobre datos recientes) para todos los cortes →
+  leakage en las etiquetas viejas + `train_candidatos` global achicado. La versión buena da
+  a cada corte su etapa 1 correcta.
+- **Pendiente**: `n_cortes=5` hace OOM (contexto ~10 GB); haría falta concat incremental en
+  `preparar_pipeline` para probar >3.
 
 ### 2. Retrieval aprendido (dual-encoder / two-tower como fuente de candidatos)  ·  esfuerzo alto, riesgo medio
 
@@ -134,22 +142,20 @@ capturan solo groseramente. Encoder tipo BERT4Rec → fuente de candidatos + una
 
 ## Recomendación
 
-1. ~~estrategia 3 — seed-bag~~ **probada: +1,64% CV, plano en Kaggle.** El código queda
-   opt-in; el valor está en un blend de familias distintas, no en el seed-bag.
-2. ~~estrategia 2 — retrieval aprendido (vía barata)~~ **probada: recall +0,02, regresión en
-   Kaggle.** El cuello de botella es el recall *distinguible*, no el crudo — agregar
-   candidatos que el ranker no puede separar empeora. Un two-tower con texto seguiría
-   pendiente pero con expectativa más baja.
-3. **La apuesta grande que queda**: estrategia 1 — ventana rodante. El reranker está
-   hambriento de datos (7.932 queries, 39 features) y es lo más barato de los cambios
-   estructurales. La versión barata falló (`n_val_ranker`, cuello de botella
-   arquitectónico: más etiquetas = `train_candidatos` más chico = etapa 1 peor); haría
-   falta el build real con recálculo de features por corte.
-4. **Como fuentes/features nuevas baratas**: 4 (rating predicho) y 5 (grafo / PPR). La
-   lección de la estrategia 2 acota: solo valen si traen candidatos de *otra naturaleza*
-   (señal ortogonal), no más de lo mismo con mejor recall.
+1. ~~estrategia 1 — ventana rodante~~ **APLICADA: Kaggle 0.06316 → 0.06667 (+5,6%), récord.**
+   El reranker estaba hambriento (7.932 queries) y darle 2,76× supervisión next-item, con
+   cada corte a su estado de etapa 1 correcto, era el lever estructural más grande. Pendiente
+   probar `n_cortes` > 3 (hoy hace OOM).
+2. ~~estrategia 3 — seed-bag~~ **probada: +1,64% CV, plano en Kaggle.** Código opt-in.
+3. ~~estrategia 2 — retrieval aprendido (vía barata)~~ **probada: recall +0,02, regresión en
+   Kaggle.** El cuello de botella es el recall *distinguible*, no el crudo.
+4. **Lo que queda**: estrategia 4 (rating predicho) y 5 (grafo / PPR) como fuentes/features
+   baratas — pero la lección de la 2 acota: solo valen si traen señal *ortogonal*, no más
+   recall del mismo tipo. Y estrategia 6 (BERT4Rec / masked-item) como fuente de candidatos
+   + feature de "interés actual" — ahora con más razón, dado que subir la supervisión
+   secuencial (estrategia 1) rindió.
 
-**Observación meta**: el proyecto sobre-invirtió en el *set de features* del reranker (42,
-ablacionadas exhaustivamente) y sub-invirtió en (a) cuántos datos ve el reranker, (b) qué
-tan bueno es el pool de candidatos (retrieval aprendido), (c) ensamblado. Ahí es donde
-ganan las soluciones de nivel competición.
+**Observación meta** (parcialmente saldada): el proyecto había sobre-invertido en el *set
+de features* del reranker y sub-invertido en cuántos datos ve. La estrategia 1 corrigió lo
+segundo. Sigue abierto: (b) calidad del pool de candidatos y (c) ensamblado de familias
+distintas.

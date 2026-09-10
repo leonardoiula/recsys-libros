@@ -30,6 +30,7 @@ from recsys.models.popularity_segmentada import (
 from recsys.models.ranker import (
     BM25_ALS,
     N_BAG_RANKER,
+    _dataset_de_un_corte,
     armar_dataset_entrenamiento_por_lotes,
     calcular_features_auxiliares,
     fit_ranker,
@@ -106,6 +107,17 @@ def _recomendaciones_als(usuarios: list, k: int) -> dict:
 
 N_POR_FUENTE_RANKER = 150
 N_POR_AUTOR_RANKER = 20
+N_CORTES_RANKER_SUBMISSION = 3
+"""Ventana rodante para entrenar el `LGBMRanker` (estrategia 1 de
+`experiments/estrategias.md`, ver `N_CORTES_RANKER` en `ranker.py`): además
+del corte `x_{m-1}` por usuario, se agregan `x_{m-2}` y `x_{m-3}` con su
+propia etapa 1 fiteada solo sobre historial anterior a cada corte. CV 3
+seeds 0.134117 → 0.136561 (+1,82%, positivo en los 3), test pareado seed 42
++2,32 σ, **Kaggle 0.06316 → 0.06667** (récord). Se fija acá y no en la
+constante de `ranker.py` (que queda en 1) porque `preparar_pipeline_cacheado`
+con `n_cortes=3` es ~3× más lento y pesa ~7 GB por contexto -- innecesario
+para las ablaciones de features/fuentes del día a día. `n_cortes=5` hace
+OOM en la máquina."""
 N_POR_FUENTE_AUTOR_RANKER = 500
 """Tope TOTAL de la fuente de candidatos por autor, separado del
 `N_POR_FUENTE_RANKER=150` de las otras 5 fuentes. El 39% de los usuarios
@@ -127,6 +139,14 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     le ganó a ALS solo en los 3 seeds (+3.9% de NDCG@20 en promedio, con
     menor desvío entre seeds que ALS) -- ver `scripts/evaluate_ranker.py`
     y `experiments/legacy/bitacora.md`.
+
+    El `LGBMRanker` se entrena con **ventana rodante**
+    (`N_CORTES_RANKER_SUBMISSION`, estrategia 1 de `experiments/estrategias.md`,
+    récord 0.06667): además del ejemplo `(historial → x_{m-1})` por usuario,
+    se agregan los cortes `x_{m-2}` y `x_{m-3}`, cada uno con su etapa 1
+    fiteada solo sobre historial estrictamente anterior a ese corte -- ~2,8×
+    la supervisión, 1 positivo por grupo, sin leakage. El refit de etapa 1
+    para los candidatos finales (más abajo) no cambia.
 
     Las señales de etapa 1 (ALS/popularidad/género/`calcular_features_auxiliares`)
     se fittean sobre `train_candidatos` para entrenar el ranker (evita que
@@ -188,6 +208,31 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
         n_por_fuente=N_POR_FUENTE_RANKER,
         n_por_autor=N_POR_AUTOR_RANKER,
     )
+
+    # Ventana rodante (ver N_CORTES_RANKER_SUBMISSION): cortes j=2..N. Mismo
+    # loop que `ranker.preparar_pipeline` -- `cur` empieza en train_candidatos
+    # y cada iteración pela una interacción más, así el corte j entrena con
+    # etiqueta x_{m-j} y una etapa 1 fiteada solo sobre x_1..x_{m-1-j}.
+    if N_CORTES_RANKER_SUBMISSION > 1:
+        X_partes, y_partes = [X], [y]
+        cur = train_candidatos
+        for j in range(2, N_CORTES_RANKER_SUBMISSION + 1):
+            cur, labels_j = split_train_val(cur, n_val=1, seed=42 + 1000 + j)
+            if labels_j.empty:
+                break
+            X_j, y_j, group_j = _dataset_de_un_corte(
+                cur, labels_j, libros, lectores,
+                N_POR_FUENTE_RANKER, N_POR_AUTOR_RANKER, N_POR_FUENTE_AUTOR_RANKER, None,
+            )
+            X_partes.append(X_j)
+            y_partes.append(y_j)
+            group = group + group_j
+            gc.collect()
+        X = pd.concat(X_partes, ignore_index=True)
+        y = pd.concat(y_partes, ignore_index=True)
+        del X_partes, y_partes
+        gc.collect()
+
     modelo_ranker = fit_ranker(X, y, group, n_bag=N_BAG_RANKER)
 
     # La etapa 1 fiteada sobre train_candidatos ya no hace falta -- se

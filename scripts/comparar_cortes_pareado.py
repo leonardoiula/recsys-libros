@@ -51,7 +51,10 @@ alcanzar."""
 N_BOOTSTRAP = 2000
 
 BASE = 1
-CORTES = [3, 5]  # cada uno se compara pareado contra BASE
+CORTES = [3]  # cada uno se compara pareado contra BASE. n_cortes=5 hace OOM en esta
+# maquina (32 GB): el contexto n_cortes=5 pesa ~10 GB y coexiste con ctx_base -> matar.
+# Para probar 5, correrlo solo (BASE=5, CORTES=[]) o con la optimizacion de memoria
+# de preparar_pipeline (concat incremental en vez de acumular X_partes).
 
 
 def _reportar_pareado(valores_a: np.ndarray, valores_b: np.ndarray, nombre_a: str, nombre_b: str) -> None:

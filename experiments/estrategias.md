@@ -51,6 +51,20 @@ solo grupo y desdibujaba el objetivo).
 
 ### 2. Retrieval aprendido (dual-encoder / two-tower como fuente de candidatos)  ·  esfuerzo alto, riesgo medio
 
+**Estado (2026-09-10): probada la vía barata (retriever colaborativo alternativo), falló.**
+`scripts/tune_retrievers.py` optimizó con optuna 4 familias de `implicit` (BPR, LMF,
+cosine-kNN, BM25-kNN) maximizando el recall@200 *complementario a ALS*. Ganó **LMF**
+(`factors=33, lr=0.985, reg=1.73, iter=105`): recall de `ALS ∪ LMF` 0.4048 → 0.5025
+standalone. Cableado como 7ª fuente: recall del set completo 0.5346 → 0.5547, CV 3 seeds
++0,22% (ruido), test pareado +1,48 σ (borderline), **Kaggle 0.06164 vs 0.06316 —
+regresión**. Mismo patrón que `n_por_fuente=500` y la 7ª fuente usuario-usuario: sube el
+recall pero los candidatos nuevos son ruido que el ranker no distingue y desplazan
+candidatos mejores. **El techo que importa no es el recall crudo, es el recall
+distinguible.** Revertido; queda `scripts/tune_retrievers.py`. Un two-tower entrenado con
+texto (lo de abajo) sigue sin probarse, pero la expectativa baja: si un retriever
+colaborativo bien tuneado no convierte, un dual-encoder tiene que traer candidatos de
+*otra naturaleza* (contenido puro) para justificar el build.
+
 User-tower (encode el historial: mean/attention sobre embeddings de libros) + item-tower
 (encode metadata + `resumen` con un encoder de texto congelado). Se entrena con el
 próximo-libro real como positivo + negativos in-batch/sampleados; en inferencia, top-K por
@@ -120,13 +134,20 @@ capturan solo groseramente. Encoder tipo BERT4Rec → fuente de candidatos + una
 
 ## Recomendación
 
-1. **Ya (bajo riesgo, casi gratis)**: estrategia 3 — seed-bag del `LGBMRanker` + un blend
-   simple. Una tarde, +2-5% esperado.
-2. **La apuesta grande**: estrategia 1 — ventana rodante. El reranker está hambriento de
-   datos y es lo más barato de los cambios estructurales.
-3. **Si 1 y 3 no alcanzan y hay ganas de un build real**: estrategia 2 — retrieval
-   aprendido, que ataca el techo de recall de verdad.
-4. **En paralelo, como fuentes/features nuevas baratas**: 4 (rating predicho) y 5 (grafo).
+1. ~~estrategia 3 — seed-bag~~ **probada: +1,64% CV, plano en Kaggle.** El código queda
+   opt-in; el valor está en un blend de familias distintas, no en el seed-bag.
+2. ~~estrategia 2 — retrieval aprendido (vía barata)~~ **probada: recall +0,02, regresión en
+   Kaggle.** El cuello de botella es el recall *distinguible*, no el crudo — agregar
+   candidatos que el ranker no puede separar empeora. Un two-tower con texto seguiría
+   pendiente pero con expectativa más baja.
+3. **La apuesta grande que queda**: estrategia 1 — ventana rodante. El reranker está
+   hambriento de datos (7.932 queries, 39 features) y es lo más barato de los cambios
+   estructurales. La versión barata falló (`n_val_ranker`, cuello de botella
+   arquitectónico: más etiquetas = `train_candidatos` más chico = etapa 1 peor); haría
+   falta el build real con recálculo de features por corte.
+4. **Como fuentes/features nuevas baratas**: 4 (rating predicho) y 5 (grafo / PPR). La
+   lección de la estrategia 2 acota: solo valen si traen candidatos de *otra naturaleza*
+   (señal ortogonal), no más de lo mismo con mejor recall.
 
 **Observación meta**: el proyecto sobre-invirtió en el *set de features* del reranker (42,
 ablacionadas exhaustivamente) y sub-invirtió en (a) cuántos datos ve el reranker, (b) qué

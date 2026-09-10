@@ -220,6 +220,20 @@ recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
   default (dev rápido) y opt-in a 5 para submissions finales. El valor real de la
   estrategia de ensamble está en un blend de familias de modelos distintas, no en el
   seed-bag solo. Ver `experiments/estrategias.md`.
+- **Retrieval aprendido como 7ª fuente de candidatos** (estrategia 2 de `estrategias.md`;
+  `scripts/tune_retrievers.py`) — se optimizaron con optuna 4 familias de `implicit` (BPR,
+  LMF, cosine-kNN, BM25-kNN) maximizando el recall@200 **complementario a ALS** (recall de
+  `ALS-top200 ∪ retriever-top200`). Ganó **LMF** (`factors=33, lr=0.985, reg=1.73,
+  iter=105`): recall complementario 0.4048 → 0.5025 en el split standalone. Cableado como
+  7ª fuente (mismo patrón que autor/resumen/co-lectura, +3 features, 39→42): recall del set
+  completo 0.5346 → 0.5547 (seed 42, nfa=500); CV 3 seeds NDCG@20 0.134117 → 0.134412
+  (**+0,22%, dentro del ruido**); test pareado seed 42 **+1,48 σ / P=0.93** (borderline).
+  **Kaggle: 0.06164 vs 0.06316 — regresión.** Mismo patrón que la 7ª fuente usuario-usuario
+  y `n_por_fuente=500`: el recall sube pero los candidatos nuevos son ruido que el
+  `LGBMRanker` no distingue y **desplazan** candidatos mejores en el set de Kaggle (heavy
+  users). El cuello de botella no es el recall crudo sino el recall *distinguible*.
+  Revertido el cableado (`ranker.py`/`submit.py`/tests, `models/lmf.py`); queda
+  `scripts/tune_retrievers.py` (la optimización, reutilizable).
 
 ---
 
@@ -274,7 +288,7 @@ modelo de producción, `n_por_fuente_autor=500`).
 
 ## Cómo correr
 
-- `uv run pytest` — suite (118 tests).
+- `uv run pytest` — suite (119 tests).
 - `uv run python -m src.recsys.submit --model ranker` — genera el CSV en
   `outputs/submissions/` (usa `--tag` para un sufijo descriptivo; los nombres nunca se
   pisan).
@@ -283,6 +297,9 @@ modelo de producción, `n_por_fuente_autor=500`).
 - `uv run python scripts/recall_candidatos.py` — recall del set + posición del objetivo.
 - `scripts/comparar_features_pareado.py` / `comparar_generadores_pareado.py` — test pareado
   (editar `FEATURES_A`/`FEATURES_B` o `FUENTES_A`/`FUENTES_B`).
+- `scripts/tune_retrievers.py` — optuna sobre retrievers colaborativos alternativos (BPR /
+  LMF / cosine-kNN / BM25-kNN) maximizando recall@200 complementario a ALS. Escribe
+  `data/cache/tune_retrievers.json`. (Estrategia 2 — probada y descartada, ver arriba.)
 - Familias `diagnostico_*.py` (posición/popularidad del objetivo, franja media,
   presupuesto de autor, historial de entrenamiento del ranker), `screen_*.py` (barridos
   de presupuesto/BM25), `probe_*.py`.

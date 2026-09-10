@@ -51,10 +51,10 @@ alcanzar."""
 N_BOOTSTRAP = 2000
 
 BASE = 1
-CORTES = [3]  # cada uno se compara pareado contra BASE. n_cortes=5 hace OOM en esta
-# maquina (32 GB): el contexto n_cortes=5 pesa ~10 GB y coexiste con ctx_base -> matar.
-# Para probar 5, correrlo solo (BASE=5, CORTES=[]) o con la optimizacion de memoria
-# de preparar_pipeline (concat incremental en vez de acumular X_partes).
+CORTES = [3]  # cada uno se compara pareado contra BASE. Con `ctx_base` (n_cortes=1) vivo,
+# n_cortes=5 (contexto ~11 GB) es limite de RAM en esta maquina (32 GB) -- para 5 usar el
+# CV de `scripts/evaluate_ranker.py` (libera cada contexto antes del siguiente).
+# El record actual (0.06753) es con n_cortes=5.
 
 
 def _reportar_pareado(valores_a: np.ndarray, valores_b: np.ndarray, nombre_a: str, nombre_b: str) -> None:

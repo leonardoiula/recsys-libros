@@ -107,17 +107,22 @@ def _recomendaciones_als(usuarios: list, k: int) -> dict:
 
 N_POR_FUENTE_RANKER = 150
 N_POR_AUTOR_RANKER = 20
-N_CORTES_RANKER_SUBMISSION = 3
+N_CORTES_RANKER_SUBMISSION = 5
 """Ventana rodante para entrenar el `LGBMRanker` (estrategia 1 de
 `experiments/estrategias.md`, ver `N_CORTES_RANKER` en `ranker.py`): además
-del corte `x_{m-1}` por usuario, se agregan `x_{m-2}` y `x_{m-3}` con su
-propia etapa 1 fiteada solo sobre historial anterior a cada corte. CV 3
-seeds 0.134117 → 0.136561 (+1,82%, positivo en los 3), test pareado seed 42
-+2,32 σ, **Kaggle 0.06316 → 0.06667** (récord). Se fija acá y no en la
-constante de `ranker.py` (que queda en 1) porque `preparar_pipeline_cacheado`
-con `n_cortes=3` es ~3× más lento y pesa ~7 GB por contexto -- innecesario
-para las ablaciones de features/fuentes del día a día. `n_cortes=5` hace
-OOM en la máquina."""
+del corte `x_{m-1}` por usuario, se agregan `x_{m-2}`…`x_{m-5}`, cada uno
+con su propia etapa 1 fiteada solo sobre historial anterior al corte.
+
+Progresión CV 3 seeds (positivo en los 3 en cada salto): `n_cortes=1`
+0.134117 → `=3` 0.136561 (Kaggle 0.06316 → 0.06667) → `=5` 0.137854
+(+0,95% sobre 3, desvío más bajo, sin regresión por bucket de actividad).
+`=5` fue posible tras cambiar el loop a concat incremental (antes hacía
+OOM: ~26M filas de unión + las N particiones vivas a la vez).
+
+Se fija acá y no en la constante de `ranker.py` (que queda en 1) porque
+`preparar_pipeline_cacheado` con `n_cortes>1` es N× más lento y pesa
+~7-11 GB por contexto -- innecesario para las ablaciones de features/
+fuentes del día a día."""
 N_POR_FUENTE_AUTOR_RANKER = 500
 """Tope TOTAL de la fuente de candidatos por autor, separado del
 `N_POR_FUENTE_RANKER=150` de las otras 5 fuentes. El 39% de los usuarios
@@ -213,8 +218,9 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
     # loop que `ranker.preparar_pipeline` -- `cur` empieza en train_candidatos
     # y cada iteración pela una interacción más, así el corte j entrena con
     # etiqueta x_{m-j} y una etapa 1 fiteada solo sobre x_1..x_{m-1-j}.
+    # Concat INCREMENTAL + `del X_j` en cada vuelta (no acumular las N
+    # particiones) -- ver el comentario en `ranker.preparar_pipeline`.
     if N_CORTES_RANKER_SUBMISSION > 1:
-        X_partes, y_partes = [X], [y]
         cur = train_candidatos
         for j in range(2, N_CORTES_RANKER_SUBMISSION + 1):
             cur, labels_j = split_train_val(cur, n_val=1, seed=42 + 1000 + j)
@@ -224,14 +230,11 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
                 cur, labels_j, libros, lectores,
                 N_POR_FUENTE_RANKER, N_POR_AUTOR_RANKER, N_POR_FUENTE_AUTOR_RANKER, None,
             )
-            X_partes.append(X_j)
-            y_partes.append(y_j)
+            X = pd.concat([X, X_j], ignore_index=True)
+            y = pd.concat([y, y_j], ignore_index=True)
             group = group + group_j
+            del X_j, y_j
             gc.collect()
-        X = pd.concat(X_partes, ignore_index=True)
-        y = pd.concat(y_partes, ignore_index=True)
-        del X_partes, y_partes
-        gc.collect()
 
     modelo_ranker = fit_ranker(X, y, group, n_bag=N_BAG_RANKER)
 

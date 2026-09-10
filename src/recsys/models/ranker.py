@@ -1527,10 +1527,16 @@ def preparar_pipeline(
     # Ventana rodante (ver N_CORTES_RANKER): cortes j=2..n_cortes. `cur`
     # empieza en train_candidatos (x_1..x_{m-2}) y cada iteración pela una
     # interacción más -> corte j entrena con etiqueta x_{m-j} y etapa 1
-    # fiteada solo sobre x_1..x_{m-1-j}. Un solo concat al final (la
-    # fragmentación por muchos concats chicos es el problema, no la RAM).
+    # fiteada solo sobre x_1..x_{m-1-j}.
+    #
+    # `X` se hace crecer con un concat INCREMENTAL (no se acumula una lista
+    # de N frames para concatenarla al final): con `n_cortes=5` la unión
+    # llega a ~26M filas y mantener las 5 particiones vivas a la vez ADEMÁS
+    # del resultado del concat hacía OOM (~2x el tamaño final + la etapa 1
+    # transitoria del corte en curso). Concatenar y `del X_j` en cada
+    # vuelta deja como mucho `X` + un `X_j` vivos, y libera cada partición
+    # apenas se absorbe -- menos pico y menos fragmentación.
     if n_cortes > 1:
-        X_partes, y_partes = [X], [y]
         cur = train_candidatos
         for j in range(2, n_cortes + 1):
             cur, labels_j = split_train_val(cur, n_val=1, seed=seed + 1000 + j)
@@ -1540,14 +1546,11 @@ def preparar_pipeline(
                 cur, labels_j, libros, lectores,
                 n_por_fuente, n_por_autor, n_por_fuente_autor, fuentes_activas,
             )
-            X_partes.append(X_j)
-            y_partes.append(y_j)
+            X = pd.concat([X, X_j], ignore_index=True)
+            y = pd.concat([y, y_j], ignore_index=True)
             group = group + group_j
+            del X_j, y_j
             gc.collect()
-        X = pd.concat(X_partes, ignore_index=True)
-        y = pd.concat(y_partes, ignore_index=True)
-        del X_partes, y_partes
-        gc.collect()
 
     libros_leidos_hasta_ranker = libros_leidos_por_usuario(train_candidatos_full)
     usuarios_test = test_final["id_lector"].unique().tolist()

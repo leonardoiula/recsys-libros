@@ -5,7 +5,7 @@ y no funcionó, y el problema abierto. El razonamiento completo ronda por ronda 
 **congelado** en `experiments/legacy/` (ver `experiments/legacy/README.md`); no hace falta
 leerlo para retomar contexto.
 
-**Récord: 0.06667 de NDCG@20 en Kaggle** (2026-09-10, ventana rodante multi-corte).
+**Récord: 0.06753 de NDCG@20 en Kaggle** (2026-09-10, ventana rodante multi-corte `n_cortes=5`).
 
 ---
 
@@ -65,17 +65,25 @@ n_estimators=200`, `random_state=42`. Hiperparámetros **conservadores a propós
 optuna probado 3 veces (bases de features distintas), las 3 dentro del ruido.
 
 **Entrenamiento con ventana rodante multi-corte** (`N_CORTES_RANKER` en `ranker.py`,
-`N_CORTES_RANKER_SUBMISSION = 3` en `submit.py` — estrategia 1 de `estrategias.md`, récord
+`N_CORTES_RANKER_SUBMISSION = 5` en `submit.py` — estrategia 1 de `estrategias.md`, récord
 2026-09-10): además del ejemplo `(historial → x_{m-1})` por usuario, se agregan los cortes
-`x_{m-2}` y `x_{m-3}`. El corte `j` predice `x_{m-j}` con **su propia etapa 1**
+`x_{m-2}…x_{m-5}`. El corte `j` predice `x_{m-j}` con **su propia etapa 1**
 (ALS/popularidad/género/co-lectura/TF-IDF) fiteada solo sobre `x_1…x_{m-1-j}` y sus features
 sobre ese mismo historial — cada corte es un next-item genuino, sin leakage, **1 positivo
-por grupo**. ~2,76× la supervisión (7.932 → ~21.900 queries). `test_final` y el recall del
-set de candidatos no cambian. CV 3 seeds 0.134117 → **0.136561** (+1,82%, positivo en los 3);
-Kaggle 0.06316 → **0.06667**. Distinto del `n_val_ranker` fallido (ver más abajo): aquel
-metía N positivos en un grupo y compartía una etapa 1. `N_CORTES_RANKER` queda en **1** de
-default (dev rápido); `submit.py` usa 3. Costo: ~N× el armado del dataset de entrenamiento
-por seed; `n_cortes=5` hace OOM en la máquina (contexto ~10 GB).
+por grupo**. Los usuarios con poco historial se caen solos de los cortes profundos.
+`test_final` y el recall del set de candidatos no cambian.
+
+Progresión CV 3 seeds (positivo en los 3 en cada salto) / Kaggle: `n_cortes=1` 0.134117 →
+`=3` **0.136561** (Kaggle 0.06316 → **0.06667**) → `=5` **0.137854** (Kaggle → **0.06753**).
+Sin regresión por bucket de actividad — de hecho los buckets casuales (2-4, 5-9) *mejoran* a
+más profundidad (más diversidad de profundidad-de-historial en el entrenamiento → mejor
+generalización a usuarios de historial corto). `n_interacciones_usuario` sube en importancia.
+
+Distinto del `n_val_ranker` fallido (ver más abajo): aquel metía N positivos en un grupo y
+compartía una etapa 1. `N_CORTES_RANKER` queda en **1** de default (dev rápido: un contexto
+`n_cortes=5` pesa ~11 GB y tarda ~34 min/seed); `submit.py` y `evaluate_ranker.py` usan 5.
+El loop hace **concat incremental** (`X = pd.concat([X, X_j])` + `del X_j` por vuelta) — la
+versión que acumulaba las N particiones para un concat final hacía OOM.
 
 ### 39 features
 
@@ -121,7 +129,8 @@ candidatos va **por lotes de usuarios** (`TAMANO_LOTE_USUARIOS`, evita `ArrayMem
 | Ranker, +recencia (4 feat) + refit de etapa 1 (39 feat) | 0.143336 ± 0.00290 (a `n_por_fuente=75`) | 0.06149 |
 | Ranker, +BM25 en la matriz de ALS (`K1=10, B=0.75`) | 0.132313 ± 0.00219 (`n_por_fuente=150`) | 0.06182 |
 | Ranker, +presupuesto de autor (`n_por_fuente_autor=500`) | 0.134117 ± 0.00096 | 0.06316 |
-| Ranker, +ventana rodante multi-corte (`n_cortes=3`) | 0.136561 ± 0.00178 | **0.06667** |
+| Ranker, +ventana rodante multi-corte (`n_cortes=3`) | 0.136561 ± 0.00178 | 0.06667 |
+| Ranker, ventana rodante `n_cortes=5` | 0.137854 ± 0.00148 | **0.06753** |
 
 Nota: los NDCG locales solo son comparables **dentro** del mismo `n_por_fuente` (la fila de
 recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
@@ -201,7 +210,7 @@ recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
   (recall 0.535 → 0.499); (b) lambdarank con 3 positivos "del pasado reciente" desdibuja el
   objetivo — `test_final` es EL libro siguiente, no "cualquiera de los últimos 3".
   Revertido. **La versión bien hecha SÍ funcionó** (ventana rodante multi-corte, récord
-  0.06667 — ver "El modelo actual · Etapa 2"): 1 positivo por grupo y **una etapa 1 propia
+  0.06753 — ver "El modelo actual · Etapa 2"): 1 positivo por grupo y **una etapa 1 propia
   por corte** que solo achica su propio historial. La lección del fallo: no es que "más
   supervisión" esté mal, es que hay que darle a cada ejemplo su estado de etapa 1 correcto.
 - **Filtrar los ejemplos de entrenamiento del reranker por historial mínimo**
@@ -307,14 +316,15 @@ modelo de producción, `n_por_fuente_autor=500`).
 - `uv run pytest` — suite (122 tests).
 - `uv run python -m src.recsys.submit --model ranker` — genera el CSV en
   `outputs/submissions/` (usa `--tag` para un sufijo descriptivo; los nombres nunca se
-  pisan). Entrena con ventana rodante `n_cortes=3` (`N_CORTES_RANKER_SUBMISSION`).
+  pisan). Entrena con ventana rodante `n_cortes=5` (`N_CORTES_RANKER_SUBMISSION`).
 - `uv run python scripts/evaluate_ranker.py` — CV 3 seeds + NDCG por bucket de actividad +
-  `feature_importances_` (`N_CORTES = 3`, refleja producción).
+  `feature_importances_` (`N_CORTES = 5`, refleja producción; ~34 min/seed en frío).
 - `uv run python scripts/recall_candidatos.py` — recall del set + posición del objetivo.
 - `scripts/comparar_features_pareado.py` / `comparar_generadores_pareado.py` — test pareado
   (editar `FEATURES_A`/`FEATURES_B` o `FUENTES_A`/`FUENTES_B`).
 - `scripts/comparar_cortes_pareado.py` — test pareado `n_cortes=1` vs `3` (ventana rodante,
-  estrategia 1 — **aplicada**, récord 0.06667). `n_cortes=5` hace OOM.
+  estrategia 1 — **aplicada**, récord 0.06753 con `n_cortes=5`). Editar `CORTES` para otras
+  profundidades; con `ctx_base` (`n_cortes=1`) vivo, `n_cortes=5` es límite de RAM.
 - `scripts/tune_retrievers.py` — optuna sobre retrievers colaborativos alternativos (BPR /
   LMF / cosine-kNN / BM25-kNN) maximizando recall@200 complementario a ALS. Escribe
   `data/cache/tune_retrievers.json`. (Estrategia 2 — probada y descartada, ver arriba.)
@@ -323,10 +333,11 @@ modelo de producción, `n_por_fuente_autor=500`).
   de presupuesto/BM25), `probe_*.py`.
 
 **Cache de contexto**: `preparar_pipeline_cacheado` guarda el contexto en `data/cache/`
-(~3 GB c/u con `n_cortes=1`, ~7 GB con `n_cortes=3`, gitignored). La clave = `seed` +
-`n_por_fuente*` + `n_cortes` + hash de los bytes de `ranker.py` → editar `ranker.py`
+(~3 GB c/u con `n_cortes=1`, ~7 GB con `=3`, ~11 GB con `=5`, gitignored). La clave = `seed`
++ `n_por_fuente*` + `n_cortes` + hash de los bytes de `ranker.py` → editar `ranker.py`
 invalida todo. Para **barridos**: un proceso por valor (los contextos no se liberan bien
-entre iteraciones y agotan la RAM — `n_cortes=5` hace OOM incluso solo).
+entre iteraciones y agotan la RAM). `evaluate_ranker.py` con `n_cortes=5` corre los 3 seeds
+en un proceso porque libera cada contexto antes del siguiente.
 
 ---
 

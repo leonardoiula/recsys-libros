@@ -1,9 +1,10 @@
-# Estrategias para superar el plateau (récord actual 0.06667)
+# Estrategias para superar el plateau (récord actual 0.06753)
 
 Análisis para decidir el próximo paso grande. Escrito con el modelo en el plateau 0.06316
 (6 fuentes → `LGBMRanker`, 7 ángulos contra la forma de U fallados, generación de
 candidatos por heurísticas agotada). **La estrategia 1 (ventana rodante) lo rompió: Kaggle
-0.06316 → 0.06667** (ver más abajo). Las estrategias 2 y 3 se probaron y no rindieron.
+0.06316 → 0.06667 (`n_cortes=3`) → 0.06753 (`=5`)** (ver más abajo). Las estrategias 2 y 3
+se probaron y no rindieron.
 
 ## Dónde está la pérdida
 
@@ -17,8 +18,8 @@ candidatos por heurísticas agotada). **La estrategia 1 (ventana rodante) lo rom
    usuario lee **y le gusta**", no cualquier lectura.
 4. ~~El `LGBMRanker` entrena con **7.932 queries** (1 por usuario). Es muy poca supervisión
    para 39 features.~~ **Saldado por la estrategia 1**: la ventana rodante multi-corte lo
-   subió a ~21.900 queries (2,76×) y dio el récord 0.06667. Sigue habiendo margen para más
-   cortes si se resuelve el OOM.
+   subió a ~21.900 queries con `n_cortes=3` (récord 0.06667) y más con `=5` (0.06753). El
+   CV sigue subiendo con la profundidad — queda margen para probar `n_cortes` > 5.
 
 ## Ya descartado (no re-intentar)
 
@@ -35,27 +36,31 @@ candidatos por heurísticas agotada). **La estrategia 1 (ventana rodante) lo rom
 
 Ordenadas por (leverage × probabilidad) / esfuerzo.
 
-### 1. Entrenamiento del reranker con ventana rodante (multi-corte)  ·  APLICADA (récord 0.06667)
+### 1. Entrenamiento del reranker con ventana rodante (multi-corte)  ·  APLICADA (récord 0.06753)
 
 **Estado (2026-09-10): implementada y adoptada — el mayor salto desde recencia+refit.**
-`N_CORTES_RANKER` en `ranker.py` (default 1, dev), `N_CORTES_RANKER_SUBMISSION = 3` en
+`N_CORTES_RANKER` en `ranker.py` (default 1, dev), `N_CORTES_RANKER_SUBMISSION = 5` en
 `submit.py`. Además del ejemplo `(historial → x_{m-1})` por usuario, se agregan los cortes
-`x_{m-2}` y `x_{m-3}`: el corte `j` predice `x_{m-j}` con **su propia etapa 1** fiteada solo
+`x_{m-2}…x_{m-5}`: el corte `j` predice `x_{m-j}` con **su propia etapa 1** fiteada solo
 sobre `x_1…x_{m-1-j}` y sus features sobre ese mismo historial — next-item genuino, sin
-leakage, **1 positivo por grupo**. ~2,76× la supervisión (7.932 → ~21.900 queries).
-`test_final` y el recall del set de candidatos no cambian.
+leakage, **1 positivo por grupo**. Los usuarios con poco historial se caen solos de los
+cortes profundos. `test_final` y el recall del set de candidatos no cambian.
 
-- **Resultado**: test pareado seed 42 **+2,32 σ / P=0.985**; CV 3 seeds 0.134117 →
-  **0.136561** (+1,82%, positivo en los 3); Kaggle 0.06316 → **0.06667** (+5,6%). Sin
-  regresión por bucket de actividad (los cortes profundos son power-user-heavy pero el
-  bucket casual 2-4 quedó plano). `n_interacciones_usuario` sube en importancia — el modelo
-  ve al usuario a varias profundidades de historial.
+- **Resultado**: test pareado seed 42 (`n_cortes=3` vs `1`) **+2,32 σ / P=0.985**.
+  Progresión CV 3 seeds (positivo en los 3 en cada salto) / Kaggle: `n_cortes=1` 0.134117 →
+  `=3` **0.136561** (Kaggle 0.06316 → **0.06667**) → `=5` **0.137854** (Kaggle → **0.06753**).
+  Sin regresión por bucket — los buckets **casuales** (2-4, 5-9) *mejoran* a más
+  profundidad: más diversidad de profundidad-de-historial en el entrenamiento → mejor
+  generalización a usuarios de historial corto. `n_interacciones_usuario` sube en importancia.
 - **Por qué el `n_val_ranker` barato había fallado** (−10 σ): metía N positivos en un grupo
   y compartía **una sola** etapa 1 (fiteada sobre datos recientes) para todos los cortes →
   leakage en las etiquetas viejas + `train_candidatos` global achicado. La versión buena da
   a cada corte su etapa 1 correcta.
-- **Pendiente**: `n_cortes=5` hace OOM (contexto ~10 GB); haría falta concat incremental en
-  `preparar_pipeline` para probar >3.
+- **OOM resuelto**: el loop hace concat **incremental** (`X = pd.concat([X, X_j])` + `del
+  X_j` por vuelta); la versión que acumulaba las N particiones para un concat final hacía
+  OOM a `n_cortes=5` (~26M filas de unión + N particiones vivas + etapa 1 transitoria).
+- **Pendiente**: probar `n_cortes` > 5 (el CV sigue subiendo; cada contexto ~11 GB y ~34
+  min/seed). Y un `n_cortes` adaptativo por usuario (más cortes para los de historial largo).
 
 ### 2. Retrieval aprendido (dual-encoder / two-tower como fuente de candidatos)  ·  esfuerzo alto, riesgo medio
 
@@ -142,10 +147,11 @@ capturan solo groseramente. Encoder tipo BERT4Rec → fuente de candidatos + una
 
 ## Recomendación
 
-1. ~~estrategia 1 — ventana rodante~~ **APLICADA: Kaggle 0.06316 → 0.06667 (+5,6%), récord.**
-   El reranker estaba hambriento (7.932 queries) y darle 2,76× supervisión next-item, con
-   cada corte a su estado de etapa 1 correcto, era el lever estructural más grande. Pendiente
-   probar `n_cortes` > 3 (hoy hace OOM).
+1. ~~estrategia 1 — ventana rodante~~ **APLICADA: Kaggle 0.06316 → 0.06667 (`n_cortes=3`) →
+   0.06753 (`=5`), récord.** El reranker estaba hambriento (7.932 queries); darle supervisión
+   next-item con cada corte a su estado de etapa 1 correcto fue el lever estructural más
+   grande. El CV sube monótono con la profundidad — **probar `n_cortes` > 5** es lo primero
+   pendiente (cada contexto ~11 GB, ~34 min/seed; el OOM ya se resolvió con concat incremental).
 2. ~~estrategia 3 — seed-bag~~ **probada: +1,64% CV, plano en Kaggle.** Código opt-in.
 3. ~~estrategia 2 — retrieval aprendido (vía barata)~~ **probada: recall +0,02, regresión en
    Kaggle.** El cuello de botella es el recall *distinguible*, no el crudo.

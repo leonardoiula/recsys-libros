@@ -19,6 +19,7 @@ from recsys.models.ranker import (
     armar_dataset_entrenamiento,
     armar_dataset_entrenamiento_por_lotes,
     calcular_features_auxiliares,
+    fit_ranker,
     generar_candidatos_con_features,
     generar_candidatos_con_features_por_lotes,
     preparar_pipeline,
@@ -1111,6 +1112,24 @@ def test_armar_dataset_inyecta_positivo_faltante():
     assert fila_inyectada["rank_als"] == 150  # sentinel
     assert fila_inyectada["rank_autor_candidato"] == 20  # sentinel (default n_por_autor)
     assert fila_inyectada["rank_resumen_candidato"] == 150  # sentinel (n_por_fuente)
+
+
+def test_fit_ranker_n_bag_devuelve_ensamble_promediado():
+    rng = np.random.default_rng(0)
+    n_grupos, por_grupo = 40, 8
+    X = pd.DataFrame(rng.normal(size=(n_grupos * por_grupo, len(FEATURES))), columns=FEATURES)
+    y = np.zeros(n_grupos * por_grupo, dtype=int)
+    y[::por_grupo] = 1  # 1 positivo por grupo
+    group = [por_grupo] * n_grupos
+
+    uno = fit_ranker(X, pd.Series(y), group, n_bag=1)
+    bag = fit_ranker(X, pd.Series(y), group, n_bag=3)
+
+    assert len(bag.modelos) == 3
+    assert len(bag.predict(X)) == len(X)
+    assert len(bag.feature_importances_) == len(FEATURES)
+    # el ensamble promedia -> su score difiere del modelo unico
+    assert not np.allclose(bag.predict(X), uno.predict(X))
 
 
 def test_armar_dataset_usuario_sin_candidatos_igual_aporta_el_positivo():

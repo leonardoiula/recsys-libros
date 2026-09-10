@@ -65,7 +65,15 @@ ataca el techo de recall 0.535 directamente.
   semánticos vs TF-IDF (fallido) fue como *feature*, no como retriever entrenado — no lo
   descarta pero baja la expectativa.
 
-### 3. Ensamble / blend  ·  esfuerzo bajo, riesgo muy bajo  ·  hacer igual
+### 3. Ensamble / blend  ·  esfuerzo bajo, riesgo muy bajo
+
+**Estado (2026-09-09): seed-bag probado, resultado dentro del ruido.** `n_bag=5` en
+`fit_ranker` (ver `N_BAG_RANKER`): CV 3 seeds +1,64% (positivo en las 3), ponderado por
+actividad +5,7%, pero Kaggle plano (0.06307 vs 0.06316). El código queda (opt-in a 5 para
+submissions finales, default 1). **Pendiente el paso que rinde de verdad**: blend de
+**familias de modelos distintas** (no 5 copias del mismo `LGBMRanker`) — p.ej.
+rank-average o meta-learner sobre {ranker, ALS solo, popularidad por género reciente,
+ranking content-only, un 2º ranker con features/objetivo distintos}.
 
 La entrega es **un solo `LGBMRanker`**. Casi toda solución competitiva de Kaggle es un
 blend:

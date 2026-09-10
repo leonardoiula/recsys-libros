@@ -142,6 +142,22 @@ sobre `bm25=None`, con Recall@200 todavía levemente positivo -- el mejor
 punto de una grilla donde las 12 configs mejoraron el NDCG. Ver
 `experiments/legacy/bitacora.md`."""
 
+N_BAG_RANKER = 1
+"""Cantidad de `LGBMRanker` a ensamblar (seed-bag) en `fit_ranker`. `1` =
+un solo modelo (comportamiento histórico, **default de desarrollo**). Con
+`>1`, `fit_ranker` entrena N modelos con `random_state` distinto +
+`subsample`/`colsample_bytree`<1 (sin muestreo serían idénticos) y
+`.predict` promedia los scores crudos -- reduce la varianza de ajuste.
+
+`n_bag=5` dio +1,64% en el CV de 3 seeds (positivo en las 3;
+0.134117→0.136318) y ponderado por actividad +5,7%, pero **plano en Kaggle**
+(0.06307 vs 0.06316, dentro del ruido de una submission ~0.0065). El
+mecanismo no puede empeorar en esperanza, así que queda como **opt-in
+para las submissions finales** (subir esta constante a 5 solo entonces);
+no se pone de default porque haría cada `evaluar_con_params` /
+`ndcg_por_usuario` 5× más lento en el día a día. Ver
+`scripts/comparar_ensamble_pareado.py` y `experiments/estrategias.md`."""
+
 
 def _pesos_por_recencia(interacciones: pd.DataFrame) -> pd.Series:
     """Peso de descuento por posición en el historial de cada usuario:
@@ -1106,6 +1122,24 @@ def armar_dataset_entrenamiento(
     return dataset[FEATURES], dataset["y"], tamanos_grupo
 
 
+class _RankerBag:
+    """Ensamble de N `LGBMRanker` (seed-bag). `.predict` promedia los
+    scores crudos de los sub-modelos. Presenta la misma interfaz mínima
+    (`predict`, `feature_importances_`) que un `LGBMRanker` para el resto
+    del pipeline (`recomendar_por_usuario`, `ndcg_por_usuario`,
+    `scripts/evaluate_ranker.py`). Ver `N_BAG_RANKER`."""
+
+    def __init__(self, modelos: list):
+        self.modelos = modelos
+
+    def predict(self, X):
+        return np.mean([m.predict(X) for m in self.modelos], axis=0)
+
+    @property
+    def feature_importances_(self):
+        return np.mean([m.feature_importances_ for m in self.modelos], axis=0)
+
+
 def fit_ranker(
     X: pd.DataFrame,
     y: pd.Series,
@@ -1113,8 +1147,9 @@ def fit_ranker(
     X_eval: pd.DataFrame | None = None,
     y_eval: pd.Series | None = None,
     group_eval: list | None = None,
+    n_bag: int = 1,
     **params,
-) -> lgb.LGBMRanker:
+):
     """Entrena un `LGBMRanker` (objetivo `lambdarank`) sobre el dataset
     armado por `armar_dataset_entrenamiento`.
 
@@ -1124,6 +1159,13 @@ def fit_ranker(
     Si se pasa un `X_eval`/`y_eval`/`group_eval`, se usa para early
     stopping (frena el boosting cuando deja de mejorar), no para buscar
     hiperparámetros.
+
+    `n_bag > 1` (ver `N_BAG_RANKER`): entrena `n_bag` modelos con
+    `random_state = base + i` y `subsample`/`colsample_bytree` < 1 (sin
+    muestreo los N serían idénticos), y devuelve un `_RankerBag` cuyo
+    `.predict` promedia los scores crudos -- reduce la varianza de ajuste.
+    Con `n_bag == 1` (default) el comportamiento es idéntico al histórico.
+    El early stopping solo aplica a `n_bag == 1`.
     """
     defaults = dict(
         objective="lambdarank",
@@ -1133,8 +1175,18 @@ def fit_ranker(
         random_state=42,
     )
     defaults.update(params)
-    modelo = lgb.LGBMRanker(**defaults)
 
+    if n_bag > 1:
+        base_seed = defaults["random_state"]
+        bag_defaults = {"subsample": 0.8, "subsample_freq": 1, "colsample_bytree": 0.8, **defaults}
+        modelos = []
+        for i in range(n_bag):
+            m = lgb.LGBMRanker(**{**bag_defaults, "random_state": base_seed + i})
+            m.fit(X, y, group=group)
+            modelos.append(m)
+        return _RankerBag(modelos)
+
+    modelo = lgb.LGBMRanker(**defaults)
     fit_kwargs: dict = {}
     callbacks = []
     if X_eval is not None:
@@ -1481,7 +1533,9 @@ def evaluar_con_params(contexto: dict, lgbm_params: dict | None = None) -> dict:
     `evaluation.evaluar_ndcg_ponderado_por_actividad`) sin tener que
     recomputar el ranking.
     """
-    modelo_ranker = fit_ranker(contexto["X"], contexto["y"], contexto["group"], **(lgbm_params or {}))
+    modelo_ranker = fit_ranker(
+        contexto["X"], contexto["y"], contexto["group"], n_bag=N_BAG_RANKER, **(lgbm_params or {})
+    )
 
     recs_ranker = recomendar_por_usuario(
         usuarios=contexto["usuarios_test"],
@@ -1637,7 +1691,7 @@ def ndcg_por_usuario(ctx: dict, features: list[str] | None = None) -> dict:
     `ctx` es el dict que arma `preparar_pipeline`/`preparar_pipeline_cacheado`.
     """
     features = list(ctx["X"].columns) if features is None else features
-    modelo = fit_ranker(ctx["X"][features], ctx["y"], ctx["group"])
+    modelo = fit_ranker(ctx["X"][features], ctx["y"], ctx["group"], n_bag=N_BAG_RANKER)
     candidatos_por_usuario = {u: g for u, g in ctx["candidatos_test"].groupby("id_lector", sort=False)}
     relevantes_por_usuario = ctx["test_final"].groupby("id_lector")["id_libro"].agg(set).to_dict()
     libros_leidos = ctx["libros_leidos_hasta_ranker"]

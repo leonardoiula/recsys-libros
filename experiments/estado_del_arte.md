@@ -211,6 +211,15 @@ recencia/refit se midió a 75 por memoria; las dos siguientes a 150).
   patrón de serie limpio, y de los 8904 test targets solo el **0,8%** es "el siguiente de
   una saga que el usuario viene leyendo". Techo de ganancia ~+0,0005 en Kaggle. No se
   implementó el parser.
+- **Seed-bag del `LGBMRanker`** (`N_BAG_RANKER`, `n_bag` en `fit_ranker`, `_RankerBag` —
+  N modelos con `random_state`/`subsample`/`colsample` distintos, promedio de scores) —
+  paired test seed=42 +1,77 σ, CV 3 seeds **+1,64% positivo en las 3** (0.134117→0.136318),
+  ponderado por actividad +5,7%. Pero **plano en Kaggle** (0.06307 vs 0.06316, dentro del
+  ruido de una submission ~0.0065). El mecanismo no puede empeorar en esperanza → el
+  código **queda** (`comparar_ensamble_pareado.py`, `_RankerBag`) con `N_BAG_RANKER=1` de
+  default (dev rápido) y opt-in a 5 para submissions finales. El valor real de la
+  estrategia de ensamble está en un blend de familias de modelos distintas, no en el
+  seed-bag solo. Ver `experiments/estrategias.md`.
 
 ---
 

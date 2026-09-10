@@ -29,6 +29,7 @@ from recsys.models.popularity_segmentada import (
 )
 from recsys.models.ranker import (
     BM25_ALS,
+    N_BAG_RANKER,
     armar_dataset_entrenamiento_por_lotes,
     calcular_features_auxiliares,
     fit_ranker,
@@ -187,7 +188,7 @@ def _recomendaciones_ranker(usuarios: list, k: int) -> dict:
         n_por_fuente=N_POR_FUENTE_RANKER,
         n_por_autor=N_POR_AUTOR_RANKER,
     )
-    modelo_ranker = fit_ranker(X, y, group)
+    modelo_ranker = fit_ranker(X, y, group, n_bag=N_BAG_RANKER)
 
     # La etapa 1 fiteada sobre train_candidatos ya no hace falta -- se
     # refitea sobre todos los datos más abajo. Liberarla antes evita

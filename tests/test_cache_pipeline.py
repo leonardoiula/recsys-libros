@@ -62,6 +62,28 @@ def test_cache_distingue_por_seed_y_fuentes_activas(tmp_path, monkeypatch):
     assert len(llamadas) == 3
 
 
+def test_barre_contextos_con_hash_de_codigo_viejo(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "preparar_pipeline", lambda *a, **kw: {"marca": "ok"})
+    interacciones, libros, lectores = _datos_minimos()
+
+    # un contexto de una version anterior de ranker.py (hash != el actual),
+    # uno con formato de nombre parecido pero que no es un contexto, y un
+    # archivo sin relacion -- solo el primero debe desaparecer.
+    stale = tmp_path / "ranker_ctx_seed99_nf150_na20_nfadef_k20_fuentes-todas_sinrefit_n1-1-1_deadbeef0000.pkl"
+    stale.write_bytes(b"viejo")
+    otro = tmp_path / "otra_cosa.pkl"
+    otro.write_bytes(b"x")
+    nota = tmp_path / "notas.txt"
+    nota.write_text("y")
+
+    R.preparar_pipeline_cacheado(interacciones, libros, lectores, seed=42, cache_dir=tmp_path)
+
+    assert not stale.exists()  # barrido: hash de codigo viejo
+    assert otro.exists() and nota.exists()  # intactos: no matchean ranker_ctx_*.pkl
+    vigentes = list(tmp_path.glob("ranker_ctx_seed42_*.pkl"))
+    assert len(vigentes) == 1  # el recien escrito, con el hash actual
+
+
 def test_cache_hit_devuelve_el_mismo_contenido_que_el_cache_miss(tmp_path, monkeypatch):
     """El contexto que devuelve `preparar_pipeline_cacheado` tiene que ser
     idéntico venga de un cache-miss (recién calculado) o de un cache-hit

@@ -1837,6 +1837,12 @@ def preparar_pipeline_cacheado(
     datos de igual tamaño pero contenido distinto; en ese caso hay que
     borrar `cache_dir` a mano.
 
+    En cada llamada barre de `cache_dir` los `ranker_ctx_*.pkl` con un hash
+    de código VIEJO (ya inalcanzables): sin esto, cada edición de
+    `ranker.py` durante una sesión deja una copia de ~3-11 GB por versión y
+    el caché crece sin techo (llegó a 135 GB). OJO: si estás comparando a
+    mano dos versiones de `ranker.py`, esto borra los contextos de la otra.
+
     `candidatos_test` ya sale de `preparar_pipeline` con `id_lector`/
     `id_libro` en `category` (ver `generar_candidatos_con_features_por_lotes`)
     -- antes esta función convertía esas columnas a `category` solo al
@@ -1851,6 +1857,16 @@ def preparar_pipeline_cacheado(
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     hash_codigo = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+
+    # Barre los contextos de versiones anteriores de `ranker.py` (hash != el
+    # actual): quedaron inalcanzables y solo ocupan disco -- ver docstring.
+    for viejo in cache_dir.glob("ranker_ctx_*.pkl"):
+        if not viejo.name.endswith(f"_{hash_codigo}.pkl"):
+            try:
+                viejo.unlink()
+            except OSError:
+                pass
+
     fuentes_label = "todas" if fuentes_activas is None else "+".join(sorted(fuentes_activas))
     refit_label = "refit" if refit_para_test else "sinrefit"
     nfa_label = "def" if n_por_fuente_autor is None else str(n_por_fuente_autor)

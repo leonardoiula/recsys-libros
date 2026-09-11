@@ -155,16 +155,28 @@ candidatos** tiene aún menos chance — las 7ª fuentes fallaron 3 veces.
   `LGBMRanker` no logra distinguir cuáles de los extra son buenos — **no vale la pena
   intentar una 8ª fuente sin una idea distinta para ese problema puntual**.
 
-### 6. Modelo secuencial revisado (masked-item / BERT4Rec)  ·  esfuerzo alto, riesgo medio-alto
+### 6. Modelo secuencial revisado (masked-item / BERT4Rec)  ·  CERRADA, descartada
 
 El descarte de secuenciales fue sobre el orden *fino*. Pero (a) el **masked-item modeling**
 (predecir un libro enmascarado a partir del resto, bidireccional) es mucho más robusto al
 orden ruidoso que la autoregresión estricta, y (b) el **drift inter-mensual** (los usuarios
 pasan por fases de género/autor) es señal real que las features de "bag of historial"
-capturan solo groseramente. Encoder tipo BERT4Rec → fuente de candidatos + una feature de
-"embedding de interés actual".
+capturan solo groseramente. Encoder tipo BERT4Rec (`models/sequential.py`, `torch` CPU-only,
+eliminado tras el descarte) → **solo como feature** (`score_bert4rec_candidato`), sin fuente
+de candidatos nueva (4/4 fuentes nuevas habían fallado ya esta sesión, no tenía sentido
+apostar una 5ª sin validar antes la señal).
 
-- **Riesgo**: entrenar un transformer sobre 461k interacciones es poca data.
+- **Riesgo anticipado**: entrenar un transformer sobre 461k interacciones (mediana 9/usuario)
+  es poca data — se cumplió.
+- **Costo**: `fit_bert4rec` ~223s/fit sobre datos reales (452k interacciones, vocab podado a
+  18,7k libros con ≥3 interacciones), inferencia batched ~290s para los 10.673 usuarios.
+  Viable para un test pareado (1 fit), caro para CV/Kaggle con `n_cortes=5` (~6 fits).
+- **Resultado** (test pareado seed 42, `nfa=500`): 41 features 0.132900 vs 40 (sin la nueva)
+  0.133997 → **−1,44 σ, P(mejora)=0.077**, CI95 bootstrap [−0,0025, +0,0004]. No pasa el
+  gatekeeper (~1,5 σ positivo). Mismo patrón que LMF/rating/difusión-fuente: señal plausible
+  a priori que no sobrevive el pareado a config de producción. Revertida íntegramente
+  (`sequential.py`/`test_sequential.py` eliminados, `ranker.py`/`comparar_features_pareado.py`
+  vueltos a HEAD, `torch` removido de las dependencias). No llegó a CV ni a Kaggle.
 
 ---
 
@@ -183,14 +195,14 @@ capturan solo groseramente. Encoder tipo BERT4Rec → fuente de candidatos + una
 5. ~~estrategia 5 — difusión 2-hop~~ **CERRADA: feature APLICADA (pareado +1,17 σ, Kaggle
    0.06753 → 0.06824), fuente de candidatos DESCARTADA (pareado −0,80 σ — 4ª fuente nueva
    que falla).**
-6. **Lo que queda**: estrategia 6 (BERT4Rec / masked-item) como fuente de candidatos +
-   feature de "interés actual" — mayor ceiling, mayor costo/riesgo (461k interacciones es
-   poca data para un transformer). **Todo lo barato se probó**; lo demás son builds
-   grandes de payoff incierto.
+6. ~~estrategia 6 — BERT4Rec / masked-item (feature)~~ **probada: −1,44 σ a `nfa=500`,
+   revertida. No llegó a CV ni Kaggle.** El build más grande y caro de la ronda (`torch`,
+   ~223s/fit) sin señal discriminativa — 461k interacciones / mediana 9 por usuario resultó
+   ser, como se anticipó, poca data para un transformer.
 
 **Observación meta**: el proyecto había sobre-invertido en el *set de features* del reranker
-(y esta ronda lo confirmó: LMF-feature, corroboración, relativas, rating predicho — todas
-ruido; solo la difusión 2-hop movió algo, y apenas). El lever que rindió de verdad fue
-**más señal de entrenamiento** (estrategia 1). Sigue abierto sin idea barata clara: (b)
-calidad del pool de candidatos (retrieval que traiga
-candidatos *distinguibles*, no solo más recall) y (c) ensamblado de familias distintas.
+(y esta ronda lo confirmó: LMF-feature, corroboración, relativas, rating predicho, BERT4Rec —
+todas ruido; solo la difusión 2-hop movió algo, y apenas). El lever que rindió de verdad fue
+**más señal de entrenamiento** (estrategia 1). **Todo lo barato y lo caro de esta lista ya se
+probó** — sigue abierto sin idea clara: (b) calidad del pool de candidatos (retrieval que
+traiga candidatos *distinguibles*, no solo más recall) y (c) ensamblado de familias distintas.

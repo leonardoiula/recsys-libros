@@ -237,6 +237,15 @@ etapa 1) / `train_ranker` (etiquetas) / `test_final` (hold-out, solo local).
 
 - **Modelos secuenciales (SASRec / GRU4Rec)** — 67,5 % de los gaps entre interacciones son 0
   días: el "orden" intradía es arbitrario.
+- **BERT4Rec / masked-item como feature** (estrategia 6; `models/sequential.py`, `torch`
+  CPU-only, eliminado tras el descarte). Encoder MLM sobre el historial cronológico
+  (vocab podado a 18,7k libros con ≥3 interacciones, secuencias de hasta 50 ítems),
+  `score_bert4rec_candidato` = softmax en la posición `[MASK]` final (truco estándar de
+  inferencia). Costo real: ~223s/fit, ~290s inferencia batched para 10.673 usuarios.
+  Pareado seed 42, `nfa=500`: **−1,44 σ, P(mejora)=0.077** (0.132900 vs 0.133997) — no pasa
+  el gatekeeper. Mismo patrón que LMF/rating/difusión-fuente: 461k interacciones / mediana 9
+  por usuario resultó, como se anticipó, poca data para un transformer. Revertida
+  íntegramente, no llegó a CV ni Kaggle.
 - **LightFM / dos torres / FM** — reemplazarían a ALS (que no es el cuello de botella); su
   metadata ya está en las features.
 - **Rutear usuarios livianos a popularidad por género** (`recomendar_hibrido`) — ALS le gana
@@ -279,19 +288,18 @@ Diagnóstico: `scripts/diagnostico_posicion_popularidad.py`, `diagnostico_franja
 
 ## Qué queda por probar (`experiments/estrategias.md`)
 
-Se acabó lo barato: LMF-feature, corroboración, relativas, rating, difusión-como-fuente —
-todo ruido o negativo. Solo `score_difusion_candidato` como **feature** movió algo (y poco).
-Lo que queda es más caro:
+Se acabó lo barato **y lo caro**: LMF-feature, corroboración, relativas, rating,
+difusión-como-fuente, BERT4Rec — todo ruido o negativo. Solo `score_difusion_candidato`
+como **feature** movió algo (y poco). Lo único que queda en la lista:
 
-- **Estrategia 6 — BERT4Rec / masked-item** como fuente + feature de "interés actual". Mayor
-  ceiling, mayor costo/riesgo (461k interacciones es poca data para un transformer).
-- Blend de **familias de modelos distintas** (no seed-bag).
+- Blend de **familias de modelos distintas** (no seed-bag) — sin explorar todavía.
 
 El lever que rindió de verdad esta ronda fue **más señal de entrenamiento** (ventana
 rodante). El set de features y de fuentes de candidatos está saturado — **4/4 intentos de
 7ª fuente fallaron** (editorial, usuario-usuario, LMF, difusión), incluso cuando la señal
-de base ya era buena. La barrera no es "encontrar más candidatos", es que el `LGBMRanker`
-no logra distinguir cuáles de los candidatos extra son buenos.
+de base ya era buena, y el build más grande de la ronda (BERT4Rec) tampoco pasó el pareado.
+La barrera no es "encontrar más candidatos" ni "más señal de interés", es que el
+`LGBMRanker` no logra distinguir cuáles de los candidatos extra son buenos.
 
 ---
 

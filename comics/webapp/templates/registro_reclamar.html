@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Reclamar usuario - Comics Recsys{% endblock %}
+{% block content %}
+<h1>Reclamar usuario</h1>
+
+<form class="linea" method="get" action="{{ url_for('auth.registro_buscar') }}">
+  <label>Nombre
+    <input type="text" name="q" value="{{ query }}" required>
+  </label>
+  <button type="submit">Buscar</button>
+</form>
+
+{% if query and not resultados %}
+  <p>No encontramos ningún usuario sin reclamar con ese nombre.</p>
+{% endif %}
+
+{% for usuario in resultados %}
+  <form class="linea" method="post" action="{{ url_for('auth.registro_reclamar') }}" style="margin-top:1rem">
+    <input type="hidden" name="id_usuario" value="{{ usuario.id_usuario }}">
+    <span>{{ usuario.nombre }} ({{ usuario.n_reviews }} reviews)</span>
+    <label>Elegir una contraseña
+      <input type="password" name="password" required>
+    </label>
+    <button type="submit">Soy yo, reclamar</button>
+  </form>
+{% endfor %}
+{% endblock %}

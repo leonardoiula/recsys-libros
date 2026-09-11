@@ -34,6 +34,17 @@ Datos en `comics/data/raw/comics.db` (sqlite), 4 tablas:
 - `uv run pytest comics/tests` corre los tests del subproyecto (no pegan a la red, usan fixtures de HTML guardado)
 - `uv run python comics/scripts/scrape_comics.py --semanas N --desde AAAA-MM-DD` scrapea N semanas hacia atrás desde esa fecha. Reanudable: correrlo de nuevo salta los issues ya guardados (`db.existe_comic`).
 - `uv run python comics/scripts/descargar_tapas.py` descarga a `comics/static/covers/` las imágenes de tapa (`comics.img_src`) de lo que ya esté en la BD, para el front Flask. Reanudable (salta las que ya existen en disco). Son imágenes con copyright de las editoriales -- uso académico no comercial, no redistribuir el dataset de imágenes.
+- `uv run python comics/scripts/migrar_password_hash.py` agrega `usuarios.password_hash` a una `comics.db` ya poblada (idempotente, correr una vez después de scrapear/actualizar el dataset).
+- `uv run python comics/scripts/precomputar_item_item.py` recalcula la similitud item-item cacheada en `comics/data/cache/item_item_top50.npz` que usa el recomendador del webapp -- correr después de cualquier scraping nuevo, antes de levantar el sitio.
+- `uv run python comics/webapp/wsgi.py` levanta el sitio Flask en local (`http://127.0.0.1:5000`). Necesita `comics.db` migrado y el `.npz` de arriba ya generados.
+
+## Webapp (login + recomendaciones)
+
+MVP del sitio en `comics/webapp/` (Flask, app factory en `webapp/__init__.py::create_app`). Login con dos caminos: cuenta 100% nueva, o "reclamar" la identidad de un usuario scrapeado existente (buscarlo sin reclamar, setearle password). Recomienda con popularidad (fallback) + similitud item-item precomputada (`comics/webapp/recsys_runtime.py`), con una interfaz (`recomendar(..., perfil_coldstart=...)`) pensada para que una fase 2 (novela gráfica point-and-click de onboarding, todavía no implementada) pueda alimentar recomendaciones de usuarios sin historial sin tocar este código.
+
+Dashboard: "Te recomendamos" (con botones "Leído" para puntuar en el momento -- agrega una interacción real y actualiza el recomendador en memoria sin restart, ver `Recomendador.registrar_interaccion` -- y "+ Pila" para guardar para después, tabla nueva `pila_por_leer`, separada de `interacciones` para no ensuciar el entrenamiento del recomendador), "Tu pila por leer", y "Tu comiteca" (lo ya leído, paginado de a 30, ordenable por fecha/rating vía `?orden=` y filtrable por editorial vía `?editorial=` -- desplegable poblado solo con las editoriales que ese usuario tiene leídas).
+
+**Documentación didáctica completa (el por qué de cada decisión, no solo el qué) en `comics/docs/webapp/guia.md`** -- leer eso antes de tocar el webapp.
 
 ## Estado actual del dataset (actualizar a mano después de cada corrida grande)
 

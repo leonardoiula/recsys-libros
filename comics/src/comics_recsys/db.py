@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS comics (
 
 CREATE TABLE IF NOT EXISTS usuarios (
     id_usuario TEXT PRIMARY KEY,
-    nombre TEXT
+    nombre TEXT,
+    password_hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS interacciones (
@@ -59,6 +60,19 @@ CREATE TABLE IF NOT EXISTS critic_reviews (
     texto TEXT,
     url_externa TEXT,
     PRIMARY KEY (id_comic, outlet, reviewer),
+    FOREIGN KEY (id_comic) REFERENCES comics(id_comic)
+);
+
+-- "Pila por leer" del webapp (comics/webapp/): a diferencia de `interacciones`
+-- (reviews reales, scrapeadas o generadas al puntuar desde el sitio), esto es
+-- una lista de deseos sin rating -- separarla evita que entre sin querer como
+-- dato de entrenamiento del recomendador colaborativo.
+CREATE TABLE IF NOT EXISTS pila_por_leer (
+    id_usuario TEXT NOT NULL,
+    id_comic TEXT NOT NULL,
+    agregado_en TEXT,
+    PRIMARY KEY (id_usuario, id_comic),
+    FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario),
     FOREIGN KEY (id_comic) REFERENCES comics(id_comic)
 );
 """

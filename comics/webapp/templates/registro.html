@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Registrarme - Comics Recsys{% endblock %}
+{% block content %}
+<h1>Registrarme</h1>
+
+<section>
+  <h2>Cuenta nueva</h2>
+  <form class="linea" method="post" action="{{ url_for('auth.registro') }}">
+    <label>Nombre
+      <input type="text" name="nombre" required>
+    </label>
+    <label>Contraseña
+      <input type="password" name="password" required>
+    </label>
+    <button type="submit">Crear cuenta</button>
+  </form>
+</section>
+
+<section>
+  <h2>¿Ya sos un usuario de comicbookroundup.com?</h2>
+  <p>Buscá tu nombre entre los usuarios que ya scrapeamos y reclamá tu identidad
+     para ver recomendaciones basadas en tus reviews reales.</p>
+  <form class="linea" method="get" action="{{ url_for('auth.registro_buscar') }}">
+    <label>Nombre
+      <input type="text" name="q" required>
+    </label>
+    <button type="submit">Buscar</button>
+  </form>
+</section>
+{% endblock %}

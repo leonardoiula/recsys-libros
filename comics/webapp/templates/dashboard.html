@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Mi dashboard - Comics Recsys{% endblock %}
+
+{% macro card(comic, mostrar_rating=false, permitir_marcar_leido=false, permitir_pila=false, permitir_quitar_pila=false) %}
+  <div class="card">
+    {% if comic.img_src %}
+      <img src="{{ url_for('static', filename='covers/' + nombre_archivo_tapa(comic.id_comic, comic.img_src)) }}"
+           alt="{{ comic.titulo }}" loading="lazy">
+    {% endif %}
+    <p class="titulo">{{ comic.titulo }}</p>
+    <p class="detalle">{{ comic.serie }} #{{ comic.numero }}</p>
+    {% if mostrar_rating and comic.rating %}
+      <p class="detalle">Tu rating: {{ comic.rating }}</p>
+    {% endif %}
+    {% if permitir_marcar_leido or permitir_pila or permitir_quitar_pila %}
+      <div class="acciones">
+        {% if permitir_marcar_leido %}
+          <form method="post" action="{{ url_for('dashboard.marcar_leido', id_comic=comic.id_comic) }}">
+            <input type="number" name="rating" min="0" max="10" step="0.5" placeholder="0-10" required>
+            <button type="submit" title="Marcar como leído y puntuar">Leído</button>
+          </form>
+        {% endif %}
+        {% if permitir_pila %}
+          <form method="post" action="{{ url_for('dashboard.agregar_pila', id_comic=comic.id_comic) }}">
+            <button type="submit" title="Guardar para después">+ Pila</button>
+          </form>
+        {% endif %}
+        {% if permitir_quitar_pila %}
+          <form method="post" action="{{ url_for('dashboard.quitar_pila', id_comic=comic.id_comic) }}">
+            <button type="submit" title="Sacar de la pila">Quitar</button>
+          </form>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% block content %}
+<h1>Te recomendamos</h1>
+<div class="estante">
+  {% if recomendados %}
+    <div class="grid">
+      {% for comic in recomendados %}
+        {{ card(comic, permitir_marcar_leido=true, permitir_pila=true) }}
+      {% endfor %}
+    </div>
+  {% else %}
+    <p>Todavía no tenemos recomendaciones para vos.</p>
+  {% endif %}
+</div>
+
+<h1>Tu pila por leer</h1>
+<div class="estante">
+  {% if pila %}
+    <div class="grid">
+      {% for comic in pila %}
+        {{ card(comic, permitir_marcar_leido=true, permitir_quitar_pila=true) }}
+      {% endfor %}
+    </div>
+  {% else %}
+    <p>Todavía no guardaste nada para después. Usá "+ Pila" en una recomendación.</p>
+  {% endif %}
+</div>
+
+<h1>Tu comiteca</h1>
+{% if editoriales %}
+  <div class="controles">
+    <span>Ordenar por:</span>
+    {% for clave, (_, etiqueta) in ordenes.items() %}
+      <a href="{{ url_for('dashboard.index', orden=clave, editorial=editorial, pagina=1) }}"
+         class="{{ 'activo' if clave == orden else '' }}">{{ etiqueta }}</a>
+    {% endfor %}
+
+    <form method="get" action="{{ url_for('dashboard.index') }}">
+      <input type="hidden" name="orden" value="{{ orden }}">
+      <label for="filtro-editorial">Editorial:</label>
+      <select id="filtro-editorial" name="editorial" onchange="this.form.submit()">
+        <option value="" {{ "selected" if not editorial else "" }}>Todas</option>
+        {% for e in editoriales %}
+          <option value="{{ e }}" {{ "selected" if e == editorial else "" }}>{{ e }}</option>
+        {% endfor %}
+      </select>
+      <noscript><button type="submit">Filtrar</button></noscript>
+    </form>
+  </div>
+{% endif %}
+<div class="estante">
+  {% if leidos %}
+    <div class="grid">
+      {% for comic in leidos %}{{ card(comic, mostrar_rating=true) }}{% endfor %}
+    </div>
+  {% else %}
+    <p>Todavía no tenés comics leídos registrados{{ " con esa editorial" if editorial else "" }}.</p>
+  {% endif %}
+</div>
+{% if total_paginas > 1 %}
+  <nav class="paginacion">
+    {% if pagina > 1 %}
+      <a href="{{ url_for('dashboard.index', orden=orden, editorial=editorial, pagina=pagina - 1) }}">&laquo; Anterior</a>
+    {% endif %}
+    <span>Página {{ pagina }} de {{ total_paginas }}</span>
+    {% if pagina < total_paginas %}
+      <a href="{{ url_for('dashboard.index', orden=orden, editorial=editorial, pagina=pagina + 1) }}">Siguiente &raquo;</a>
+    {% endif %}
+  </nav>
+{% endif %}
+{% endblock %}

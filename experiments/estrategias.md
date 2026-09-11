@@ -132,9 +132,9 @@ muchos libros que ratearía 7–9), y a `nfa=500` se vuelve un casi-constante qu
 ranker lejos de la señal buena. Ver el detalle en `estado_del_arte.md`. Como **fuente de
 candidatos** tiene aún menos chance — las 7ª fuentes fallaron 3 veces.
 
-### 5. Retrieval por grafo (difusión multi-hop)  ·  APLICADA como feature (récord 0.06824)
+### 5. Retrieval por grafo (difusión multi-hop)  ·  CERRADA (feature sí, fuente no)
 
-**Estado (2026-09-10): probada como feature, adoptada con confianza modesta.**
+**Estado (2026-09-11): feature adoptada (récord 0.06824), fuente probada y descartada.**
 `score_difusion_candidato` (`ranker.py`, `MIN_COREAD_PPR`/`K_DIFUSION`/`ALPHA_DIFUSION`):
 `Σ_{t=1}^{2} 0,85ᵗ (Hᵗ)[u,j]` sobre el grafo de co-lectura **podado** y row-normalizado, con
 `H⁰` = historial binario del usuario. Es la extensión 2-hop de `score_coleido` (1 hop).
@@ -143,14 +143,17 @@ candidatos** tiene aún menos chance — las 7ª fuentes fallaron 3 veces.
   catálogo — sin podar, la difusión solo difumina y cuesta ~74s/1000 usuarios. Podando a
   `≥8` co-lectores (2,1% de las aristas, asociaciones con evidencia real) baja a
   ~3,5s/1000. Con `K=2` en vez de 3.
-- **Feature-only** (candidatos de las 6 fuentes, sin cambiar el pool). Test pareado seed 42
+- **Como feature** (candidatos de las 6 fuentes, sin cambiar el pool). Test pareado seed 42
   `nfa=500`: **+1,17 σ, P=0.88** (borderline, por debajo del ~1,5 σ que suele pedirse).
   Kaggle 0.06753 → **0.06824** (+0,0007, chico — dentro del SE de una submission por sí
-  solo, pero **misma dirección** que el pareado, a diferencia de seed-bag). Se adopta por
-  eso; confianza modesta.
-- **Como fuente de candidatos** (top-N por `score_difusion`): no probado; las 7ª fuentes
-  fallaron 3 veces, pero acá la señal *sí* mostró algo, así que queda como posible
-  siguiente paso.
+  solo, pero **misma dirección** que el pareado, a diferencia de seed-bag). Adoptada.
+- **Como fuente de candidatos** (top-N por `score_difusion`, mismo patrón que la 6ª fuente
+  co-lectura): recall 0.5346 → 0.5398 (+1 %), pero pareado 7 vs 6 **−0,80 σ, P=0.22**
+  (0.133997 → 0.133329). **4ª fuente nueva que falla así** (editorial, usuario-usuario, LMF,
+  ahora difusión) — ni siquiera partiendo de una señal ya confirmada como feature. Revertida;
+  la feature queda intacta. Conclusión: la barrera no es encontrar más candidatos, es que el
+  `LGBMRanker` no logra distinguir cuáles de los extra son buenos — **no vale la pena
+  intentar una 8ª fuente sin una idea distinta para ese problema puntual**.
 
 ### 6. Modelo secuencial revisado (masked-item / BERT4Rec)  ·  esfuerzo alto, riesgo medio-alto
 
@@ -177,13 +180,12 @@ capturan solo groseramente. Encoder tipo BERT4Rec → fuente de candidatos + una
    Kaggle.** El cuello de botella es el recall *distinguible*, no el crudo.
 4. ~~estrategia 4 — rating predicho (feature)~~ **probada: +1,67 σ a `nfadef` pero −0,35 σ
    a `nfa=500`, revertida.** "Le pondría ≥8" no discrimina *cuál* next-read elige el usuario.
-5. ~~estrategia 5 — difusión 2-hop (feature)~~ **APLICADA: pareado +1,17 σ, Kaggle 0.06753 →
-   0.06824.** Efecto chico, confianza modesta, pero ambos instrumentos coinciden. Pendiente:
-   probarla como **fuente de candidatos** (top-N por `score_difusion`) — es la única señal
-   nueva que mostró algo.
+5. ~~estrategia 5 — difusión 2-hop~~ **CERRADA: feature APLICADA (pareado +1,17 σ, Kaggle
+   0.06753 → 0.06824), fuente de candidatos DESCARTADA (pareado −0,80 σ — 4ª fuente nueva
+   que falla).**
 6. **Lo que queda**: estrategia 6 (BERT4Rec / masked-item) como fuente de candidatos +
    feature de "interés actual" — mayor ceiling, mayor costo/riesgo (461k interacciones es
-   poca data para un transformer). **Casi todo lo barato se probó**; lo demás son builds
+   poca data para un transformer). **Todo lo barato se probó**; lo demás son builds
    grandes de payoff incierto.
 
 **Observación meta**: el proyecto había sobre-invertido en el *set de features* del reranker

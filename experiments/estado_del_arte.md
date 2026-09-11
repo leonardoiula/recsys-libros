@@ -193,6 +193,14 @@ etapa 1) / `train_ranker` (etiquetas) / `test_final` (hold-out, solo local).
   recall del set 0.5346 → 0.5547, CV +0,22 % (ruido), pareado **+1,48 σ**, **Kaggle 0.06164
   vs 0.06316 — regresión**. El recall sube pero los candidatos nuevos son ruido que el
   ranker no distingue y **desplazan** candidatos mejores. Revertido; queda `tune_retrievers.py`.
+- **Difusión multi-hop como 7ª fuente** (estrategia 5, parte 2 — la feature
+  `score_difusion_candidato` ya estaba adoptada, récord 0.06824 sin cambios). Mismo patrón
+  que coleido (6ª fuente): top-`n_por_fuente` de la propagación multi-hop como candidatos
+  nuevos. Recall 0.5346 → 0.5398 (+1 %, ~9 candidatos extra/usuario), pero pareado 7 vs 6
+  **−0,80 σ, P(mejora)=0.22** (0.133997 → 0.133329) — **4ª fuente nueva que falla así**
+  (editorial, usuario-usuario, LMF, ahora difusión). Revertido el bloque de fuente; la
+  feature queda intacta. La estrategia 5 cierra del todo: funciona como feature, no como
+  fuente — la señal sirve para *puntuar*, no para *ampliar el pool*.
 
 ### Features del reranker
 
@@ -271,17 +279,19 @@ Diagnóstico: `scripts/diagnostico_posicion_popularidad.py`, `diagnostico_franja
 
 ## Qué queda por probar (`experiments/estrategias.md`)
 
-Casi todo lo barato se probó (esta ronda: LMF-feature, corroboración, relativas, rating —
-todo ruido o negativo; solo la difusión 2-hop movió algo, y apenas). Lo pendiente:
+Se acabó lo barato: LMF-feature, corroboración, relativas, rating, difusión-como-fuente —
+todo ruido o negativo. Solo `score_difusion_candidato` como **feature** movió algo (y poco).
+Lo que queda es más caro:
 
-- **`score_difusion` como fuente de candidatos** (top-N por difusión, no solo feature) — es
-  la única señal nueva que mostró algo.
 - **Estrategia 6 — BERT4Rec / masked-item** como fuente + feature de "interés actual". Mayor
   ceiling, mayor costo/riesgo (461k interacciones es poca data para un transformer).
 - Blend de **familias de modelos distintas** (no seed-bag).
 
 El lever que rindió de verdad esta ronda fue **más señal de entrenamiento** (ventana
-rodante). El set de features está saturado.
+rodante). El set de features y de fuentes de candidatos está saturado — **4/4 intentos de
+7ª fuente fallaron** (editorial, usuario-usuario, LMF, difusión), incluso cuando la señal
+de base ya era buena. La barrera no es "encontrar más candidatos", es que el `LGBMRanker`
+no logra distinguir cuáles de los candidatos extra son buenos.
 
 ---
 

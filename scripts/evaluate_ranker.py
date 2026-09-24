@@ -57,6 +57,12 @@ K = 20
 N_POR_FUENTE = 150
 N_POR_FUENTE_AUTOR = 500  # tope propio de la fuente de autor (None = usar N_POR_FUENTE); ver scripts/screen_presupuesto_autor.py
 N_CORTES = 5  # ventana rodante del reranker (ver N_CORTES_RANKER en ranker.py); 5 = produccion (el CV plateaua ahi; 7 dio 0.137783 vs 0.137854)
+REFIT_PARA_TEST = True
+"""Refitea la etapa 1 sobre train_candidatos_full antes de generar candidatos_test,
+igual que submit.py -- antes de esto, el CV (el gatekeeper junto con el pareado)
+medía contra un pipeline distinto del que realmente genera la submission real
+(confirmado +12.4% NDCG local, scripts/comparar_refit_etapa1.py, 2026-09-02, nunca
+vuelto a aplicar como default hasta ahora). Cuesta ~2x el armado del contexto."""
 SEEDS = [42, 7, 123]
 EJEMPLO_PATH = Path(__file__).resolve().parents[1] / "data" / "raw" / "ejemplo.csv"
 
@@ -93,6 +99,7 @@ def main() -> None:
         ctx = preparar_pipeline_cacheado(
             interacciones, libros, lectores, seed,
             n_por_fuente=N_POR_FUENTE, n_por_fuente_autor=N_POR_FUENTE_AUTOR, k=K, n_cortes=N_CORTES,
+            refit_para_test=REFIT_PARA_TEST,
         )
         resultados_por_seed[seed] = evaluar_con_params(ctx, None)
         r = resultados_por_seed[seed]

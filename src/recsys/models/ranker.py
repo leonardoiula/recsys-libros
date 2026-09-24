@@ -307,7 +307,14 @@ def _calcular_perfil_texto(
             "perfil_usuario_reciente_norm": None,
         }
 
-    vectorizador = TfidfVectorizer(max_features=N_MAX_FEATURES_TFIDF, min_df=MIN_DF_TFIDF, max_df=MAX_DF_TFIDF)
+    # dtype=float32 (default de sklearn es float64) -- mismo criterio que el resto del
+    # pipeline: ranks/scores/similitudes de este proyecto no necesitan la precisión
+    # extra, y esta matriz (hasta N_MAX_FEATURES_TFIDF columnas x ~48k libros) y los
+    # perfiles de usuario que salen de ella se calculan una vez por corte, no hay
+    # motivo para pagar el doble de memoria.
+    vectorizador = TfidfVectorizer(
+        max_features=N_MAX_FEATURES_TFIDF, min_df=MIN_DF_TFIDF, max_df=MAX_DF_TFIDF, dtype=np.float32
+    )
     tfidf_norm = vectorizador.fit_transform(con_resumen["resumen"].astype(str)).tocsr()  # ya normalizado L2 por default
     fila_por_libro_texto = {id_libro: idx for idx, id_libro in enumerate(con_resumen["id_libro"])}
 
@@ -327,11 +334,20 @@ def _calcular_perfil_texto(
     filas_texto = interacciones_con_texto["_fila_texto"].astype(int)
 
     def _perfil_normalizado(valores: np.ndarray):
-        X = sp.csr_matrix((valores, (filas_usuario, filas_texto)), shape=(n_usuarios, tfidf_norm.shape[0]))
+        # `valores` a float32 explícito: `np.ones(...)` (llamado más abajo) y los
+        # pesos de recencia (`_pesos_por_recencia`, via `np.log2`) salen en float64
+        # por default de numpy/pandas -- sin este cast, `X @ tfidf_norm` (float64 x
+        # float32) promueve todo el perfil resultante a float64 pese a que
+        # `tfidf_norm` ya se fuerza a float32 arriba.
+        X = sp.csr_matrix(
+            (np.asarray(valores, dtype=np.float32), (filas_usuario, filas_texto)),
+            shape=(n_usuarios, tfidf_norm.shape[0]),
+        )
         perfil = X @ tfidf_norm
         normas = np.sqrt(perfil.multiply(perfil).sum(axis=1)).A1
         normas[normas == 0] = 1.0  # evita división por cero para usuarios sin lecturas con resumen
-        return (sp.diags(1.0 / normas) @ perfil).tocsr()
+        diag_inv_normas = sp.diags((1.0 / normas).astype(np.float32))
+        return (diag_inv_normas @ perfil).tocsr()
 
     perfil_usuario_norm = _perfil_normalizado(np.ones(len(interacciones_con_texto)))
     perfil_usuario_reciente_norm = _perfil_normalizado(interacciones_con_texto["_peso_recencia"].to_numpy())
@@ -571,8 +587,12 @@ def calcular_features_auxiliares(
     # `score_difusion_candidato` -- ver `MIN_COREAD_PPR`/`K_DIFUSION`.
     cooc_podada = cooc.multiply(cooc >= MIN_COREAD_PPR).tocsr()
     grados = np.asarray(cooc_podada.sum(axis=1)).ravel()
-    inv_grados = np.divide(1.0, grados, out=np.zeros_like(grados, dtype=np.float64), where=grados > 0)
-    cooc_difusion = (sp.diags(inv_grados) @ cooc_podada).tocsr()
+    # float32 (no float64): mismo criterio que el resto del pipeline -- esta matriz
+    # alimenta `H @ cooc_difusion` en el loop de difusión de abajo, que se densifica
+    # por lote (ver docstring de `generar_candidatos_con_features`) y es la parte más
+    # sensible a memoria de esta feature.
+    inv_grados = np.divide(1.0, grados, out=np.zeros_like(grados, dtype=np.float32), where=grados > 0)
+    cooc_difusion = (sp.diags(inv_grados) @ cooc_podada).tocsr().astype(np.float32)
 
     perfil_texto = _calcular_perfil_texto(interacciones, libros, fila_por_usuario, pesos_recencia)
 
@@ -852,7 +872,10 @@ def generar_candidatos_con_features(
     # n_lote x n_libros, se libera al terminar el lote).
     difusion_por_usuario: dict = {}
     if usuarios_con_als and cooc_difusion is not None:
-        H = sp.csr_matrix(matriz_usuario_libro[filas] > 0, dtype=np.float64)
+        # float32 (no float64): `H` es justo la matriz que se "densifica" por lote
+        # (ver docstring arriba) -- el punto de mayor pico de memoria de esta
+        # feature, mismo criterio de dtype que el resto del pipeline.
+        H = sp.csr_matrix(matriz_usuario_libro[filas] > 0, dtype=np.float32)
         acc = None
         for t in range(1, K_DIFUSION + 1):
             H = H @ cooc_difusion

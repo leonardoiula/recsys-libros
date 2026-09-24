@@ -51,6 +51,11 @@ from recsys.models import ranker as R
 K = 20
 N_POR_FUENTE = 150
 N_POR_FUENTE_AUTOR = 500  # config de produccion -- el episodio de rating enseño que a nfadef el pareado engaña
+REFIT_PARA_TEST = True
+"""Refitea la etapa 1 sobre train_candidatos_full antes de generar candidatos_test,
+igual que submit.py -- sin esto, el gatekeeper mide contra un pipeline ~1 fila/usuario
+más viejo que el que realmente se sube a Kaggle (confirmado +12.4% NDCG local,
+scripts/comparar_refit_etapa1.py, 2026-09-02). Cuesta ~2x el armado del contexto."""
 SEED = 42
 N_BOOTSTRAP = 2000
 
@@ -72,6 +77,7 @@ def main() -> None:
     ctx = R.preparar_pipeline_cacheado(
         interacciones, libros, lectores, SEED,
         n_por_fuente=N_POR_FUENTE, n_por_fuente_autor=N_POR_FUENTE_AUTOR, k=K,
+        refit_para_test=REFIT_PARA_TEST,
     )
     print(f"contexto listo en {time.time()-t0:.0f}s", flush=True)
 

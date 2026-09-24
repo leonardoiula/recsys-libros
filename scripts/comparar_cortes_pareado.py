@@ -44,6 +44,9 @@ from recsys.models import ranker as R
 K = 20
 N_POR_FUENTE = 150
 N_POR_FUENTE_AUTOR = 500  # config de produccion (ver submit.py); comparte cache con evaluate_ranker.py
+REFIT_PARA_TEST = True
+"""Refitea la etapa 1 sobre train_candidatos_full antes de generar candidatos_test,
+igual que submit.py -- ver el mismo comentario en comparar_features_pareado.py."""
 SEED = 42
 """El test pareado ya tiene ~5x mas poder que promediar 3 seeds
 independientes (ver `comparar_generadores_pareado.py`) -- un seed suele
@@ -88,6 +91,7 @@ def _contexto(interacciones, libros, lectores, n_cortes):
     return R.preparar_pipeline_cacheado(
         interacciones, libros, lectores, SEED,
         n_por_fuente=N_POR_FUENTE, n_por_fuente_autor=N_POR_FUENTE_AUTOR, k=K, n_cortes=n_cortes,
+        refit_para_test=REFIT_PARA_TEST,
     )
 
 

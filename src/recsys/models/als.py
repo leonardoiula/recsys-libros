@@ -52,6 +52,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
+import threadpoolctl
 from implicit.als import AlternatingLeastSquares
 from implicit.nearest_neighbours import bm25_weight
 
@@ -139,13 +140,24 @@ def fit_als(
         k1, b = bm25
         matriz_fit = bm25_weight(matriz, K1=k1, B=b).tocsr()
 
-    modelo = AlternatingLeastSquares(
-        factors=factors,
-        regularization=regularization,
-        iterations=iterations,
-        random_state=seed,
-    )
-    modelo.fit(matriz_fit)
+    # `implicit` ya paraleliza el solver internamente (OpenMP, por usuario/ítem); si
+    # OpenBLAS ADEMÁS abre su propio pool de threads para cada llamada de álgebra
+    # lineal dentro de eso, los dos pools compiten por los mismos cores -- `implicit`
+    # mismo advierte (`check_blas_config`) que esto puede ser hasta 10x más lento.
+    # `threadpool_limits(1, "blas")` fuerza BLAS a un solo thread durante la
+    # construcción del modelo Y el `.fit()` -- el chequeo de `implicit` corre en
+    # `AlternatingLeastSquares.__init__`, no en `.fit()`, así que hay que envolver
+    # los dos o el aviso sigue apareciendo pese al límite (ya lo probamos: envolver
+    # solo `.fit()` no alcanza). El resto del proceso -- pandas, otros cortes -- no
+    # se ve afectado, el límite es solo durante este `with`.
+    with threadpoolctl.threadpool_limits(1, "blas"):
+        modelo = AlternatingLeastSquares(
+            factors=factors,
+            regularization=regularization,
+            iterations=iterations,
+            random_state=seed,
+        )
+        modelo.fit(matriz_fit)
 
     return modelo, matriz, fila_por_usuario, libros_por_columna
 

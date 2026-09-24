@@ -18,10 +18,35 @@ en `experiments/legacy/decisiones.md` tras la ronda de la 6ª fuente (co-lectura
 ítem-ítem/kNN), confirmada en Kaggle con el criterio de "positivo en los 3
 seeds" (que en el pasado confirmó casos que después resultaron ruido).
 
-Default: valida retroactivamente esa 6ª fuente -- `FUENTES_A` son las 6
+2026-09-24: se usó para re-testear una 7ª fuente "usuarios" (similitud usuario-usuario
+re-implementada) bajo el protocolo corregido de este script (`REFIT_PARA_TEST=True` +
+`N_POR_FUENTE_AUTOR=500` -- ninguno de los dos estaba wireado acá cuando se descartó
+la primera vez, 2026-09-03, con 0.06017 vs récord 0.06149). Resultado: **rechazo
+confirmado**, no un falso negativo por los bugs de protocolo -- 0.34 σ, P(mejora)=0.63,
+bootstrap CI [-0.0014, +0.0026] cruza cero, 728 usuarios mejoran vs 723 empeoran (casi
+50/50). Recall subió (+1.5%) pero el NDCG no acompañó, mismo patrón que las otras 3
+fuentes descartadas antes. Revertido en su totalidad (no queda código de un
+experimento descartado -- mismo criterio que LMF/editorial/difusión-fuente). Ver
+`experiments/estado_del_arte.md`, sección "Validación con corte temporal global", y
+`experiments/log.csv`.
+
+También se re-testeó LMF (estrategia 2, `scripts/tune_retrievers.py` ya tenía los
+hiperparámetros óptimos) bajo este mismo protocolo: **+1,56 σ, P(mejora)=0,94, CI
+[-0.0003,+0.0031]** -- firma casi idéntica a la del rechazo original (+1,48 σ,
+P=0,93, Kaggle 0.06164 vs récord 0.06316, regresión). Los dos bugs de protocolo
+corregidos acá NO cambiaron el veredicto de LMF -- pero bajo `evaluate_global_cutoff.py`
+(sin la fuga temporal por-usuario, ver `comparar_global_pareado.py`) el mismo LMF dio
+**-1,09 σ, P(mejora)=0,13** -- negativo. El pareado por-usuario (incluso corregido)
+sobreestima candidatos que explotan patrones poblacionales/de tendencia; el corte
+global es el instrumento que de verdad distingue esto. Revertido en su totalidad.
+Ver `experiments/estado_del_arte.md` y `experiments/log.csv`.
+
+Default: valida retroactivamente la 6ª fuente (co-lectura) -- `FUENTES_A` son las 6
 fuentes actuales, `FUENTES_B` son esas mismas 6 menos "coleido". Editar
-`FUENTES_A`/`FUENTES_B` (subconjuntos de `ranker.FUENTES_CANDIDATOS`) para
-comparar otro par.
+`FUENTES_A`/`FUENTES_B` (subconjuntos de `ranker.FUENTES_CANDIDATOS`) para comparar
+otro par. Con LMF y usuario-usuario ya cerrados (2/2 candidatos "sofisticados" que
+quedaban, ambos rechazados bajo el protocolo corregido), no queda ningún candidato de
+7ª fuente obvio sin probar -- ver `experiments/estado_del_arte.md` para qué sigue.
 
 Reporta, para cada config, `recall_de_candidatos` (el techo barato que ya
 usa `recall_candidatos.py`) ADEMÁS del NDCG pareado -- `decisiones.md`
@@ -50,6 +75,16 @@ from recsys.models import ranker as R
 
 K = 20
 N_POR_FUENTE = 150
+N_POR_FUENTE_AUTOR = 500
+"""Config de producción (ver submit.py) -- SIN esto, `preparar_pipeline_cacheado`
+usa `n_por_fuente_autor=None` (cae a `n_por_fuente`=150), que `estado_del_arte.md`
+marca explícitamente como engañoso para el pareado ("a nfadef engaña": el episodio
+de rating dio +1,67 σ a nfadef y −2,34 σ a nfa=500). Faltaba en este script -- un
+generador nuevo (LMF, usuario-usuario) podía estar comparándose en una config que
+no es la real de Kaggle."""
+REFIT_PARA_TEST = True
+"""Refitea la etapa 1 sobre train_candidatos_full antes de generar candidatos_test,
+igual que submit.py -- ver el mismo comentario en comparar_features_pareado.py."""
 SEEDS = [42]
 """El test pareado ya tiene ~5x más poder que promediar 3 seeds
 independientes (ver `comparar_features_pareado.py`) -- un seed suele
@@ -108,10 +143,12 @@ def main() -> None:
 
         t0 = time.time()
         ctx_a = R.preparar_pipeline_cacheado(
-            interacciones, libros, lectores, seed, n_por_fuente=N_POR_FUENTE, k=K, fuentes_activas=FUENTES_A
+            interacciones, libros, lectores, seed, n_por_fuente=N_POR_FUENTE, n_por_fuente_autor=N_POR_FUENTE_AUTOR,
+            k=K, fuentes_activas=FUENTES_A, refit_para_test=REFIT_PARA_TEST,
         )
         ctx_b = R.preparar_pipeline_cacheado(
-            interacciones, libros, lectores, seed, n_por_fuente=N_POR_FUENTE, k=K, fuentes_activas=FUENTES_B
+            interacciones, libros, lectores, seed, n_por_fuente=N_POR_FUENTE, n_por_fuente_autor=N_POR_FUENTE_AUTOR,
+            k=K, fuentes_activas=FUENTES_B, refit_para_test=REFIT_PARA_TEST,
         )
         print(f"contextos listos en {time.time()-t0:.0f}s", flush=True)
 

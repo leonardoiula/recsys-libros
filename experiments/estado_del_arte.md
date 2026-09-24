@@ -6,7 +6,14 @@ contexto. El razonamiento ronda por ronda hasta 2026-09-07 está **congelado** e
 `experiments/legacy/` (ver `experiments/legacy/README.md`); lo posterior está en
 `experiments/log.csv` (una fila por corrida).
 
-**Récord: 0.06824 de NDCG@20 en Kaggle** (2026-09-10).
+**Récord: 0.06824 de NDCG@20 en Kaggle** (2026-09-10; segunda medición del mismo config,
+2026-09-24: 0.06668, dentro del ruido — ver "Cierre de la arquitectura" al final).
+
+**CIERRE DE ARQUITECTURA (2026-09-24)**: la arquitectura de dos etapas (ALS + 6 fuentes +
+40 features + `LGBMRanker`) se da por **agotada para esta ronda de trabajo** — ver la
+sección "Cierre de la arquitectura" al final del documento antes de proponer otra vuelta
+de ajuste sobre este approach. Próximo paso: revisión de bibliografía reciente de sistemas
+de recomendación en busca de un enfoque estructuralmente distinto.
 
 **IMPORTANTE (2026-09-24)**: los NDCG *locales* de este documento (split por usuario) sobreestiman
 Kaggle ~2-2.7× por una fuga temporal poblacional en `split_train_val`, no solo ruido de muestra
@@ -534,3 +541,95 @@ proceso por valor (los contextos no se liberan bien entre iteraciones).
 - **`experiments/legacy/`** — historia congelada al 2026-09-07: `bitacora.md` (narrativa),
   `decisiones.md` (#1–26), `modelo_actual.md` (técnico + "¿cambiar de paradigma?").
 - **`experiments/eda.md`** — análisis exploratorio.
+
+---
+
+## Cierre de la arquitectura (2026-09-24)
+
+Sesión de auditoría + agotamiento de vías, a pedido del usuario ("quiero agotar todas las
+vías antes de concluir que el modelo no puede avanzar así como está"). Resumen de punta a
+punta, para no tener que releer todo `log.csv` la próxima vez que se retome el proyecto.
+
+### Lo que se hizo esta sesión, en orden
+
+1. **Auditoría del proyecto** (metodología + memoria) a pedido del usuario, escéptica de las
+   conclusiones previas. Encontró el hallazgo central de esta sesión: `split_train_val`
+   (leave-one-out **por usuario**) deja fluir señal de "futuro" hacia las fuentes de
+   candidatos (ALS/popularidad/co-lectura se fitean sin ningún corte de fecha) — para un
+   usuario mediano de la validación local, ~31 % de TODO el dataset es posterior a su propio
+   punto de validación. Explica la mayor parte de la brecha NDCG local-vs-Kaggle que se
+   venía atribuyendo a ruido de muestra chica.
+2. **`recsys.data.split_temporal_global` + `scripts/evaluate_global_cutoff.py`** (nuevos):
+   protocolo de validación con un corte de calendario único (ventana rodante de 5 cortes),
+   sin esa fuga. NDCG@20 baja de 0.133-0.138 (split por usuario) a **0.046116 ± 0.000129**
+   (corte global, CV 3 seeds) — mucho más cerca del 0.063-0.068 real de Kaggle que nunca
+   antes, aunque sigue quedando un ~32 % de gap sin explicación cerrada.
+3. **Gatekeeper local homologado con producción**: `REFIT_PARA_TEST=True` como default (antes
+   medía contra una etapa 1 distinta de la que sube a Kaggle, un gap de +12,4 % NDCG local
+   nunca vuelto a aplicar desde 2026-09-02) + un bug real donde `comparar_generadores_pareado.py`
+   no pasaba `nfa=500` en absoluto.
+4. **Memoria/rendimiento**: `float32` en TF-IDF y en la feature de difusión (usaban `float64`
+   por descuido); fix de threading real en ALS (`implicit` ya advertía en cada corrida de
+   tests que OpenBLAS podía ser "hasta 10x más lento" compitiendo con su propio paralelismo —
+   nadie lo había resuelto).
+5. **Re-test de LMF y usuario-usuario** (7ª fuente, ambos previamente rechazados) bajo el
+   protocolo corregido. **Ambos rechazo confirmado.** LMF es el caso más ilustrativo de toda
+   la sesión: pareado por-usuario corregido lo mostraba "casi positivo" (+1,56 σ) — bajo el
+   corte global (sin fuga) da **-1,09 σ**, genuinamente negativo. Confirma el mecanismo de
+   fuga identificado en el punto 1 con un ejemplo concreto, no solo teoría.
+6. **Contraprueba**: las features adoptadas con señal límite en su momento (género macro,
+   señales cruzadas lector↔libro, difusión) **sí sostienen su valor** bajo el corte global
+   (+1,58 σ a favor de mantenerlas) — la fuga no infla todo por igual, perjudica
+   selectivamente a fuentes de candidatos que aprenden patrones poblacionales, no a features
+   que puntúan candidatos ya elegidos. No se tocó el feature set de producción.
+7. **Blend de familias de modelos distintas** (ALS + `LGBMRanker` vía Reciprocal Rank Fusion)
+   — la única estrategia de mayor calibre que `estrategias.md` dejaba sin probar. **Rechazo
+   contundente** (-4,18 σ): el ranker ya ve `score_als`/`rank_als` como features, un blend
+   sin ponderar diluye una señal ya-aprendida con una versión más pobre de la misma
+   información.
+8. **Tuning de LightGBM + CV multi-seed bajo el corte global** (los dos pendientes que
+   quedaban del punto 2). Requirió refactorizar `evaluate_global_cutoff.py` en dos fases
+   (contexto cacheado + fit barato) para que tunear fuera viable en tiempo razonable. **El
+   tuning no ayuda**, ni siquiera en este régimen de N mucho más chico donde se pensó que el
+   balance sesgo/varianza podría ser distinto — mismo veredicto que las 3 rondas de tuning
+   previas del proyecto. De paso, el CV corrigió el número de referencia del corte global
+   (0.049061 resultó ser un outlier de una sola corrida; 0.046116 ± 0.000129 es el real).
+9. **Submission de cierre** (config de producción sin cambios): **0.06668** en Kaggle —
+   -0.00156 respecto al récord puntual (0.06824), dentro del ruido calibrado por el proyecto
+   (SE≈0.0065). No hay evidencia de regresión; ninguno de los fixes de esta sesión toca la
+   lógica del modelo.
+
+### Veredicto
+
+**La arquitectura de dos etapas (ALS + 6 fuentes + 40 features + `LGBMRanker`) está
+agotada para esta ronda de trabajo.** No es una conclusión tomada sobre un instrumento de
+medición sospechado de estar roto — es la misma conclusión a la que ya había llegado el
+proyecto (6/6 intentos de 7ª fuente fallidos, tuning sin efecto, features saturadas), ahora
+**confirmada bajo un segundo protocolo de validación independiente** construido
+específicamente para no tener el sesgo del primero. Dos rechazos contundentes nuevos esta
+sesión (LMF bajo corte global, blend RRF) refuerzan el diagnóstico en vez de contradecirlo.
+
+**Contexto de leaderboard** (reportado por el usuario, 2026-09-24): 3 personas por encima de
+este proyecto — 0.07826, 0.10406, 0.10453. El salto a la posición más alta (+56,7 % relativo
+sobre el récord de este proyecto) es más grande que cualquier ganancia incremental de las
+últimas ~15 rondas de experimentos juntas. Es la señal más fuerte de que cerrar esa brecha
+necesita un enfoque estructuralmente distinto, no otra vuelta de ajuste sobre esta
+arquitectura.
+
+### Qué queda intacto y reusable para la próxima etapa
+
+- Los datos, el EDA, y el entendimiento del problema (matriz 99,91 % vacía, sesgo de
+  actividad de la población de Kaggle, span de lectura en ráfagas de ~26 días) siguen
+  vigentes sin importar qué arquitectura nueva se pruebe.
+- `recsys.data.split_temporal_global` + `scripts/evaluate_global_cutoff.py`/
+  `comparar_global_pareado.py`/`tune_ranker_global.py` quedan como el protocolo de
+  validación de referencia — más lento que el split por usuario pero sin su fuga, el que
+  hay que usar para juzgar cualquier modelo nuevo antes de gastar una submission.
+- El catálogo de qué NO funcionó (`log.csv` completo + esta sección) evita repetir 15+
+  rondas de experimentos ya cerrados con evidencia sólida.
+
+### Próximo paso
+
+Revisión de bibliografía reciente (2024-2026) de sistemas de recomendación, buscando un
+enfoque estructuralmente distinto al de "candidatos + reranking con árboles" — a discutir
+con el usuario antes de implementar nada.

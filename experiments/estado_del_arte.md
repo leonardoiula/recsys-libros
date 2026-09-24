@@ -235,7 +235,14 @@ REFITEA sobre todo lo disponible hasta el corte final (mismo criterio que `submi
 |---|---|---|
 | Popularidad global | 0.004365 | vs 0.01024-0.01558 Kaggle (v0/v1, otra era del proyecto) |
 | ALS solo | 0.017508 | vs 0.03864 Kaggle (v2, sin BM25) |
-| **Ranker (2 etapas, ventana rodante)** | **0.049061** | **vs 0.06316-0.06824 Kaggle (config comparable)** |
+| **Ranker (2 etapas, ventana rodante)** | **0.049061*** | **vs 0.06316-0.06824 Kaggle (config comparable)** |
+
+\* Corrida única (seed=42, sin CV) de la primera vez que se armó esta ventana rodante.
+**Resultó ser un outlier** — el CV de 3 seeds hecho más tarde el mismo día da
+**0.046116 ± 0.000129** como número de referencia real (ver sección "CV multi-seed +
+tuning de LightGBM bajo corte global" más abajo). Queda el 0.049061 acá tal cual salió
+en su momento, por fidelidad histórica de esta sección -- para cualquier comparación
+nueva, usar 0.046116.
 
 El ranker sigue ganándole a ALS solo por un margen sano (+51% relativo) y ALS le sigue
 ganando a popularidad (4×) — el orden se preserva, no es un pipeline roto. El número absoluto
@@ -463,14 +470,32 @@ más candidatos" ni "más señal de interés", es que el `LGBMRanker` no logra d
 cuáles de los candidatos extra son buenos — confirmado ahora bajo dos protocolos de
 validación distintos, no solo el que tenía la fuga temporal.
 
+**CV multi-seed + tuning de LightGBM bajo corte global — cerrados (2026-09-24, mismo día).**
+`scripts/tune_ranker_global.py` (nuevo, mismo diseño que `tune_ranker.py`): optuna 10
+trials × 2 seeds, confirmación final con 3 seeds (42, 7, 123). **El tuning no ayuda**,
+tampoco en este régimen de N mucho más chico (4.471 grupos vs ~37-40k del split por
+usuario a `n_cortes=5`) donde se hipotetizaba que el balance sesgo/varianza podría ser
+distinto — mejor config de optuna: 0.045523 ± 0.001689, **peor en promedio y no positivo
+en los 3 seeds** (pierde en 2 de 3) contra el conservador. Consistente con las 3 rondas
+de tuning previas del proyecto bajo el split por usuario. **Los hiperparámetros
+conservadores (`num_leaves=31, learning_rate=0.05, n_estimators=200`) quedan
+confirmados bajo los dos protocolos de validación que existen ahora.**
+
+El CV de 3 seeds del conservador da el número de referencia real de este protocolo:
+**0.046116 ± 0.000129** — muy estable (CV ~0.3%). Reemplaza al 0.049061 original (una
+sola corrida sin seed-CV, que resultó ser un outlier — el valor reproducible de
+seed=42 es 0.045987, visto en 4 corridas independientes distintas). Con esto el gap
+contra Kaggle (0.063-0.068) es de **~32%** (antes se estimaba 22-28% con el número
+viejo), y requirió un refactor de `evaluate_global_cutoff.py` en dos fases
+(`preparar_contexto_global` cacheado a disco + `evaluar_con_params_global` barato,
+mismo patrón que `ranker.preparar_pipeline`/`evaluar_con_params`) para que tunear
+hiperparámetros fuera viable en tiempo razonable.
+
 **Qué es genuinamente nuevo y sin probar después de esta sesión** (no "cerrado", solo sin
-tiempo/evidencia todavía): CV multi-seed para `evaluate_global_cutoff.py` (hoy un solo
-seed); por qué más densidad de ventana empeoró en vez de mejorar (sección anterior);
-hiperparámetros de LightGBM re-tuneados específicamente para el régimen de N mucho más
-chico del corte global (nunca se re-tuneó, se heredaron los conservadores del split por
-usuario); una variante de RRF ponderada hacia el ranker. Ninguna de estas tiene el mismo
-respaldo teórico/histórico que las que sí se probaron esta sesión — son extensiones,
-no vías obviamente prometedoras sin probar.
+tiempo/evidencia todavía): por qué más densidad de ventana empeoró en vez de mejorar
+(sección anterior, tampoco tiene CV todavía); una variante de RRF ponderada hacia el
+ranker. Ninguna de estas tiene el mismo respaldo teórico/histórico que las que sí se
+probaron esta sesión — son extensiones, no vías obviamente prometedoras sin probar.
 
 ---
 

@@ -40,7 +40,7 @@ import pandas as pd
 import scipy.sparse as sp
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-from recsys.data import libros_leidos_por_usuario, split_train_val
+from recsys.data import libros_leidos_por_usuario, normalizar_texto, split_train_val
 from recsys.evaluation import evaluar_ndcg_personalizado, ndcg_at_k
 from recsys.models.als import fit_als
 from recsys.models.als import recomendar_por_usuario as _recomendar_als
@@ -426,11 +426,29 @@ def calcular_features_auxiliares(
     matriz_usuario_libro,
     fila_por_usuario: dict,
     libros_por_columna: list,
+    normalizar_autor_editorial: bool = False,
 ) -> dict:
     """Precalcula, a partir de `interacciones` (siempre `train_candidatos`,
     nunca datos que el ranker vea como etiqueta), los lookups que necesita
     `generar_candidatos_con_features` para las features de autor/editorial/
     año de edición/diversidad de género/recencia/co-lectura/texto:
+
+    `normalizar_autor_editorial` (default `False`, opt-in -- mismo criterio que
+    `fuentes_activas`/`BM25_ALS`: se valida con un test pareado antes de volverlo
+    default de ningún script): si `True`, `autor`/`editorial` se agrupan por
+    `recsys.data.normalizar_texto` antes de construir `autor_por_libro`/
+    `editorial_por_libro` -- confirmado en los datos reales (auditoría de esta
+    sesión, ver `experiments/estado_del_arte.md`) que el catálogo tiene el mismo
+    autor/editorial escrito con variantes de acentuación/mayúsculas/espacios
+    (ej. `"GARCÍA MÁRQUEZ, GABRIEL"` / `"GARCIA MARQUEZ, GABRIEL"`), 395 grupos de
+    autor (14,33% de las interacciones) y 128 de editorial (33,77%) -- sin
+    normalizar, cada variante es una clave distinta y fragmenta
+    `n_libros_autor_leidos_por_usuario`/la fuente de candidatos "libros de autores
+    ya leídos"/`n_libros_editorial_leidos_por_usuario` entre 2-4 autores/
+    editoriales que en realidad son uno solo. Es el ÚNICO punto de cambio: como
+    `autor_por_libro`/`editorial_por_libro` son los mismos dicts que reusa
+    `generar_candidatos_con_features` (vía `features_auxiliares`), normalizar acá
+    se propaga solo a toda feature/fuente que ya los usa, sin tocar nada más.
 
     - `autor_por_libro` / `anio_edicion_por_libro`: metadata directa de
       `libros` (`anio_edicion` parseado a numérico, `errors="coerce"`).
@@ -491,8 +509,12 @@ def calcular_features_auxiliares(
     se reusan acá para no re-fitear ALS ni duplicar el índice de usuarios.
     """
     metadata = libros.set_index("id_libro")
-    autor_por_libro = metadata["autor"].to_dict()
-    editorial_por_libro = metadata["editorial"].to_dict()
+    if normalizar_autor_editorial:
+        autor_por_libro = metadata["autor"].map(normalizar_texto).to_dict()
+        editorial_por_libro = metadata["editorial"].map(normalizar_texto).to_dict()
+    else:
+        autor_por_libro = metadata["autor"].to_dict()
+        editorial_por_libro = metadata["editorial"].to_dict()
     anio_edicion_por_libro = pd.to_numeric(metadata["anio_edicion"], errors="coerce").to_dict()
     genero_por_libro = _normalizar_genero(metadata["genero"]).to_dict()
 

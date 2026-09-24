@@ -1,9 +1,15 @@
-"""Tests para split_train_val (leave-one-out temporal por usuario) y
-split_temporal_global (corte de calendario único para todo el dataset)."""
+"""Tests para split_train_val (leave-one-out temporal por usuario),
+split_temporal_global (corte de calendario único para todo el dataset) y las
+utilidades de saneamiento de catálogo (normalizar_texto, canonicalizar_libros_duplicados)."""
 
 import pandas as pd
 
-from recsys.data import split_temporal_global, split_train_val
+from recsys.data import (
+    canonicalizar_libros_duplicados,
+    normalizar_texto,
+    split_temporal_global,
+    split_train_val,
+)
 
 
 def test_retiene_las_n_val_interacciones_mas_recientes():
@@ -235,3 +241,201 @@ def test_global_no_todos_los_usuarios_aparecen_en_val():
     assert val["id_lector"].tolist() == ["activo"]
     assert "inactivo" not in set(val["id_lector"])
     assert "inactivo" in set(train["id_lector"])
+
+
+def test_normalizar_texto_ignora_acentos_mayusculas_y_espacios():
+    assert normalizar_texto("GARCÍA MÁRQUEZ, GABRIEL") == normalizar_texto("Garcia Marquez, Gabriel")
+    assert normalizar_texto("EDICIONES B") == normalizar_texto("EDICIONES  B")  # espacio doble
+
+
+def test_normalizar_texto_ignora_puntuacion():
+    assert normalizar_texto("ARROBA@BOOKS") == normalizar_texto("ARROBABOOKS")
+
+
+def test_normalizar_texto_nulo_da_none():
+    assert normalizar_texto(None) is None
+    assert normalizar_texto(pd.NA) is None
+    assert normalizar_texto(float("nan")) is None
+
+
+def test_normalizar_texto_vacio_da_none_no_string_vacio():
+    assert normalizar_texto("   ") is None
+    assert normalizar_texto("---") is None  # normaliza a "" (solo puntuacion)
+
+
+def _libro(id_libro, titulo=None, autor=None, isbn=None, editorial=None, anio_edicion=None, resumen=None):
+    return {
+        "id_libro": id_libro,
+        "titulo": titulo,
+        "autor": autor,
+        "genero": None,
+        "editorial": editorial,
+        "anio_edicion": anio_edicion,
+        "isbn": isbn,
+        "resumen": resumen,
+        "img_src": None,
+    }
+
+
+def test_canonicaliza_por_isbn_compartido():
+    libros = pd.DataFrame(
+        [
+            _libro("a", titulo="El Principito", autor="Saint-Exupery", isbn="123"),
+            _libro("b", titulo="El Principito (reed.)", autor="Saint-Exupery", isbn="123"),
+        ]
+    )
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2"],
+            "id_libro": ["a", "b"],
+            "fecha": ["01-01-2020", "01-01-2021"],
+            "rating": [8, 9],
+        }
+    )
+
+    libros_canon, interacciones_canon = canonicalizar_libros_duplicados(libros, interacciones)
+
+    assert len(libros_canon) == 1
+    assert set(interacciones_canon["id_libro"]) == {libros_canon["id_libro"].iloc[0]}
+
+
+def test_canonicaliza_por_titulo_autor_normalizado_sin_isbn_compartido():
+    libros = pd.DataFrame(
+        [
+            _libro("a", titulo="Rayuela", autor="CORTAZAR, JULIO", isbn="111"),
+            _libro("b", titulo="RAYUELA", autor="Cortazar, Julio", isbn="222"),
+        ]
+    )
+    interacciones = pd.DataFrame(
+        {"id_lector": ["u1"], "id_libro": ["a"], "fecha": ["01-01-2020"], "rating": [8]}
+    )
+
+    libros_canon, _ = canonicalizar_libros_duplicados(libros, interacciones)
+
+    assert len(libros_canon) == 1
+
+
+def test_canonicaliza_encadena_transitivamente():
+    # a-b comparten isbn; b-c comparten titulo+autor normalizado; a y c no
+    # comparten ninguna clave entre si directamente, pero deben quedar en el
+    # mismo grupo via el union-find (a-b-c).
+    libros = pd.DataFrame(
+        [
+            _libro("a", titulo="Titulo A", autor="Autor A", isbn="999"),
+            _libro("b", titulo="Titulo B Distinto", autor="Autor B Distinto", isbn="999"),
+            _libro("c", titulo="Titulo B Distinto", autor="Autor B Distinto", isbn="888"),
+        ]
+    )
+    interacciones = pd.DataFrame(
+        {"id_lector": ["u1"], "id_libro": ["a"], "fecha": ["01-01-2020"], "rating": [8]}
+    )
+
+    libros_canon, _ = canonicalizar_libros_duplicados(libros, interacciones)
+
+    assert len(libros_canon) == 1
+
+
+def test_canonicaliza_no_toca_libros_sin_duplicado():
+    libros = pd.DataFrame(
+        [
+            _libro("a", titulo="Libro Uno", autor="Autor Uno", isbn="111"),
+            _libro("b", titulo="Libro Dos", autor="Autor Dos", isbn="222"),
+        ]
+    )
+    interacciones = pd.DataFrame(
+        {"id_lector": ["u1", "u1"], "id_libro": ["a", "b"], "fecha": ["01-01-2020", "01-01-2021"], "rating": [8, 8]}
+    )
+
+    libros_canon, interacciones_canon = canonicalizar_libros_duplicados(libros, interacciones)
+
+    assert set(libros_canon["id_libro"]) == {"a", "b"}
+    assert set(interacciones_canon["id_libro"]) == {"a", "b"}
+
+
+def test_canonico_es_el_de_mas_interacciones():
+    libros = pd.DataFrame(
+        [
+            _libro("poco_leido", titulo="Cien Anios de Soledad", autor="Garcia Marquez", isbn="1"),
+            _libro("muy_leido", titulo="Cien Anios de Soledad", autor="Garcia Marquez", isbn="2"),
+        ]
+    )
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u2", "u3"],
+            "id_libro": ["poco_leido", "muy_leido", "muy_leido"],
+            "fecha": ["01-01-2020", "01-01-2020", "01-01-2021"],
+            "rating": [8, 8, 8],
+        }
+    )
+
+    libros_canon, interacciones_canon = canonicalizar_libros_duplicados(libros, interacciones)
+
+    assert libros_canon["id_libro"].iloc[0] == "muy_leido"
+    assert set(interacciones_canon["id_libro"]) == {"muy_leido"}
+
+
+def test_canonico_completa_metadata_nula_desde_el_resto_del_grupo():
+    libros = pd.DataFrame(
+        [
+            _libro("canon", titulo="Libro X", autor="Autor X", isbn="1", resumen=None, anio_edicion=2020),
+            _libro("dup", titulo="Libro X", autor="Autor X", isbn="2", resumen="un resumen", anio_edicion=None),
+        ]
+    )
+    interacciones = pd.DataFrame(
+        {"id_lector": ["u1", "u2"], "id_libro": ["canon", "canon"], "fecha": ["01-01-2020", "01-01-2021"], "rating": [8, 8]}
+    )
+    # "canon" ya tiene mas interacciones (2 vs 0 de "dup"), asi que queda como el id
+    # canonico -- pero le falta resumen, que "dup" si tiene.
+
+    libros_canon, _ = canonicalizar_libros_duplicados(libros, interacciones)
+
+    assert libros_canon["id_libro"].iloc[0] == "canon"
+    assert libros_canon["resumen"].iloc[0] == "un resumen"
+    assert libros_canon["anio_edicion"].iloc[0] == 2020
+
+
+def test_canonicaliza_deja_intacto_un_id_libro_huerfano_sin_fila_en_libros():
+    # Gap de integridad referencial preexistente (confirmado en los datos reales,
+    # ver experiments/estado_del_arte.md): un id_libro de interacciones sin fila
+    # correspondiente en libros no tiene grupo que asignarle -- debe quedar TAL
+    # CUAL (mismo comportamiento que sin canonicalizar), nunca convertirse en NaN.
+    libros = pd.DataFrame([_libro("a", titulo="Libro A", autor="Autor A", isbn="1")])
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u1"],
+            "id_libro": ["a", "huerfano-sin-metadata"],
+            "fecha": ["01-01-2020", "01-01-2020"],
+            "rating": [8, 8],
+        }
+    )
+
+    _, interacciones_canon = canonicalizar_libros_duplicados(libros, interacciones)
+
+    assert set(interacciones_canon["id_libro"]) == {"a", "huerfano-sin-metadata"}
+    assert interacciones_canon["id_libro"].notna().all()
+
+
+def test_canonicaliza_deduplica_interacciones_repetidas_tras_el_remapeo():
+    # Mismo usuario leyo dos ediciones distintas del mismo libro -- tras
+    # remapear ambas al mismo id_libro canonico, debe quedar UNA sola
+    # interaccion (la de fecha mas temprana), no dos lecturas del mismo libro.
+    libros = pd.DataFrame(
+        [
+            _libro("ed1", titulo="Libro Y", autor="Autor Y", isbn="1"),
+            _libro("ed2", titulo="Libro Y", autor="Autor Y", isbn="2"),
+        ]
+    )
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u1"],
+            "id_libro": ["ed1", "ed2"],
+            "fecha": ["01-06-2021", "01-01-2020"],
+            "rating": [7, 9],
+        }
+    )
+
+    _, interacciones_canon = canonicalizar_libros_duplicados(libros, interacciones)
+
+    assert len(interacciones_canon) == 1
+    assert interacciones_canon["fecha"].iloc[0] == "01-01-2020"  # la mas temprana
+    assert interacciones_canon["rating"].iloc[0] == 9

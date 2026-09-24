@@ -55,7 +55,9 @@ N_BOOTSTRAP = 2000
 # estricta, confirmado igual en Kaggle +3.7-4.5%), señales cruzadas lector↔libro
 # (2026-08-31, "casi positivo en los 3 seeds", Kaggle +0.5% solamente) y
 # score_difusion_candidato (2026-09-10, pareado BORDERLINE 1.17σ, Kaggle +0.00071 ~
-# del tamaño del SE de una submission). Ver resultado en estado_del_arte.md.
+# del tamaño del SE de una submission). Resultado (fila "ranker" 0.045987,
+# 2026-09-24, ver estado_del_arte.md): sacarlas EMPEORA bajo el corte global
+# (+1.58 sigma a favor de conservarlas) -- quedan en producción, no se tocan.
 FEATURES_EXCLUIR_LIMITE = [
     "popularidad_genero_macro_candidato",
     "frecuencia_genero_macro_usuario",
@@ -66,10 +68,23 @@ FEATURES_EXCLUIR_LIMITE = [
     "score_difusion_candidato",
 ]
 
+# 2026-09-24, tercer uso: sanear los 2 hallazgos reales de la auditoría de catálogo
+# (duplicados de libro + fragmentación de autor/editorial, ver "Sanear los tres
+# hallazgos de la Parte I" en estado_del_arte.md) vs. la config de producción SIN
+# CAMBIOS -- mismas 6 fuentes, mismas 40 features, mismos hiperparámetros. Aísla el
+# efecto de limpiar el dato del de cualquier otro cambio (por eso FUENTES/FEATURES
+# vuelven a None en vez de reusar la comparación de arriba). RESULTADO: NULO --
+# NDCG 0.045987 (crudos) vs 0.045504 (saneados), n=811, +0.10 sigma, P(mejora)=0.546,
+# CI [-0.0086,+0.0100] -- muy por debajo del umbral del proyecto. `sanear` queda
+# disponible (opt-in, default False) pero sin efecto medible sobre esta arquitectura
+# -- ver fila "ranker" 2026-09-24 en log.csv. Reseteado a False/False (sin
+# experimento activo) tras esta corrida.
 FUENTES_A = None
 FUENTES_B = None
 FEATURES_A = None  # None = R.FEATURES completo
-FEATURES_B = [f for f in R.FEATURES if f not in FEATURES_EXCLUIR_LIMITE]
+FEATURES_B = None
+SANEAR_A = False
+SANEAR_B = False
 
 
 def _reportar_pareado(valores_a: np.ndarray, valores_b: np.ndarray, nombre_a: str, nombre_b: str) -> None:
@@ -102,13 +117,16 @@ def _reportar_pareado(valores_a: np.ndarray, valores_b: np.ndarray, nombre_a: st
 def main() -> None:
     nombre_a = "todas" if FUENTES_A is None else "+".join(sorted(FUENTES_A))
     nombre_b = "todas" if FUENTES_B is None else "+".join(sorted(FUENTES_B))
-    print(f"=== corte global: fuentes_A=[{nombre_a}] vs fuentes_B=[{nombre_b}] ===")
+    print(
+        f"=== corte global: fuentes_A=[{nombre_a}] sanear_A={SANEAR_A} vs "
+        f"fuentes_B=[{nombre_b}] sanear_B={SANEAR_B} ==="
+    )
 
     t0 = time.time()
     print("\n--- config A ---", flush=True)
-    r_a = construir_y_evaluar(fuentes_activas=FUENTES_A, features=FEATURES_A)
+    r_a = construir_y_evaluar(fuentes_activas=FUENTES_A, features=FEATURES_A, sanear=SANEAR_A)
     print("\n--- config B ---", flush=True)
-    r_b = construir_y_evaluar(fuentes_activas=FUENTES_B, features=FEATURES_B)
+    r_b = construir_y_evaluar(fuentes_activas=FUENTES_B, features=FEATURES_B, sanear=SANEAR_B)
     print(f"\nlas dos configs listas en {time.time()-t0:.0f}s", flush=True)
 
     print(f"\nranker.ndcg_pop A: {r_a['ndcg_pop']:.6f}  B: {r_b['ndcg_pop']:.6f}")

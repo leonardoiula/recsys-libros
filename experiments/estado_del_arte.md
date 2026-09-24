@@ -628,8 +628,48 @@ arquitectura.
 - El catálogo de qué NO funcionó (`log.csv` completo + esta sección) evita repetir 15+
   rondas de experimentos ya cerrados con evidencia sólida.
 
+### Auditoría de calidad de datos + test de saneamiento (post-cierre, 2026-09-24)
+
+Después de declarar cerrada la arquitectura, el usuario pidió una revisión de bibliografía
+abierta (panorama completo, sin recorte previo) y, en paralelo, una auditoría de calidad de
+datos ("duplicados, vacíos, nombres incorrectos") — publicada como artefacto ("Catálogo de
+Pistas"). Tres hallazgos en la Parte I:
+
+1. **Libros duplicados**: 293 grupos (unión ISBN normalizado + título+autor normalizado,
+   encadenado transitivamente por union-find) — 0,46 % del catálogo pero 6,79 % de las
+   interacciones (los libros populares son justo los que acumulan reimpresiones con ISBN
+   distinto, ej. "EL PRINCIPITO" con 3 ediciones bajo 3 `id_libro`).
+2. **Fragmentación de autor/editorial**: mismo autor/editorial escrito con variantes de
+   acentuación/mayúsculas/espacios/puntuación — 395 grupos de autor (14,33 % de las
+   interacciones), 128 de editorial (33,77 %).
+3. **Nulos/vacíos**: confirmado limpio (0,00 % título/género vacíos, 0,01 % autor vacío,
+   0 ratings inválidos) — sin acción. *(Aparte, no es uno de los "tres hallazgos": ~61 % de
+   `libros` tiene TODA la metadata nula — no es un defecto de calidad, es catálogo sin
+   scrapear; ya manejado en todos lados vía NaN-safe code, no es saneable.)*
+
+Se implementaron los dos fixes reales — `recsys.data.canonicalizar_libros_duplicados`/
+`normalizar_texto` (fusiona duplicados, remapea `interacciones`, dedupe por usuario) y el
+flag `normalizar_autor_editorial` en `ranker.calcular_features_auxiliares` — ambos **opt-in**
+(default `False`, no cambian ningún comportamiento existente), cableados como un solo eje
+`sanear` en `evaluate_global_cutoff.py`/`comparar_global_pareado.py` para medir el efecto
+sobre la arquitectura de producción SIN CAMBIOS, bajo el protocolo de corte global (el único
+confiable). **RESULTADO: NULO.** NDCG@20 0.045987 (datos crudos) vs 0.045504 (saneados),
+n=811 usuarios pareados, diferencia +0,10 σ, P(mejora)=0,546, bootstrap CI
+[-0,0086, +0,0100] — muy por debajo del umbral ~1,5-2 σ del proyecto, prácticamente una
+moneda al aire. Ver fila `ranker` de `log.csv` (2026-09-24) para el detalle completo.
+
+Los dos hallazgos son reales y quedan corregidos en el código (no es un falso positivo de
+auditoría) — simplemente a esta escala (293 grupos son 0,46 % del catálogo; la fragmentación
+de autor es ruido en 1 de 40 features) el `LGBMRanker` ya es robusto a ese nivel de ruido en
+los datos. El código queda en el repo, **apagado por default**: es una utilidad de limpieza
+verificada contra los datos reales, no un experimento de modelado descartado — reutilizable
+si una arquitectura futura resulta más sensible a colisiones de id exactas (embeddings de
+contenido, item2vec) de lo que es el ranker actual. No se gastó submission de Kaggle (mismo
+criterio que LMF/blend: el rechazo local ya es claro).
+
 ### Próximo paso
 
 Revisión de bibliografía reciente (2024-2026) de sistemas de recomendación, buscando un
 enfoque estructuralmente distinto al de "candidatos + reranking con árboles" — a discutir
-con el usuario antes de implementar nada.
+con el usuario antes de implementar nada. El saneamiento de datos (arriba) queda cerrado
+como vía agotada; no vuelve a proponerse salvo que cambie la arquitectura.

@@ -67,6 +67,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from recsys.data import (
+    canonicalizar_libros_duplicados,
     libros_leidos_por_usuario,
     load_interacciones,
     load_lectores,
@@ -134,19 +135,27 @@ def _cargar_datos():
     return _DATOS_CACHE["interacciones"], _DATOS_CACHE["libros"], _DATOS_CACHE["lectores"]
 
 
-def _fit_stage1(train, libros, lectores, fuentes_activas=None, seed: int = 42):
+def _fit_stage1(train, libros, lectores, fuentes_activas=None, seed: int = 42, normalizar_autor_editorial: bool = False):
     """Fitea ALS (BM25) + popularidad + género + features auxiliares sobre `train` --
     mismo bloque que arma `preparar_pipeline`/`submit.py` para un corte dado, con los
     mismos hiperparámetros de producción (n_por_fuente/n_por_autor/n_por_fuente_autor).
     `fuentes_activas` (default `None` = todas) se pasa tal cual a
     `generar_candidatos_con_features` vía `args_candidatos` -- ver `ranker.FUENTES_CANDIDATOS`.
-    `seed` alimenta `fit_als(..., seed=seed)` -- ver docstring del módulo."""
+    `seed` alimenta `fit_als(..., seed=seed)` -- ver docstring del módulo.
+    `normalizar_autor_editorial` se pasa tal cual a `calcular_features_auxiliares`
+    -- ver `preparar_contexto_global`/`ranker.calcular_features_auxiliares`."""
     stats_popularidad = fit_popularity(train)
     stats_por_genero = fit_popularity_por_genero(train, libros)
     genero_por_usuario = genero_preferido_por_usuario(train, libros)
     modelo_als, matriz, fila_por_usuario, libros_por_columna = fit_als(train, bm25=BM25_ALS, seed=seed)
     features_auxiliares = calcular_features_auxiliares(
-        train, libros, lectores, matriz, fila_por_usuario, libros_por_columna
+        train,
+        libros,
+        lectores,
+        matriz,
+        fila_por_usuario,
+        libros_por_columna,
+        normalizar_autor_editorial=normalizar_autor_editorial,
     )
     args_candidatos = dict(
         modelo_als=modelo_als,
@@ -181,11 +190,24 @@ def preparar_contexto_global(
     fuentes_activas=None,
     cache_dir: str | Path | None = None,
     verbose: bool = True,
+    sanear: bool = False,
 ) -> dict:
     """Arma la ventana rodante de cortes globales + `candidatos_test` -- la parte cara
     (~7-8 min) del pipeline, la que NO depende de los hiperparámetros de LightGBM.
     Cachea el resultado a disco (ver `_hash_codigo`) para no repetir el armado al
     tunear hiperparámetros o correr CV multi-seed sobre el mismo `seed`/`fuentes_activas`.
+
+    `sanear` (default `False`, opt-in -- 2026-09-24, ver "Sanear los tres hallazgos
+    de la Parte I" en `experiments/estado_del_arte.md`): si `True`, aplica
+    `recsys.data.canonicalizar_libros_duplicados` sobre `interacciones`/`libros`
+    ANTES de armar la ventana rodante (afecta a TODO lo que sigue: splits,
+    popularidad, ALS, candidatos, features) y pasa `normalizar_autor_editorial=True`
+    a `calcular_features_auxiliares` en cada `_fit_stage1` -- los dos hallazgos
+    reales de saneamiento de catálogo (duplicados de libro, fragmentación de
+    autor/editorial), aplicados juntos como un solo eje "datos crudos vs.
+    saneados" sobre la MISMA arquitectura sin cambios, para aislar el efecto de
+    limpiar el dato del de cualquier otro cambio. El tercer hallazgo (strings
+    vacíos) no requiere fix: confirmado en 0% sobre título/género/autor.
 
     Barre del `cache_dir` los `global_ctx_*.pkl` con hash de código VIEJO en cada
     llamada, mismo criterio que `preparar_pipeline_cacheado` (si no, cada edición de
@@ -203,7 +225,7 @@ def preparar_contexto_global(
                 pass
 
     fuentes_label = "todas" if fuentes_activas is None else "+".join(sorted(fuentes_activas))
-    nombre = f"global_ctx_seed{seed}_fuentes-{fuentes_label}_{hash_codigo}.pkl"
+    nombre = f"global_ctx_seed{seed}_fuentes-{fuentes_label}_sanear-{sanear}_{hash_codigo}.pkl"
     ruta = cache_dir / nombre
     if ruta.exists():
         if verbose:
@@ -213,6 +235,11 @@ def preparar_contexto_global(
 
     t_inicio = time.time()
     interacciones, libros, lectores = _cargar_datos()
+    if sanear:
+        libros, interacciones = canonicalizar_libros_duplicados(libros, interacciones)
+        if verbose:
+            print(f"[{time.time()-t_inicio:6.1f}s] datos saneados: {len(libros)} libros, "
+                  f"{len(interacciones)} interacciones", flush=True)
 
     hasta_t2, test_final = split_temporal_global(interacciones, FECHA_CORTE_T2, seed=seed)
     if verbose:
@@ -228,7 +255,9 @@ def preparar_contexto_global(
 
         t0 = time.time()
         libros_leidos_ventana = libros_leidos_por_usuario(train_ventana)
-        args_candidatos, _ = _fit_stage1(train_ventana, libros, lectores, fuentes_activas=fuentes_activas, seed=seed)
+        args_candidatos, _ = _fit_stage1(
+            train_ventana, libros, lectores, fuentes_activas=fuentes_activas, seed=seed, normalizar_autor_editorial=sanear
+        )
         usuarios_ventana = etiquetas_ventana["id_lector"].unique().tolist()
         X_i, y_i, group_i = armar_dataset_entrenamiento_por_lotes(
             usuarios_ventana,
@@ -253,7 +282,7 @@ def preparar_contexto_global(
     t0 = time.time()
     libros_leidos_hasta_t2 = libros_leidos_por_usuario(hasta_t2)
     args_candidatos_test, ranking_global_test = _fit_stage1(
-        hasta_t2, libros, lectores, fuentes_activas=fuentes_activas, seed=seed
+        hasta_t2, libros, lectores, fuentes_activas=fuentes_activas, seed=seed, normalizar_autor_editorial=sanear
     )
     if verbose:
         print(f"[{time.time()-t_inicio:6.1f}s] refit de etapa 1 (hasta T2) en {time.time()-t0:.1f}s", flush=True)
@@ -382,16 +411,19 @@ def construir_y_evaluar(
     seed: int = 42,
     lgbm_params: dict | None = None,
     verbose: bool = True,
+    sanear: bool = False,
 ) -> dict:
     """Atajo de conveniencia para el caso de una sola config: `preparar_contexto_global`
     + `evaluar_con_params_global`, mismo patrón que `ranker.evaluar_pipeline`. Usada por
     `scripts/comparar_global_pareado.py`/`scripts/probar_blend_global.py`.
 
+    `sanear` se pasa tal cual a `preparar_contexto_global` -- ver su docstring.
+
     Devuelve `{"ndcg_pop", "ndcg_als", "ndcg_ranker", "ndcg_por_usuario", "recs_ranker_pool",
     "recs_als_pool", "relevantes_por_usuario", "libros_leidos_hasta_t2", "ranking_global",
     "n_train", "n_grupos", "n_test"}`.
     """
-    contexto = preparar_contexto_global(seed=seed, fuentes_activas=fuentes_activas, verbose=verbose)
+    contexto = preparar_contexto_global(seed=seed, fuentes_activas=fuentes_activas, verbose=verbose, sanear=sanear)
     r = evaluar_con_params_global(contexto, features=features, lgbm_params=lgbm_params)
     if verbose:
         print(f"NDCG@{K} ranker: {r['ndcg_ranker']:.6f}", flush=True)

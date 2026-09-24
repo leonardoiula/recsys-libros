@@ -261,6 +261,56 @@ def test_calcular_features_auxiliares():
     assert aux["nacimiento_por_lector"]["u1"] == 1970.0
 
 
+def test_calcular_features_auxiliares_normaliza_autor_editorial_si_se_pide():
+    # "KING, STEPHEN" / "King, Stephen" / "KING,  STEPHEN " (espacio doble +
+    # trailing) son el mismo autor -- igual "PLANETA"/"Planeta " de editorial.
+    # Sin el flag (default), cada variante es una clave distinta; con el flag
+    # normalizar_autor_editorial=True deben agruparse en una sola.
+    interacciones = pd.DataFrame(
+        {
+            "id_lector": ["u1", "u1"],
+            "id_libro": ["a", "b"],
+            "fecha": ["01-01-2020", "01-01-2021"],
+            "rating": [8, 8],
+        }
+    )
+    libros = pd.DataFrame(
+        {
+            "id_libro": ["a", "b"],
+            "autor": ["KING, STEPHEN", "King,  Stephen "],
+            "genero": ["Terror", "Terror"],
+            "anio_edicion": ["2000", "2010"],
+            "editorial": ["PLANETA", "Planeta "],
+            "resumen": [None, None],
+        }
+    )
+    lectores = pd.DataFrame({"id_lector": ["u1"], "genero": ["Mujer"], "nacimiento": ["1970"]})
+    matriz = np.array([[1, 1]])
+    fila_por_usuario = {"u1": 0}
+    libros_por_columna = ["a", "b"]
+
+    sin_normalizar = calcular_features_auxiliares(
+        interacciones, libros, lectores, matriz, fila_por_usuario, libros_por_columna
+    )
+    assert set(sin_normalizar["n_libros_autor_leidos_por_usuario"]["u1"]) == {"KING, STEPHEN", "King,  Stephen "}
+    assert set(sin_normalizar["n_libros_editorial_leidos_por_usuario"]["u1"]) == {"PLANETA", "Planeta "}
+
+    con_normalizar = calcular_features_auxiliares(
+        interacciones,
+        libros,
+        lectores,
+        matriz,
+        fila_por_usuario,
+        libros_por_columna,
+        normalizar_autor_editorial=True,
+    )
+    # una sola clave de autor y una sola de editorial, con las DOS lecturas contadas
+    assert list(con_normalizar["n_libros_autor_leidos_por_usuario"]["u1"].values()) == [2]
+    assert list(con_normalizar["n_libros_editorial_leidos_por_usuario"]["u1"].values()) == [2]
+    assert con_normalizar["autor_por_libro"]["a"] == con_normalizar["autor_por_libro"]["b"]
+    assert con_normalizar["editorial_por_libro"]["a"] == con_normalizar["editorial_por_libro"]["b"]
+
+
 def test_generar_candidatos_incluye_features_de_autor_y_recencia():
     modelo = _ModeloALSFalso({0: ([0], [0.7])})
     matriz = np.zeros((1, 1))

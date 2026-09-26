@@ -323,7 +323,19 @@ reclamado, `Psycamorean`) que las recomendaciones personalizadas son
 notoriamente distintas del fallback de popularidad puro que ve un usuario
 nuevo -- no se solapa ni un título entre los primeros 5 de cada lista.
 
-### La interfaz pensada para la fase 2 (el juego de onboarding)
+### Tope de issues por serie (`MAX_POR_SERIE = 2`)
+
+Los issues de una misma serie son casi siempre los vecinos más parecidos
+entre sí, porque los leen las mismas personas. Sin un tope, puntuar
+*Ultimate Spider-Man #21* devolvía 10 de 10 recomendaciones de Ultimate
+Spider-Man (#22, #23, #20, #19...). Con tope 2 quedan #22 y #23 (el número
+siguiente de algo que te gustó sigue siendo una buena recomendación) y el
+resto se abre a Ultimates, Ultimate Endgame, Ultimate Wolverine, Absolute
+Batman. `_limitar_por_serie` recorre la lista ya ordenada por score y
+solo saltea lo que excede el tope, no reordena nada. Aplica tanto a los
+vecinos item-item como al relleno por popularidad.
+
+### La interfaz pensada para el onboarding (ver sección 7)
 
 El parámetro `perfil_coldstart: dict[str, float] | None` en `recomendar()`
 existe por una razón concreta: cuando se construya la novela gráfica
@@ -478,3 +490,97 @@ WSGI de PythonAnywhere no necesariamente arranca con el cwd en la raíz del
 proyecto, así que cualquier ruta relativa al cwd podría apuntar a cualquier
 lado según cómo lo arranque su infraestructura -- resolver contra
 `__file__` es robusto sin importar desde dónde se invoque el proceso.
+
+## 7. Onboarding: la ficción interactiva para usuarios nuevos
+
+Una cuenta nueva no tiene historial, así que el recomendador solo puede
+mostrarle lo más popular. El onboarding (`webapp/onboarding.py` +
+`webapp/onboarding_datos.py`, plantilla `templates/onboarding.html`) junta
+señales de gusto disfrazadas de ficción: el usuario "despierta" en una
+rebelión contra la Entidad y tiene que reconstruir su memoria, el Códice.
+El guion es `comics/1. El Despertar y la Bienvenida.txt` y la estética visual
+sale de `comics/estetica.jpg` (el fondo es `static/onboarding/escena.jpg`, la
+misma imagen comprimida).
+
+### Las fases y qué dato saca cada una
+
+| Fase | Pantalla | Qué se guarda |
+|---|---|---|
+| 0 | El despertar | nada (registra que empezó) |
+| 1 | Universos: 12 editoriales, al menos 3 evaluadas | `onboarding_editoriales` (encanta / gusta / curiosidad / no me atrae) |
+| 2 | Memoria reciente: lo de más impacto del último año, de las editoriales elegidas | "lo leí" + nota -> `interacciones`; "me da curiosidad" -> `onboarding_curiosidad` |
+| 3 | Ecos: de hace 1 a 5 años | ídem |
+| 4 | "Fundacionales": lo mejor puntuado (score bayesiano) de antes de hace 5 años | ídem |
+| 5 | Anomalías: al azar, de editoriales NO elegidas | ídem |
+| 6 | Sincronización | marca `onboarding_progreso.completado_en` |
+
+La Fase 4 del guion hablaba de clásicos de la Golden Era, pero el dataset
+arranca en 2018 y un clásico que no está en la matriz no tiene vecinos: no
+aportaría a ninguna recomendación. Por eso se reinterpretó como "lo
+fundacional de lo que sí tenemos" (House of X, Immortal Hulk, Doomsday
+Clock...).
+
+### Por qué "lo leí" va a `interacciones` y "me da curiosidad" no
+
+Un "lo leí, 8/10" es un dato de lectura real, igual que el botón "Leído" del
+dashboard, y reusa `repo.marcar_como_leido`. Sirve también para entrenar
+offline. Una curiosidad o una preferencia por editorial NO son lecturas: si
+fueran a `interacciones` ensuciarían el entrenamiento (sería como inventar
+reviews). Por eso viven en tablas propias y entran al recomendador solo en
+runtime, por la interfaz que se dejó preparada en la sección 4
+(`perfil_coldstart`):
+
+- `perfil_para_recomendar` arma `{id_comic: peso}` con los ratings reales +
+  cada curiosidad con `PESO_CURIOSIDAD = 7.0` (misma escala 0-10). Es un valor
+  de criterio: no hay cómo medir el NDCG del onboarding offline, porque no
+  existen usuarios históricos que lo hayan hecho.
+- Las editoriales solo reordenan el **relleno** por popularidad (primero las
+  preferidas, al final las "no me atrae"). No tocan el score item-item:
+  "me gusta Marvel" es una señal mucho más gruesa que un comic concreto.
+
+### Decisiones de selección que no son obvias
+
+- **Fecha de un comic = su primera review**: `anio_edicion` falta en ~36%, y
+  como el scraping recorre semanas de lanzamiento, la primera review cae en
+  la práctica en la semana en que salió. El "hoy" es la review más reciente
+  del dataset, no la fecha del sistema: si el scraping queda viejo, "el
+  último año" sigue teniendo datos.
+- **Un issue por serie + editoriales intercaladas**: sin esto el carrusel del
+  último año eran 4 números de Absolute Batman seguidos y era 100% DC.
+- **Solo comics con tapa y con al menos una review**: lo que se reconoce es la
+  tapa, y un comic sin reviews no tiene vecinos en la similitud.
+- **Anomalías con semilla por usuario**: recargar la página no cambia la
+  selección.
+
+### Detalles de implementación
+
+- Las tablas se crean al arrancar la app (`crear_tablas`, idempotente): un
+  `git pull` + Reload en PythonAnywhere alcanza, sin migración a mano.
+- `CatalogoOnboarding` calcula las estadísticas por comic una sola vez al
+  arrancar, igual que el `Recomendador`: nada pesado por request.
+- El progreso nunca retrocede (`MAX(fase, ...)`), así que el botón "atrás"
+  del navegador no pierde avance. Quien se desconecta a mitad de camino ve
+  en el dashboard una invitación a retomarlo mientras no tenga historial.
+- Los ids de comic del form se validan contra el catálogo: un id inventado
+  nunca llega a la BD.
+- Tests: `comics/tests/test_onboarding.py`.
+
+## 8. Pantallas de entrada: login y registro como viñeta de comic
+
+Login, registro y reclamar identidad extienden `templates/vineta_base.html`
+(no `base.html`). Referencia visual: `comics/fondo.jpg`, un callejón
+dibujado con una viñeta enmarcada al centro. El contenido va DENTRO de esa
+viñeta:
+
+- `.escena` se comporta como un `background-size: cover` pero es un
+  elemento propio con la proporción de la imagen (1408x768). Así la viñeta
+  se posiciona en % de la imagen (marco medido por píxeles: x 351-1073, y
+  211-630) y queda calzada sobre el dibujo con cualquier tamaño de ventana.
+- Los tamaños de letra dentro de la viñeta usan unidades de container query
+  (`cqh`/`cqw`): escalan con la viñeta, no con la ventana.
+- En pantallas angostas, verticales o muy bajas el dibujo entero no entra
+  con la viñeta a un tamaño usable. El callejón queda de fondo oscurecido y
+  la viñeta pasa a ser un recuadro con borde de tinta que muestra el
+  recorte del marco (`static/login/vineta.jpg`, sacado de `fondo.jpg`).
+- Cada página llena tres bloques: `lugar` (caja ámbar de arriba), `cuerpo`
+  y `pie` (caja de abajo). Los mensajes flash salen como caja roja.

@@ -40,6 +40,13 @@
 {% endmacro %}
 
 {% block content %}
+{% if ofrecer_onboarding %}
+  <p class="flash">
+    Todavía no sabemos qué te gusta, así que te mostramos lo más popular.
+    <a href="{{ url_for('onboarding.inicio') }}">Reconstruí tu Códice</a> en un par de minutos
+    para recibir recomendaciones a tu medida.
+  </p>
+{% endif %}
 <h1>Te recomendamos</h1>
 <div class="estante">
   {% if recomendados %}

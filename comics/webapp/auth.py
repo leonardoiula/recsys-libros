@@ -50,7 +50,9 @@ def registro():
 
         id_usuario = repo.crear_cuenta_nueva(get_db(), nombre, password)
         login_user(User(id_usuario, nombre))
-        return redirect(url_for("dashboard.index"))
+        # Cuenta nueva = sin historial: pasa por el onboarding. Una identidad
+        # reclamada (registro_reclamar) ya trae reviews y va directo al dashboard.
+        return redirect(url_for("onboarding.inicio"))
 
     return render_template("registro.html")
 

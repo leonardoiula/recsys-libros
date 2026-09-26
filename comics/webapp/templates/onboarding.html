@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reconstruyendo el Códice</title>
+  {# Plantilla propia (no extiende base.html): el onboarding es una escena
+     de la ficción, no una página más del sitio. Estética tomada de
+     comics/estetica.jpg: callejón nocturno, neón magenta/cian, holograma
+     con glitch, tipografía monoespaciada. #}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --cian: #4ff4ff;
+      --magenta: #ff3fb4;
+      --texto: #e6f6ff;
+      --tenue: #8aa3b8;
+      --panel: rgba(8, 14, 32, 0.82);
+      --borde: rgba(79, 244, 255, 0.55);
+      --mono: "Share Tech Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; color: var(--texto); font-family: var(--mono);
+      background:
+        linear-gradient(180deg, rgba(4, 6, 18, 0.55), rgba(4, 6, 18, 0.9)),
+        url("{{ url_for('static', filename='onboarding/escena.jpg') }}") center / cover fixed,
+        #05060f;
+      padding: 2rem 1rem;
+    }
+    main {
+      max-width: 980px; margin: 0 auto; padding: 1.5rem 1.75rem 1.25rem;
+      background: var(--panel); border: 1px solid var(--borde); border-radius: 6px;
+      box-shadow: 0 0 24px rgba(79, 244, 255, 0.25), inset 0 0 40px rgba(79, 244, 255, 0.06);
+      backdrop-filter: blur(3px);
+    }
+    .estado { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.8rem; color: var(--tenue); letter-spacing: 0.08em; }
+    .barra { height: 8px; border: 1px solid var(--borde); margin: 0.4rem 0 1.4rem; }
+    .barra span { display: block; height: 100%; background: var(--cian); box-shadow: 0 0 10px var(--cian); }
+
+    h1 {
+      font-size: clamp(1.3rem, 3.5vw, 2rem); margin: 0 0 1rem; text-transform: uppercase; letter-spacing: 0.04em;
+      text-shadow: 0 0 8px rgba(79, 244, 255, 0.8), 2px 0 0 rgba(255, 63, 180, 0.6), -2px 0 0 rgba(79, 244, 255, 0.5);
+      animation: glitch 6s infinite steps(1);
+    }
+    @keyframes glitch {
+      0%, 92%, 100% { transform: none; }
+      93% { transform: translateX(2px) skewX(-4deg); }
+      95% { transform: translateX(-3px); }
+      97% { transform: translateX(1px) skewX(3deg); }
+    }
+    @media (prefers-reduced-motion: reduce) { h1 { animation: none; } }
+
+    .narrador p { font-size: 1.05rem; line-height: 1.55; margin: 0 0 0.8rem; max-width: 70ch; }
+    .narrador p:last-child::after { content: "▌"; color: var(--cian); animation: parpadeo 1s infinite steps(2); }
+    @keyframes parpadeo { 50% { opacity: 0; } }
+    .alerta { border-left: 3px solid var(--magenta); padding: 0.5rem 0.9rem; background: rgba(255, 63, 180, 0.12); margin: 0 0 1rem; }
+
+    .acciones { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1.5rem; }
+    button.neon {
+      font: inherit; font-size: 1.05rem; letter-spacing: 0.12em; color: var(--cian); background: transparent;
+      border: 1px solid var(--cian); padding: 0.7rem 1.4rem; cursor: pointer;
+      box-shadow: 0 0 12px rgba(79, 244, 255, 0.45), inset 0 0 12px rgba(79, 244, 255, 0.2);
+      text-shadow: 0 0 6px var(--cian);
+    }
+    button.neon:hover, button.neon:focus-visible { background: rgba(79, 244, 255, 0.12); outline: none; }
+    a { color: var(--cian); }
+    .saltar { color: var(--tenue); font-size: 0.85rem; }
+
+    /* Fase 1: grilla de universos */
+    .universos { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 0.9rem; }
+    .universo { border: 1px solid rgba(79, 244, 255, 0.3); padding: 0.75rem; background: rgba(4, 8, 22, 0.7); }
+    .universo:has(input:checked) { border-color: var(--magenta); box-shadow: 0 0 10px rgba(255, 63, 180, 0.35); }
+    .logo { height: 64px; display: grid; place-items: center; background: #f4f4f4; border-radius: 3px; margin-bottom: 0.5rem; }
+    .logo img { max-height: 54px; max-width: 90%; }
+    .logo.texto { background: #111a33; color: var(--texto); font-size: 1.2rem; }
+    .universo .nombre { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.4rem; }
+    .universo .nombre a { font-size: 0.75rem; }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+    .chips input { position: absolute; opacity: 0; pointer-events: none; }
+    .chips label { font-size: 0.72rem; padding: 0.2rem 0.45rem; border: 1px solid rgba(138, 163, 184, 0.5); cursor: pointer; }
+    .chips input:checked + label { border-color: var(--magenta); color: #fff; background: rgba(255, 63, 180, 0.3); }
+    .chips input:focus-visible + label { outline: 1px solid var(--cian); }
+
+    /* Fases 2-5: carrusel de archivos */
+    .carrusel { display: flex; gap: 1rem; overflow-x: auto; scroll-snap-type: x mandatory; padding: 0.3rem 0.2rem 1rem; }
+    .archivo { flex: 0 0 150px; scroll-snap-align: start; }
+    .archivo img {
+      width: 100%; aspect-ratio: 200 / 308; object-fit: cover; display: block;
+      border: 1px solid rgba(79, 244, 255, 0.35); box-shadow: 0 0 10px rgba(79, 244, 255, 0.2);
+    }
+    .archivo .titulo { font-size: 0.8rem; margin: 0.4rem 0 0.1rem; min-height: 2.4em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .archivo .meta { font-size: 0.7rem; color: var(--tenue); margin: 0 0 0.4rem; }
+    .archivo label { display: flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; margin-top: 0.3rem; cursor: pointer; }
+    .archivo input[type="number"] {
+      width: 3.4rem; font: inherit; font-size: 0.8rem; color: var(--texto);
+      background: rgba(4, 8, 22, 0.9); border: 1px solid rgba(79, 244, 255, 0.4); padding: 0.15rem 0.3rem;
+    }
+    .archivo input[type="checkbox"] { accent-color: var(--magenta); }
+    .vacio { color: var(--tenue); }
+  </style>
+</head>
+<body>
+<main>
+  <div class="estado">
+    <span>CÓDICE // RECONSTRUCCIÓN {{ numero }}/{{ ultima_fase }}</span>
+    <span>{{ (numero * 100 // ultima_fase) }}%</span>
+  </div>
+  <div class="barra"><span style="width: {{ numero * 100 // ultima_fase }}%"></span></div>
+
+  {% for mensaje in get_flashed_messages() %}
+    <p class="alerta">⚠ {{ mensaje }}</p>
+  {% endfor %}
+
+  <form method="post" action="{{ url_for('onboarding.fase', numero=numero) }}">
+
+  {% if numero == 0 %}
+    <h1>El despertar</h1>
+    <div class="narrador">
+      <p>Tranquilo, respira. La desorientación es normal. Despertaste justo a tiempo.</p>
+      <p>La Entidad intentó borrarnos la imaginación, pero tu córtex resistió. Te necesitamos en la rebelión. Vamos a ayudarte a estabilizar tus recuerdos antes de que se degraden. Reconstruiremos el Códice juntos.</p>
+    </div>
+    {% set boton = "ESTABILIZAR RED" %}
+
+  {% elif numero == 1 %}
+    <h1>Fase 1: Los universos</h1>
+    <div class="narrador">
+      <p>Empecemos calibrando tu resonancia básica. ¿Qué grandes universos de historias recuerdas?</p>
+      <p>Evalúa al menos {{ minimo }} para estabilizar tu conexión. Si un bloque te resulta desconocido pero te genera curiosidad, dínoslo.</p>
+    </div>
+    <div class="universos">
+      {% for valor, nombre, logo, sitio in editoriales %}
+        <fieldset class="universo">
+          {% if logo %}
+            <div class="logo"><img src="{{ logo }}" alt="{{ nombre }}" loading="lazy"
+                 onerror="this.parentNode.classList.add('texto'); this.replaceWith('{{ nombre }}')"></div>
+          {% else %}
+            <div class="logo texto">{{ nombre }}</div>
+          {% endif %}
+          <div class="nombre">
+            <legend>{{ nombre }}</legend>
+            <a href="{{ sitio }}" target="_blank" rel="noopener noreferrer">sitio oficial ↗</a>
+          </div>
+          <div class="chips">
+            {% for clave, etiqueta in preferencias.items() %}
+              {% set id_input = "pref-" ~ loop.index ~ "-" ~ valor|replace("!", "")|replace(" ", "-") %}
+              <input type="radio" id="{{ id_input }}" name="pref-{{ valor }}" value="{{ clave }}"
+                     {{ "checked" if elegidas.get(valor) == clave else "" }}>
+              <label for="{{ id_input }}">{{ etiqueta }}</label>
+            {% endfor %}
+          </div>
+        </fieldset>
+      {% endfor %}
+    </div>
+    {% set boton = "CALIBRAR RESONANCIA" %}
+
+  {% elif numero in (2, 3, 4, 5) %}
+    {% if numero == 2 %}
+      <h1>Fase 2: Memoria reciente</h1>
+      <div class="narrador">
+        <p>Conexión estable. Ahora extraigamos tus recuerdos más recientes. Estos patrones alteraron la red durante el último ciclo.</p>
+        <p>¿Reconoces estas historias?</p>
+      </div>
+    {% elif numero == 3 %}
+      <h1>Fase 3: Ecos</h1>
+      <div class="narrador">
+        <p>Profundizando... Los ecos de hace cinco ciclos aún vibran. Revisa estos archivos de alto impacto. ¿Estuviste ahí cuando estas historias sacudieron el sistema?</p>
+      </div>
+    {% elif numero == 4 %}
+      <h1>Fase 4: Estructura base</h1>
+      <div class="narrador">
+        <p>Llegamos a tu estructura base. Estas son las historias fundacionales sobre las que se erigió la imaginación. Sin ellas, el Códice colapsa.</p>
+        <p>¿Qué clásicos siguen grabados a fuego en tu memoria?</p>
+      </div>
+    {% else %}
+      <h1>Fase 5: Anomalías</h1>
+      <div class="narrador">
+        <p class="alerta">⚠️ Espera... Detecto una anomalía. Se están filtrando frecuencias de universos que no seleccionaste. A veces la rebelión encuentra fuerza en impulsos inesperados.</p>
+        <p>¿Alguna de estas descargas ajenas activa tu curiosidad antes de cerrar el enlace?</p>
+      </div>
+    {% endif %}
+
+    {% if comics %}
+      <p class="saltar">Si lo leíste, dale un puntaje de 0 a 10. Si no, marcá si te da curiosidad. Lo que no reconozcas, dejalo en blanco.</p>
+      <div class="carrusel">
+        {% set sintapa = url_for('static', filename='sintapa.jpg') %}
+        {% for comic in comics %}
+          <div class="archivo">
+            <input type="hidden" name="comic" value="{{ comic.id_comic }}">
+            <img src="{{ comic.img_src or sintapa }}" alt="{{ comic.titulo }}" loading="lazy"
+                 onerror="this.onerror=null; this.src='{{ sintapa }}'">
+            <p class="titulo">{{ comic.titulo }}</p>
+            <p class="meta">{{ comic.editorial }} · {{ comic.primera.year }}</p>
+            <label>Lo leí:
+              <input type="number" name="rating-{{ comic.id_comic }}" min="0" max="10" step="0.5" placeholder="0-10">
+            </label>
+            <label><input type="checkbox" name="curiosidad-{{ comic.id_comic }}" value="1"> Me da curiosidad</label>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="vacio">[ SIN ARCHIVOS EN ESTE SECTOR ] -- no quedan historias para mostrar acá. Seguí adelante.</p>
+    {% endif %}
+    {% set boton = "SINCRONIZAR" if numero < 5 else "INTEGRAR" %}
+
+  {% else %}
+    <h1>Sincronización completada</h1>
+    <div class="narrador">
+      <p>Sincronización completada. Tu mapa de memoria está integrado a la red. Ya no estás aislado.</p>
+      <p>Bienvenido a la rebelión.</p>
+    </div>
+    {% set boton = "ENTRAR EN LA MALLA" %}
+  {% endif %}
+
+    <div class="acciones">
+      {% if numero < ultima_fase %}
+        <a class="saltar" href="{{ url_for('dashboard.index') }}">Desconectarme por ahora (podés retomarlo desde tu dashboard)</a>
+      {% else %}
+        <span></span>
+      {% endif %}
+      <button class="neon" type="submit">[ {{ boton }} ]</button>
+    </div>
+  </form>
+</main>
+</body>
+</html>

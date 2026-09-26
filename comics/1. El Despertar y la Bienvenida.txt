@@ -1,0 +1,58 @@
+1. El Despertar y la Bienvenida
+Texto del Narrador:
+
+"Tranquilo, respira. La desorientación es normal. Despertaste justo a tiempo.
+
+La Entidad intentó borrarnos la imaginación, pero tu córtex resistió. Te necesitamos en la rebelión. Vamos a ayudarte a estabilizar tus recuerdos antes de que se degraden. Reconstruiremos el Códice juntos."
+
+(Botón de acción: [ ESTABILIZAR RED ])
+
+2. Fase 1: Los Universos (Puntuación de Editoriales)
+Texto del Narrador:
+
+"Empecemos calibrando tu resonancia básica. ¿Qué grandes universos de historias recuerdas?
+
+Evalúa al menos tres para estabilizar tu conexión. Si un bloque te resulta desconocido pero te genera curiosidad, dínoslo."
+
+(Mecánica UI: Grilla de Logos de Editoriales a puntuar / links a la pagina oficial de cada editorial)
+
+3. Fase 2 y 3: Memoria Reciente (Últimos 1 a 5 Años)
+Texto del Narrador:
+
+"Conexión estable. Ahora extraigamos tus recuerdos más recientes. Estos patrones alteraron la red durante el último ciclo.
+
+¿Reconoces estas historias?"
+
+(Mecánica UI: Carrusel de Cómics del Último Año de las editoriales elegidas)
+
+Texto del Narrador (Paso siguiente):
+
+"Profundizando... Los ecos de hace cinco ciclos aún vibran. Revisa estos archivos de alto impacto. ¿Estuviste ahí cuando estas historias sacudieron el sistema?"
+
+(Mecánica UI: Carrusel de Cómics de los Últimos 5 Años)
+
+4. Fase 4: Los Clásicos (Golden Era e Históricos)
+Texto del Narrador:
+
+"Llegamos a tu estructura base. Estas son las historias fundacionales sobre las que se erigió la imaginación. Sin ellas, el Códice colapsa.
+
+¿Qué clásicos siguen grabados a fuego en tu memoria?"
+
+(Mecánica UI: Lista de Cómics Históricos Mejor Rankeados)
+
+5. Fase 5: Anomalías e Integración Final
+Texto del Narrador:
+
+"⚠️ Espera... Detecto una anomalía. Se están filtrando frecuencias de universos que no seleccionaste. A veces la rebelión encuentra fuerza en impulsos inesperados.
+
+¿Alguna de estas descargas ajenas activa tu curiosidad antes de cerrar el enlace?"
+
+(Mecánica UI: Selección aleatoria de Cómics de editoriales NO elegidas)
+
+Texto Final (Al conectar):
+
+"Sincronización completada. Tu mapa de memoria está integrado a la red. Ya no estás aislado.
+
+Bienvenido a la rebelión."
+
+(Botón de acción: [ ENTRAR EN LA MALLA ])

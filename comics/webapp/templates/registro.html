@@ -1,30 +1,28 @@
-{% extends "base.html" %}
+{% extends "vineta_base.html" %}
 {% block title %}Registrarme - Comics Recsys{% endblock %}
-{% block content %}
-<h1>Registrarme</h1>
+{% block lugar %}Ciudad baja. Un recién llegado.{% endblock %}
+{% block cuerpo %}
+  <div class="columnas">
+    <form class="caption cuerpo" method="post" action="{{ url_for('auth.registro') }}">
+      <h1>Nuevo en la ciudad</h1>
+      <label>Nombre
+        <input type="text" name="nombre" required autofocus autocomplete="username">
+      </label>
+      <label>Contraseña
+        <input type="password" name="password" required autocomplete="new-password">
+      </label>
+      <button type="submit">Crear cuenta</button>
+    </form>
 
-<section>
-  <h2>Cuenta nueva</h2>
-  <form class="linea" method="post" action="{{ url_for('auth.registro') }}">
-    <label>Nombre
-      <input type="text" name="nombre" required>
-    </label>
-    <label>Contraseña
-      <input type="password" name="password" required>
-    </label>
-    <button type="submit">Crear cuenta</button>
-  </form>
-</section>
-
-<section>
-  <h2>¿Ya sos un usuario de comicbookroundup.com?</h2>
-  <p>Buscá tu nombre entre los usuarios que ya scrapeamos y reclamá tu identidad
-     para ver recomendaciones basadas en tus reviews reales.</p>
-  <form class="linea" method="get" action="{{ url_for('auth.registro_buscar') }}">
-    <label>Nombre
-      <input type="text" name="q" required>
-    </label>
-    <button type="submit">Buscar</button>
-  </form>
-</section>
+    <form class="caption cuerpo" method="get" action="{{ url_for('auth.registro_buscar') }}">
+      <h1>Ya dejaste huella</h1>
+      <p class="nota">¿Escribís reviews en comicbookroundup.com? Buscate y reclamá tu identidad:
+        tus recomendaciones van a salir de tus reviews reales.</p>
+      <label>Tu nombre allá
+        <input type="text" name="q" required>
+      </label>
+      <button type="submit">Buscar</button>
+    </form>
+  </div>
 {% endblock %}
+{% block pie %}¿Ya tenés cuenta? <a href="{{ url_for('auth.login') }}">Entrá</a>{% endblock %}

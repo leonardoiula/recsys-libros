@@ -97,3 +97,34 @@ def test_registrar_interaccion_se_refleja_sin_reconsultar_la_bd(recomendador):
 
     # ahora 'nuevo' tiene a A en su perfil -> usa sus vecinos item-item (B, C)
     assert recomendador.recomendar("nuevo", k=2) == ["B", "C"]
+
+
+def test_limitar_por_serie_saltea_el_exceso_sin_reordenar():
+    from webapp.recsys_runtime import _limitar_por_serie
+
+    ordenados = ["m/usm/2", "m/usm/3", "m/usm/4", "d/batman/1", "m/usm/5", "i/saga/1"]
+
+    assert _limitar_por_serie(ordenados, k=4, max_por_serie=2) == ["m/usm/2", "m/usm/3", "d/batman/1", "i/saga/1"]
+    assert _limitar_por_serie(ordenados, k=3, max_por_serie=None) == ordenados[:3]
+
+
+def test_recomendar_aplica_el_tope_por_serie(tmp_path):
+    # 4 issues de la misma serie + 1 de otra; el perfil (issue 1) tiene como
+    # vecinos a los otros 3 de su serie con más similitud que a la otra serie
+    ids = np.array(["m/usm/1", "m/usm/2", "m/usm/3", "m/usm/4", "d/batman/1"])
+    sim = sp.csr_matrix(([0.9, 0.8, 0.7, 0.1], ([0, 0, 0, 0], [1, 2, 3, 4])), shape=(5, 5))
+    cache_path = tmp_path / "sim.npz"
+    np.savez_compressed(
+        cache_path, data=sim.data, indices=sim.indices, indptr=sim.indptr, shape=np.array(sim.shape), comic_ids=ids
+    )
+    db_path = tmp_path / "comics.db"
+    conn = core_db.conectar(db_path)
+    core_db.crear_esquema(conn)
+    with conn:
+        for id_comic in ids:
+            conn.execute("INSERT INTO comics (id_comic, titulo) VALUES (?, ?)", (id_comic, id_comic))
+    conn.close()
+
+    recomendador = Recomendador(cache_path, db_path)
+
+    assert recomendador.recomendar("x", k=3, perfil_coldstart={"m/usm/1": 9.0}) == ["m/usm/2", "m/usm/3", "d/batman/1"]

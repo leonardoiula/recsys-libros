@@ -12,7 +12,8 @@ Qué saca y por qué:
 - Todo lo que generó el uso LOCAL del webapp (pruebas de desarrollo): cuentas
   `local-*` y sus interacciones, `password_hash` de usuarios scrapeados
   "reclamados" en local (si no, en producción esas identidades quedarían
-  bloqueadas por una password de prueba), `pila_por_leer`, y los ratings
+  bloqueadas por una password de prueba), `pila_por_leer`, las tablas del
+  onboarding, y los ratings
   rápidos del botón "Leído" (se reconocen por `texto IS NULL`, ver
   `webapp/repo.py::marcar_como_leido`: una review scrapeada sin texto queda
   guardada como cadena vacía, nunca NULL).
@@ -44,6 +45,12 @@ def limpiar(conn: sqlite3.Connection) -> dict:
         "UPDATE usuarios SET password_hash = NULL WHERE password_hash IS NOT NULL"
     ).rowcount
     stats["pila"] = conn.execute("DELETE FROM pila_por_leer").rowcount
+    # Tablas del onboarding (las crea el webapp al arrancar, ver
+    # webapp/onboarding_datos.py): pueden no existir si el webapp nunca corrió local.
+    for tabla in ("onboarding_curiosidad", "onboarding_editoriales", "onboarding_progreso"):
+        existe = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (tabla,)).fetchone()
+        if existe:
+            stats[tabla] = conn.execute(f"DELETE FROM {tabla}").rowcount
     conn.execute("DROP TABLE IF EXISTS critic_reviews")
     conn.execute("UPDATE interacciones SET texto = NULL")
     conn.commit()

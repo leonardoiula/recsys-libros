@@ -18,7 +18,7 @@ from flask import (
 )
 from flask_login import current_user, login_required
 
-from . import repo
+from . import onboarding_datos, repo
 from .db import get_db
 
 bp = Blueprint("dashboard", __name__)
@@ -56,12 +56,21 @@ def index():
     # se piden más de los que hacen falta (k=20) porque algunos candidatos
     # pueden quedar filtrados por ya estar en la pila -- así casi siempre
     # llegan los 10 igual, sin tener que recalcular nada.
-    candidatos = recomendador.recomendar(current_user.id, k=20)
+    # Si pasó por el onboarding, el perfil suma sus curiosidades y el orden
+    # por editorial; si no (ej. identidad reclamada), None = camino de siempre.
+    extra = onboarding_datos.perfil_para_recomendar(conn, current_user.id) or {}
+    candidatos = recomendador.recomendar(current_user.id, k=20, **extra)
     ids_recomendados = [c for c in candidatos if c not in ids_pila][:10]
     recomendados = repo.comics_por_id(conn, ids_recomendados)
 
+    estado_onboarding = onboarding_datos.progreso(conn, current_user.id)
+    ofrecer_onboarding = total_leidos == 0 and editorial is None and not (
+        estado_onboarding and estado_onboarding["completado_en"]
+    )
+
     return render_template(
         "dashboard.html",
+        ofrecer_onboarding=ofrecer_onboarding,
         leidos=leidos,
         recomendados=recomendados,
         pila=pila,

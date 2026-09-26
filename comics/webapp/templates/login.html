@@ -1,15 +1,15 @@
-{% extends "base.html" %}
+{% extends "vineta_base.html" %}
 {% block title %}Entrar - Comics Recsys{% endblock %}
-{% block content %}
-<h1>Entrar</h1>
-<form class="linea" method="post">
-  <label>Usuario o nombre
-    <input type="text" name="identificador" required autofocus>
-  </label>
-  <label>Contraseña
-    <input type="password" name="password" required>
-  </label>
-  <button type="submit">Entrar</button>
-</form>
-<p>¿No tenés cuenta? <a href="{{ url_for('auth.registro') }}">Registrate</a>.</p>
+{% block cuerpo %}
+  <form class="caption cuerpo" method="post">
+    <h1>¿Quién anda ahí?</h1>
+    <label>Usuario o nombre
+      <input type="text" name="identificador" required autofocus autocomplete="username">
+    </label>
+    <label>Contraseña
+      <input type="password" name="password" required autocomplete="current-password">
+    </label>
+    <button type="submit">Entrar</button>
+  </form>
 {% endblock %}
+{% block pie %}¿Primera vez en la ciudad? <a href="{{ url_for('auth.registro') }}">Registrate</a>{% endblock %}

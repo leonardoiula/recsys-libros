@@ -1,27 +1,33 @@
-{% extends "base.html" %}
+{% extends "vineta_base.html" %}
 {% block title %}Reclamar usuario - Comics Recsys{% endblock %}
-{% block content %}
-<h1>Reclamar usuario</h1>
+{% block lugar %}Archivo de la ciudad. Expedientes sin dueño.{% endblock %}
+{% block cuerpo %}
+  <div class="caption cuerpo">
+    <h1>¿Cuál sos vos?</h1>
+    <form method="get" action="{{ url_for('auth.registro_buscar') }}" class="buscar">
+      <label>Nombre
+        <input type="text" name="q" value="{{ query }}" required>
+      </label>
+      <button type="submit">Buscar</button>
+    </form>
 
-<form class="linea" method="get" action="{{ url_for('auth.registro_buscar') }}">
-  <label>Nombre
-    <input type="text" name="q" value="{{ query }}" required>
-  </label>
-  <button type="submit">Buscar</button>
-</form>
+    {% if query and not resultados %}
+      <p class="nota">No encontramos ningún usuario sin reclamar con ese nombre.</p>
+    {% endif %}
 
-{% if query and not resultados %}
-  <p>No encontramos ningún usuario sin reclamar con ese nombre.</p>
-{% endif %}
-
-{% for usuario in resultados %}
-  <form class="linea" method="post" action="{{ url_for('auth.registro_reclamar') }}" style="margin-top:1rem">
-    <input type="hidden" name="id_usuario" value="{{ usuario.id_usuario }}">
-    <span>{{ usuario.nombre }} ({{ usuario.n_reviews }} reviews)</span>
-    <label>Elegir una contraseña
-      <input type="password" name="password" required>
-    </label>
-    <button type="submit">Soy yo, reclamar</button>
-  </form>
-{% endfor %}
+    {% if resultados %}
+      <div class="resultados">
+        {% for usuario in resultados %}
+          <form method="post" action="{{ url_for('auth.registro_reclamar') }}">
+            <input type="hidden" name="id_usuario" value="{{ usuario.id_usuario }}">
+            <span>{{ usuario.nombre }} <small>({{ usuario.n_reviews }} reviews)</small></span>
+            <input type="password" name="password" required placeholder="Elegí contraseña"
+                   aria-label="Contraseña para {{ usuario.nombre }}" autocomplete="new-password">
+            <button type="submit">Soy yo</button>
+          </form>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
 {% endblock %}
+{% block pie %}<a href="{{ url_for('auth.registro') }}">Volver</a> · ¿Ya tenés cuenta? <a href="{{ url_for('auth.login') }}">Entrá</a>{% endblock %}

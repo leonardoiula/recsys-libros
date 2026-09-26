@@ -47,9 +47,10 @@ def app(tmp_path):
 def test_registro_y_login_llevan_al_dashboard(app):
     client = app.test_client()
 
-    respuesta = client.post(
-        "/registro", data={"nombre": "Lea", "password": "unapassword"}, follow_redirects=True
-    )
+    client.post("/registro", data={"nombre": "Lea", "password": "unapassword"})
+    # el registro lleva al onboarding (ver test_onboarding.py); el dashboard
+    # igual queda accesible sin completarlo
+    respuesta = client.get("/")
 
     assert respuesta.status_code == 200
     assert b"Hola, Lea" in respuesta.data

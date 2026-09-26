@@ -12,7 +12,6 @@ comics/docs/webapp/guia.md, sección "Arquitectura"."""
 
 from __future__ import annotations
 
-from comics_recsys.covers import nombre_archivo
 from flask import Flask
 
 from .config import COMICS_DIR, Config
@@ -25,7 +24,6 @@ def create_app(**config_overrides) -> Flask:
     app = Flask(__name__, static_folder=str(COMICS_DIR / "static"), static_url_path="/static")
     app.config.from_object(Config)
     app.config.update(config_overrides)
-    app.jinja_env.globals["nombre_archivo_tapa"] = nombre_archivo
 
     login_manager.init_app(app)
     init_db(app)

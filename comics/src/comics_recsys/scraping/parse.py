@@ -112,9 +112,13 @@ def _parsear_metadata(soup: BeautifulSoup, url: str) -> ComicMetadata:
             elif etiqueta == "cover price":
                 precio_tapa = valor
 
+    # La extensión varía según la época: los issues de ~2022 en adelante usan
+    # .webp, los anteriores .jpg (ver fixture house_of_x_2.html). Aceptar solo
+    # .webp dejó sin tapa a ~90% de los comics anteriores a 2022.
     img_src = None
+    re_tapa = re.compile(rf"/{re.escape(numero)}\.(?:webp|jpe?g|png|gif)$", re.IGNORECASE)
     for img in soup.find_all("img", src=True):
-        if img["src"].rstrip("/").endswith(f"/{numero}.webp") and "/covers/" in img["src"]:
+        if re_tapa.search(img["src"].rstrip("/")) and "/covers/" in img["src"]:
             img_src = img["src"]
             break
 

@@ -1,0 +1,15 @@
+# Dependencias SOLO del webapp, para el virtualenv de PythonAnywhere.
+# No usar `uv export` del pyproject.toml raíz: arrastra lightgbm, implicit,
+# pyarrow, matplotlib, scikit-learn... (modelos de libros y scripts), que no
+# se usan acá y no entran en la cuota de disco del plan free.
+# beautifulsoup4 + lxml no se usan en runtime, pero comics_recsys/db.py importa
+# scraping/parse.py (por los dataclasses) y ese módulo los importa al tope.
+# Versiones = las del entorno local donde pasan los tests (pandas 3 pide Python >= 3.11).
+flask==3.1.3
+flask-login==0.6.3
+werkzeug==3.1.8
+numpy==2.4.6
+scipy==1.17.1
+pandas==3.0.5
+beautifulsoup4==4.15.0
+lxml==6.1.3

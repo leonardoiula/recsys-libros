@@ -22,4 +22,5 @@ data/cache/
 # no tiene sentido versionarlos (y las tapas son imágenes con copyright de terceros)
 comics/data/raw/comics.db
 comics/data/cache/
+comics/data/deploy/
 comics/static/covers/

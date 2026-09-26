@@ -3,10 +3,14 @@
 
 {% macro card(comic, mostrar_rating=false, permitir_marcar_leido=false, permitir_pila=false, permitir_quitar_pila=false) %}
   <div class="card">
-    {% if comic.img_src %}
-      <img src="{{ url_for('static', filename='covers/' + nombre_archivo_tapa(comic.id_comic, comic.img_src)) }}"
-           alt="{{ comic.titulo }}" loading="lazy">
-    {% endif %}
+    {# Tapa: URL original de comicbookroundup (hotlink, provisorio hasta tener
+       un hosting de imágenes propio -- ver guia.md, sección Deployment).
+       sintapa.jpg cubre los dos casos sin imagen: comic sin img_src en la BD,
+       y URL externa que falla al cargar (onerror; el `this.onerror=null`
+       evita un loop si también fallara el placeholder). #}
+    {% set sintapa = url_for('static', filename='sintapa.jpg') %}
+    <img src="{{ comic.img_src or sintapa }}" alt="{{ comic.titulo }}" loading="lazy"
+         onerror="this.onerror=null; this.src='{{ sintapa }}'">
     <p class="titulo">{{ comic.titulo }}</p>
     <p class="detalle">{{ comic.serie }} #{{ comic.numero }}</p>
     {% if mostrar_rating and comic.rating %}

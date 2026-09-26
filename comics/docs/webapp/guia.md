@@ -411,31 +411,66 @@ esté mal escrita.
 
 ## 6. Deployment a PythonAnywhere (plan free)
 
-Qué NO viaja por git (todo gitignored, ver `comics/CLAUDE.md`): `comics.db`
-(63 MB, datos scrapeados), `comics/static/covers/` (tapas con copyright,
-además pesadas), y el cache `comics/data/cache/item_item_top50.npz`
-(regenerable con `precomputar_item_item.py`, pero mejor precomputado
-localmente UNA vez y subido ya calculado -- correrlo en el servidor gastaría
-la cuota de CPU gratis del plan free para algo que no necesita repetirse en
-cada deploy).
+Sitio: **https://leonardoiula.pythonanywhere.com** (cuenta `leonardoiula`).
+
+Qué NO viaja por git (gitignored, ver `comics/CLAUDE.md`): la BD y el cache
+`item_item_top50.npz`. El `.npz` se precomputa localmente y se sube ya
+calculado -- correrlo en el servidor gastaría la cuota de CPU del plan free
+para algo que no necesita repetirse en cada deploy.
+
+**BD de producción (`scripts/armar_db_produccion.py`):** no se sube la
+`comics.db` local tal cual (~150 MB, excede el límite por archivo del upload
+web). El script arma una copia en `comics/data/deploy/comics.db` (~40 MB) sin
+`critic_reviews` ni `interacciones.texto` (el webapp no usa ninguno de los
+dos) y sin nada generado por pruebas locales del webapp (cuentas `local-*`,
+passwords de usuarios reclamados, pila, ratings rápidos) -- ver su docstring.
+
+**Dependencias (`webapp/requirements.txt`):** solo las del webapp. NO usar
+`uv export` del `pyproject.toml` raíz: arrastra lightgbm, implicit, pyarrow,
+matplotlib, scikit-learn (modelos de libros), que no entran en el disco.
+
+**Tapas (decisión provisoria, 2026-09-26):** el webapp NO sirve las tapas
+desde `comics/static/covers/`, las muestra directo desde la URL original
+(`comics.img_src`, hotlink a `images.comicbookroundup.com`). Motivo: el disco
+del plan free no alcanza (las tapas completas rondarían ~480 MB). Se verificó
+que el servidor de imágenes de ellos responde normalmente a pedidos con un
+`Referer` de otro dominio. Si un comic no tiene `img_src`, o la URL externa
+falla al cargar (`onerror` en el `<img>`), se muestra
+`comics/static/sintapa.jpg` (recortado a la proporción 200x308 de las tapas
+scrapeadas). Queda pendiente una alternativa mejor (no depender de un
+servidor ajeno ni gastarle ancho de banda). `descargar_tapas.py` y
+`comics_recsys/covers.py` se conservan para ese momento.
+
+Al preparar esto apareció un bug del parser: solo reconocía tapas `.webp`, y
+los issues anteriores a ~2022 las tienen en `.jpg` -- ~17 mil comics habían
+quedado con `img_src` NULL. Corregido en `parse.py` (test de regresión con
+fixture `house_of_x_2.html`) y rellenado con `scripts/rellenar_img_src.py`,
+que re-parsea el HTML ya cacheado en `data/cache/` sin pedirle nada al sitio.
 
 Pasos, en orden:
 
-1. Subir `comics.db` ya migrado (`migrar_password_hash.py` corrido
-   localmente) a algún path en PythonAnywhere.
-2. Subir `comics/static/covers/` (corriendo antes `descargar_tapas.py`
-   localmente -- son ~14.000 imágenes, mejor no descargarlas en el server).
-3. Subir el `.npz` ya precomputado (`precomputar_item_item.py`, local).
-4. Generar `requirements.txt` (`uv export --no-dev --format requirements-txt`
-   desde la raíz del monorepo) e instalarlo en el virtualenv que crea
-   PythonAnywhere.
-5. Configurar variables de entorno en el panel "Web > Environment
-   variables" de PythonAnywhere: `COMICS_SECRET_KEY` (un valor random,
-   nunca el default de desarrollo que trae `config.py`),
-   `COMICS_DB_PATH`, `COMICS_RECS_CACHE_PATH` apuntando a las rutas donde
-   quedaron los archivos subidos en el paso 1-3.
-6. Apuntar el WSGI config de PythonAnywhere a `comics/webapp/wsgi.py`, que
-   expone `application` a nivel de módulo (el nombre que ese config espera).
+1. Local: `precomputar_item_item.py` y `armar_db_produccion.py`.
+2. Server (consola Bash de PythonAnywhere):
+   `git clone https://github.com/leonardoiula/recsys-libros.git` en el home.
+3. Subir por la pestaña "Files" `comics/data/deploy/comics.db` a
+   `~/recsys-libros/comics/data/raw/comics.db` y el `.npz` a
+   `~/recsys-libros/comics/data/cache/` -- son las rutas default de
+   `config.py`, así no hace falta setear `COMICS_DB_PATH` ni
+   `COMICS_RECS_CACHE_PATH`.
+4. Virtualenv: `python3.11 -m venv ~/.venvs/comics` e instalar
+   `comics/webapp/requirements.txt`.
+5. Pestaña "Web": crear la web app con "Manual configuration" (Python 3.11),
+   apuntar "Virtualenv" a `/home/leonardoiula/.venvs/comics`, y reemplazar el
+   WSGI configuration file por el contenido de `webapp/pythonanywhere_wsgi.py`
+   con una `COMICS_SECRET_KEY` random. El secreto va en ese archivo (vive en
+   `/var/www/`, fuera del clon) porque el repo es público.
+6. "Static files": URL `/static/` -> `/home/leonardoiula/recsys-libros/comics/static`
+   (así `sintapa.jpg` lo sirve PythonAnywhere directo, sin pasar por Flask).
+7. Reload.
+
+Actualizar el sitio después: `git pull` en el server + Reload; si cambió el
+dataset, repetir el paso 1 y re-subir BD y `.npz`. Ojo: re-subir la BD pisa
+las cuentas y ratings creados en producción.
 
 Por qué las rutas de `config.py` se resuelven con `Path(__file__).resolve()`
 y no con el directorio de trabajo actual (`Path(".")` o similar): el proceso

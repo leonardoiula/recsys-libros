@@ -43,3 +43,14 @@ def test_urls_de_issues_en_semana_devuelve_urls_absolutas_unicas():
     assert len(urls) == len(set(urls))
     assert all(u.startswith("https://comicbookroundup.com/comic-books/reviews/") for u in urls)
     assert any("batman-(2025)/13" in u for u in urls)
+
+
+def test_parsear_pagina_issue_acepta_tapa_jpg_de_issues_viejos():
+    # Regresión: el parser solo aceptaba .webp y los issues anteriores a ~2022
+    # tienen la tapa en .jpg -- quedaban con img_src=None.
+    html = (FIXTURES / "house_of_x_2.html").read_text(encoding="utf-8")
+    url = "https://comicbookroundup.com/comic-books/reviews/marvel-comics/house-of-x/2"
+
+    comic, _, _ = parsear_pagina_issue(html, url)
+
+    assert comic.img_src == "https://images.comicbookroundup.com/img/covers/h/house-of-x/2.jpg"

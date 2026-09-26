@@ -63,7 +63,9 @@ def fase(numero: int):
         if numero == 1:
             valido = _guardar_editoriales(conn)
         elif numero in datos.FASES_COMICS:
-            valido = _guardar_respuestas_comics(conn, numero)
+            # "[ NO LOGRO RECORDAR NADA ]": avanza sin el mínimo (ver docstring)
+            no_recuerda = request.form.get("accion") == "no_recuerdo"
+            valido = _guardar_respuestas_comics(conn, numero, exigir_minimo=not no_recuerda)
         else:
             valido = True
         if valido:
@@ -125,7 +127,7 @@ def _guardar_editoriales(conn) -> bool:
     return True
 
 
-def _guardar_respuestas_comics(conn, numero: int) -> bool:
+def _guardar_respuestas_comics(conn, numero: int, exigir_minimo: bool = True) -> bool:
     """Cada comic del carrusel viaja en el form como hidden `comic` + sus
     campos `rating-<id>` y `curiosidad-<id>`. Se valida contra el catálogo:
     un id inventado no llega nunca a la BD.
@@ -133,7 +135,11 @@ def _guardar_respuestas_comics(conn, numero: int) -> bool:
     Exige al menos `MIN_INTERACCIONES_POR_FASE` respuestas (nota o
     curiosidad) antes de guardar nada -- si no, se podía atravesar todo el
     onboarding con "SINCRONIZAR" sin dar ninguna señal. Si el carrusel
-    mostró menos comics que el mínimo, alcanza con responder todos."""
+    mostró menos comics que el mínimo, alcanza con responder todos.
+
+    `exigir_minimo=False` es la salida "no logro recordar nada": alguien que
+    de verdad no reconoce ninguno no debería tener que inventar respuestas
+    (ensuciaría su perfil). Se guarda lo poco que haya marcado y se avanza."""
     catalogo = current_app.extensions["catalogo_onboarding"]
     ids = [i for i in request.form.getlist("comic") if i in catalogo.ids]
     lecturas: dict[str, float] = {}
@@ -146,7 +152,7 @@ def _guardar_respuestas_comics(conn, numero: int) -> bool:
             curiosidades.append(id_comic)
 
     minimo = min(datos.MIN_INTERACCIONES_POR_FASE, len(ids))
-    if len(lecturas) + len(curiosidades) < minimo:
+    if exigir_minimo and len(lecturas) + len(curiosidades) < minimo:
         flash(
             f"Señal insuficiente: interactuá con al menos {minimo} archivos "
             "(puntuá los que leíste o marcá los que te dan curiosidad)."

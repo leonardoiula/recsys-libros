@@ -579,6 +579,10 @@ runtime, por la interfaz que se dejó preparada en la sección 4
   podía atravesar el onboarding entero apretando "SINCRONIZAR" sin dar
   ninguna señal. Si faltan, la pantalla se vuelve a mostrar (render, no
   redirect) con lo ya cargado, para no hacer perder las notas escritas.
+  Salida explícita: el botón "[ NO LOGRO RECORDAR NADA ]" avanza sin el
+  mínimo (guarda lo poco que haya marcado). Sin él, alguien que no reconoce
+  ninguno de los comics quedaba obligado a inventar respuestas, y eso
+  ensucia su perfil más que no tener datos.
 - El puntaje de "lo leí" son 5 estrellas clickeables (radios estilizados,
   sin JS obligatorio), cada una vale 2 puntos de la escala 0-10 de la BD. Se
   eligieron sobre un input numérico (flechitas de a 0,5: lento), un slider

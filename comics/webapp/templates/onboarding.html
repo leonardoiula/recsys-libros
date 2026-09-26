@@ -67,6 +67,12 @@
       text-shadow: 0 0 6px var(--cian);
     }
     button.neon:hover, button.neon:focus-visible { background: rgba(79, 244, 255, 0.12); outline: none; }
+    .botones { display: flex; flex-wrap: wrap; gap: 0.8rem; flex-direction: row-reverse; margin-left: auto; }
+    button.neon.secundario {
+      color: var(--magenta); border-color: rgba(255, 63, 180, 0.7); font-size: 0.85rem;
+      box-shadow: 0 0 8px rgba(255, 63, 180, 0.3); text-shadow: 0 0 5px rgba(255, 63, 180, 0.6);
+    }
+    button.neon.secundario:hover, button.neon.secundario:focus-visible { background: rgba(255, 63, 180, 0.12); }
     a { color: var(--cian); }
     .saltar { color: var(--tenue); font-size: 0.85rem; }
 
@@ -194,7 +200,7 @@
     {% endif %}
 
     {% if comics %}
-      <p class="saltar">Interactuá con al menos {{ [minimo, comics|length]|min }}: si lo leíste, puntualo con las estrellas; si no, marcá si te da curiosidad. Lo que no te diga nada, dejalo en blanco.</p>
+      <p class="saltar">Interactuá con al menos {{ [minimo, comics|length]|min }}: si lo leíste, puntualo con las estrellas; si no, marcá si te da curiosidad. Lo que no te diga nada, dejalo en blanco. Si no reconocés ninguno, podés seguir igual.</p>
       <div class="carrusel">
         {% set sintapa = url_for('static', filename='sintapa.jpg') %}
         {% for comic in comics %}
@@ -240,7 +246,14 @@
       {% else %}
         <span></span>
       {% endif %}
-      <button class="neon" type="submit">[ {{ boton }} ]</button>
+      <div class="botones">
+        {# El principal va primero en el DOM: es el que dispara Enter. #}
+        <button class="neon" type="submit">[ {{ boton }} ]</button>
+        {% if numero in (2, 3, 4, 5) %}
+          <button class="neon secundario" type="submit" name="accion" value="no_recuerdo"
+                  title="Seguir sin marcar nada en esta fase">[ NO LOGRO RECORDAR NADA ]</button>
+        {% endif %}
+      </div>
     </div>
   </form>
 </main>

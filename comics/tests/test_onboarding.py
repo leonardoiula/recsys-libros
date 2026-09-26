@@ -185,6 +185,25 @@ def test_fases_de_comics_exigen_tres_interacciones_y_conservan_lo_cargado(app):
     assert respuesta.headers["Location"].endswith("/onboarding/3")
 
 
+def test_no_logro_recordar_nada_avanza_sin_el_minimo_y_guarda_lo_marcado(app):
+    client = app.test_client()
+    _registrar(client)
+    _hasta_fase_2(client, {"Marvel": "gusta", "DC": "gusta", "Image": "gusta", "Boom!": "gusta"})
+    ids = ["marvel-comics/serie-a/1", "dc-comics/serie-b/1", "image-comics/serie-g/1", "boom-studios/serie-h/1"]
+
+    respuesta = client.post(
+        "/onboarding/2", data={"comic": ids, f"curiosidad-{ids[1]}": "1", "accion": "no_recuerdo"}
+    )
+
+    assert respuesta.headers["Location"].endswith("/onboarding/3")
+    conn, uid = _uid(app)
+    assert conn.execute("SELECT id_comic FROM onboarding_curiosidad WHERE id_usuario = ?", (uid,)).fetchall() == [
+        (ids[1],)
+    ]
+    # y sin marcar nada también avanza
+    assert client.post("/onboarding/3", data={"accion": "no_recuerdo"}).headers["Location"].endswith("/onboarding/4")
+
+
 def test_si_el_carrusel_tiene_menos_comics_que_el_minimo_alcanza_con_responder_todos(app):
     client = app.test_client()
     _registrar(client)

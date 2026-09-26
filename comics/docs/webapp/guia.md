@@ -502,6 +502,17 @@ El guion es `comics/1. El Despertar y la Bienvenida.txt` y la estética visual
 sale de `comics/estetica.jpg` (el fondo es `static/onboarding/escena.jpg`, la
 misma imagen comprimida).
 
+### La bienvenida: el juego es opcional y se dice para qué sirve
+
+Después de crear la cuenta (`auth.registro`) no se entra directo a la
+ficción: primero aparece `/onboarding/bienvenida`, con la misma viñeta de
+comic que el login y el registro. Ofrece dos caminos explícitos: "Jugar y
+mejorar tus recomendaciones" (entra al onboarding) o "Ir directo al sitio"
+(dashboard con lo más popular, que después sigue ofreciendo el juego
+mientras no haya historial). Sin esta pantalla, un usuario recién
+registrado caía en "Tranquilo, respira..." sin saber que era un juego ni
+que podía salir.
+
 ### Las fases y qué dato saca cada una
 
 | Fase | Pantalla | Qué se guarda |
@@ -568,6 +579,15 @@ runtime, por la interfaz que se dejó preparada en la sección 4
   podía atravesar el onboarding entero apretando "SINCRONIZAR" sin dar
   ninguna señal. Si faltan, la pantalla se vuelve a mostrar (render, no
   redirect) con lo ya cargado, para no hacer perder las notas escritas.
+- El puntaje de "lo leí" son 5 estrellas clickeables (radios estilizados,
+  sin JS obligatorio), cada una vale 2 puntos de la escala 0-10 de la BD. Se
+  eligieron sobre un input numérico (flechitas de a 0,5: lento), un slider
+  (siempre tiene valor, no distingue "no lo leí" de "le puse 5") o un
+  desplegable (abrir-buscar-elegir por comic). Un JS mínimo permite
+  desmarcar con un segundo click; la card respondida se "enciende". El botón
+  "Leído" del dashboard usa las mismas estrellas (ahí, estrellas + click en
+  "Leído": dos pasos a propósito, para que un click errado no marque un
+  comic como leído).
 - No se puede saltar hacia adelante escribiendo la URL (`/onboarding/6`):
   solo se entra a fases ya alcanzadas.
 - Tests: `comics/tests/test_onboarding.py`.

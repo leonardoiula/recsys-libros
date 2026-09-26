@@ -101,3 +101,15 @@ def test_marcar_leido_lo_agrega_a_la_comiteca_y_lo_saca_de_la_pila(app):
     assert b"Agregado a tu comiteca" in respuesta.data
     assert b"Tu rating: 7.5" in respuesta.data
     assert b"Todav\xc3\xada no guardaste nada para despu\xc3\xa9s" in respuesta.data  # ya no está en la pila
+
+
+def test_las_cards_recomendadas_puntuan_con_estrellas(app):
+    client = app.test_client()
+    client.post("/registro", data={"nombre": "Lea", "password": "unapassword"})
+
+    html = client.get("/").get_data(as_text=True)
+    assert html.count(">Leído</button>") >= 1
+    assert html.count('name="rating"') == 5 * html.count(">Leído</button>")  # 5 estrellas por card puntuable
+
+    respuesta = client.post("/comics/b/leido", data={"rating": "6"}, follow_redirects=True)
+    assert "Tu rating: 6" in respuesta.get_data(as_text=True)

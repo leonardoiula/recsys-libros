@@ -23,6 +23,15 @@ bp = Blueprint("onboarding", __name__, url_prefix="/onboarding")
 ULTIMA_FASE = 6
 
 
+@bp.route("/bienvenida")
+@login_required
+def bienvenida():
+    """Primera pantalla después de crear la cuenta: explica que el onboarding
+    es un juego OPCIONAL y para qué sirve, antes de meter al usuario en la
+    ficción. Misma estética de viñeta que login/registro (continuidad)."""
+    return render_template("bienvenida.html")
+
+
 @bp.route("/")
 @login_required
 def inicio():

@@ -9,6 +9,8 @@
       color-scheme: light dark;
       --color-repisa: #8b5e34;
       --sombra-repisa: rgba(0, 0, 0, 0.35);
+      --estrella: #e6a100;
+      --estrella-apagada: rgba(128, 128, 128, 0.4);
     }
     @media (prefers-color-scheme: dark) {
       :root { --color-repisa: #5c3d22; --sombra-repisa: rgba(0, 0, 0, 0.6); }
@@ -49,11 +51,22 @@
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
       overflow: hidden; min-height: 2.3em;
     }
-    .card .detalle { font-size: 0.75rem; opacity: 0.75; margin: 0; }
-    .card .acciones { display: flex; gap: 0.3rem; margin-top: 0.35rem; }
-    .card .acciones form { display: flex; gap: 0.25rem; flex: 1; }
-    .card .acciones input[type="number"] { width: 2.6rem; font-size: 0.75rem; padding: 0.1rem 0.2rem; }
-    .card .acciones button { font-size: 0.72rem; padding: 0.15rem 0.35rem; cursor: pointer; }
+    .card .detalle { font-size: 0.75rem; opacity: 0.75; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card .acciones { display: flex; gap: 0.3rem; margin-top: 0.3rem; }
+    .card .acciones > * { flex: 1; }
+    .card .acciones form { display: flex; }
+    .card .acciones button { flex: 1; font-size: 0.72rem; padding: 0.15rem 0.35rem; cursor: pointer; }
+
+    /* Puntaje con 5 estrellas (mismo mecanismo que el onboarding): en el DOM
+       van de 10 a 2 y se muestran invertidas, así "la elegida y las de su
+       izquierda" es `:checked ~ label`. */
+    .estrellas { display: flex; flex-direction: row-reverse; justify-content: flex-end; border: 0; margin: 0.3rem 0 0; padding: 0; }
+    .estrellas input { position: absolute; opacity: 0; pointer-events: none; }
+    .estrellas label { font-size: 1.3rem; line-height: 1; padding: 0 0.04rem; color: var(--estrella-apagada); cursor: pointer; }
+    .estrellas input:checked ~ label,
+    .estrellas:hover label:hover, .estrellas:hover label:hover ~ label { color: var(--estrella); }
+    .estrellas:hover input:checked ~ label:not(:hover):not(:hover ~ label) { color: var(--estrella-apagada); }
+    .estrellas input:focus-visible + label { outline: 1px solid currentColor; }
     .flash { background: #fff3cd; color: #664d03; padding: 0.5rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
     form.linea { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; }
     form.linea label { display: flex; flex-direction: column; font-size: 0.8rem; }

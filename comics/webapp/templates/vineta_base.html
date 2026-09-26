@@ -56,8 +56,17 @@
 
     /* Dos cajas lado a lado (registro): cuenta nueva | reclamar identidad */
     .columnas { display: flex; gap: 3cqw; justify-content: center; align-items: stretch; }
-    .columnas > .caption.cuerpo { flex: 1 1 0; width: auto; align-self: stretch; grid-template-columns: 1fr; align-content: start; }
-    .columnas > .caption.cuerpo button { margin-top: auto; }
+    .columnas > .caption.cuerpo { flex: 1 1 0; width: auto; align-self: stretch; display: flex; flex-direction: column; align-items: stretch; gap: 0.5em; }
+    .columnas > .caption.cuerpo > button, .columnas > .caption.cuerpo > a.boton { margin-top: auto; align-self: flex-end; }
+    /* Link con forma de botón (bienvenida: "Jugar" / "Ir al sitio") */
+    .caption a.boton {
+      grid-column: 1 / -1; justify-self: end; margin-top: auto; text-decoration: none;
+      font-family: var(--titulo); font-size: 1.35em; letter-spacing: 0.08em;
+      padding: 0.2em 1.1em; color: var(--tinta); background: var(--acento);
+      border: 2px solid var(--tinta); box-shadow: 3px 3px 0 var(--tinta);
+    }
+    .caption a.boton.secundario { background: var(--papel); }
+    .caption a.boton:hover, .caption a.boton:focus-visible { transform: translate(1px, 1px); box-shadow: 2px 2px 0 var(--tinta); outline: none; }
     .caption .nota { grid-column: 1 / -1; margin: 0; font-size: 0.8em; font-weight: 400; }
 
     /* Resultados de búsqueda (reclamar): lista con scroll propio dentro de la caja */
@@ -132,7 +141,7 @@
 
   {% block cuerpo %}{% endblock %}
 
-  <p class="caption pie">{% block pie %}{% endblock %}</p>
+  {% if self.pie() | trim %}<p class="caption pie">{% block pie %}{% endblock %}</p>{% endif %}
 </main>
 </div>
 </body>

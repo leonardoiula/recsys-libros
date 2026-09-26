@@ -95,11 +95,21 @@
     .archivo .titulo { font-size: 0.8rem; margin: 0.4rem 0 0.1rem; min-height: 2.4em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     .archivo .meta { font-size: 0.7rem; color: var(--tenue); margin: 0 0 0.4rem; }
     .archivo label { display: flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; margin-top: 0.3rem; cursor: pointer; }
-    .archivo input[type="number"] {
-      width: 3.4rem; font: inherit; font-size: 0.8rem; color: var(--texto);
-      background: rgba(4, 8, 22, 0.9); border: 1px solid rgba(79, 244, 255, 0.4); padding: 0.15rem 0.3rem;
-    }
     .archivo input[type="checkbox"] { accent-color: var(--magenta); }
+    /* Card respondida (puntuada o con curiosidad): se "enciende" */
+    .archivo:has(input:checked) img { border-color: var(--magenta); box-shadow: 0 0 14px rgba(255, 63, 180, 0.55); }
+
+    /* Puntaje con 5 estrellas (radios, sin JS obligatorio). En el DOM van de
+       10 a 2 y se muestran invertidas (row-reverse): así "la elegida y todas
+       las de su izquierda" es `:checked ~ label`, que CSS sí puede expresar. */
+    .puntaje { display: flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; margin-top: 0.3rem; }
+    .estrellas { display: inline-flex; flex-direction: row-reverse; border: 0; margin: 0; padding: 0; }
+    .estrellas input { position: absolute; opacity: 0; pointer-events: none; }
+    .estrellas label { font-size: 1.35rem; line-height: 1; padding: 0 0.04rem; color: rgba(138, 163, 184, 0.45); cursor: pointer; margin: 0; transition: color 0.1s, text-shadow 0.1s; }
+    .estrellas input:checked ~ label,
+    .estrellas:hover label:hover, .estrellas:hover label:hover ~ label { color: var(--cian); text-shadow: 0 0 8px var(--cian); }
+    .estrellas:hover input:checked ~ label:not(:hover):not(:hover ~ label) { color: rgba(138, 163, 184, 0.45); text-shadow: none; }
+    .estrellas input:focus-visible + label { outline: 1px solid var(--magenta); }
     .vacio { color: var(--tenue); }
   </style>
 </head>
@@ -184,20 +194,27 @@
     {% endif %}
 
     {% if comics %}
-      <p class="saltar">Interactuá con al menos {{ [minimo, comics|length]|min }}: si lo leíste, dale un puntaje de 0 a 10; si no, marcá si te da curiosidad. Lo que no te diga nada, dejalo en blanco.</p>
+      <p class="saltar">Interactuá con al menos {{ [minimo, comics|length]|min }}: si lo leíste, puntualo con las estrellas; si no, marcá si te da curiosidad. Lo que no te diga nada, dejalo en blanco.</p>
       <div class="carrusel">
         {% set sintapa = url_for('static', filename='sintapa.jpg') %}
         {% for comic in comics %}
+          {% set n = loop.index %}
           <div class="archivo">
             <input type="hidden" name="comic" value="{{ comic.id_comic }}">
             <img src="{{ comic.img_src or sintapa }}" alt="{{ comic.titulo }}" loading="lazy"
                  onerror="this.onerror=null; this.src='{{ sintapa }}'">
             <p class="titulo">{{ comic.titulo }}</p>
             <p class="meta">{{ comic.editorial }} · {{ comic.primera.year }}</p>
-            <label>Lo leí:
-              <input type="number" name="rating-{{ comic.id_comic }}" min="0" max="10" step="0.5" placeholder="0-10"
-                     value="{{ previos.get('rating-' ~ comic.id_comic, '') }}">
-            </label>
+            {# 5 estrellas = escala 0-10 de la BD de a 2 puntos (3 estrellas = 6) #}
+            <div class="puntaje">Lo leí:
+              <fieldset class="estrellas" aria-label="Tu puntaje para {{ comic.titulo }}">
+                {% for valor in (10, 8, 6, 4, 2) %}
+                  <input type="radio" id="e{{ n }}-{{ valor }}" name="rating-{{ comic.id_comic }}" value="{{ valor }}"
+                         {{ "checked" if previos.get('rating-' ~ comic.id_comic) == valor|string else "" }}>
+                  <label for="e{{ n }}-{{ valor }}" title="{{ valor // 2 }} de 5">★</label>
+                {% endfor %}
+              </fieldset>
+            </div>
             <label><input type="checkbox" name="curiosidad-{{ comic.id_comic }}" value="1"
                           {{ "checked" if previos.get('curiosidad-' ~ comic.id_comic) else "" }}> Me da curiosidad</label>
           </div>
@@ -227,5 +244,18 @@
     </div>
   </form>
 </main>
+<script>
+  // Mejora opcional (sin JS igual funciona): un radio no se puede desmarcar
+  // con otro click, y equivocarse de comic no debería obligar a recargar.
+  // Un segundo click sobre la estrella ya elegida borra el puntaje.
+  document.querySelectorAll(".estrellas").forEach(function (grupo) {
+    var elegido = grupo.querySelector("input:checked");
+    grupo.addEventListener("click", function (ev) {
+      if (ev.target.tagName !== "INPUT") return;
+      if (ev.target === elegido) { ev.target.checked = false; elegido = null; }
+      else { elegido = ev.target; }
+    });
+  });
+</script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Mi dashboard - Comics Recsys{% endblock %}
 
-{% macro card(comic, mostrar_rating=false, permitir_marcar_leido=false, permitir_pila=false, permitir_quitar_pila=false) %}
+{% macro card(comic, seccion="", mostrar_rating=false, permitir_marcar_leido=false, permitir_pila=false, permitir_quitar_pila=false) %}
   <div class="card">
     {# Tapa: URL original de comicbookroundup (hotlink, provisorio hasta tener
        un hosting de imágenes propio -- ver guia.md, sección Deployment).
@@ -17,12 +17,22 @@
       <p class="detalle">Tu rating: {{ comic.rating }}</p>
     {% endif %}
     {% if permitir_marcar_leido or permitir_pila or permitir_quitar_pila %}
+      {% set form_leido = "leido-" ~ seccion ~ "-" ~ comic.id_comic %}
+      {% if permitir_marcar_leido %}
+        {# Las estrellas y el botón "Leído" viven FUERA de su <form> (atributo
+           form=...) para poder acomodarlos en dos filas junto al form de la
+           pila. 5 estrellas = escala 0-10 de a 2 puntos, igual que el onboarding. #}
+        <form id="{{ form_leido }}" method="post" action="{{ url_for('dashboard.marcar_leido', id_comic=comic.id_comic) }}"></form>
+        <fieldset class="estrellas" aria-label="Tu puntaje para {{ comic.titulo }}">
+          {% for valor in (10, 8, 6, 4, 2) %}
+            <input type="radio" form="{{ form_leido }}" id="{{ form_leido }}-{{ valor }}" name="rating" value="{{ valor }}" required>
+            <label for="{{ form_leido }}-{{ valor }}" title="{{ valor // 2 }} de 5">★</label>
+          {% endfor %}
+        </fieldset>
+      {% endif %}
       <div class="acciones">
         {% if permitir_marcar_leido %}
-          <form method="post" action="{{ url_for('dashboard.marcar_leido', id_comic=comic.id_comic) }}">
-            <input type="number" name="rating" min="0" max="10" step="0.5" placeholder="0-10" required>
-            <button type="submit" title="Marcar como leído y puntuar">Leído</button>
-          </form>
+          <button type="submit" form="{{ form_leido }}" title="Marcar como leído con ese puntaje">Leído</button>
         {% endif %}
         {% if permitir_pila %}
           <form method="post" action="{{ url_for('dashboard.agregar_pila', id_comic=comic.id_comic) }}">
@@ -52,7 +62,7 @@
   {% if recomendados %}
     <div class="grid">
       {% for comic in recomendados %}
-        {{ card(comic, permitir_marcar_leido=true, permitir_pila=true) }}
+        {{ card(comic, seccion="rec", permitir_marcar_leido=true, permitir_pila=true) }}
       {% endfor %}
     </div>
   {% else %}
@@ -65,7 +75,7 @@
   {% if pila %}
     <div class="grid">
       {% for comic in pila %}
-        {{ card(comic, permitir_marcar_leido=true, permitir_quitar_pila=true) }}
+        {{ card(comic, seccion="pila", permitir_marcar_leido=true, permitir_quitar_pila=true) }}
       {% endfor %}
     </div>
   {% else %}
@@ -115,4 +125,16 @@
     {% endif %}
   </nav>
 {% endif %}
+<script>
+  // Igual que en el onboarding: un segundo click en la estrella elegida la
+  // desmarca (mejora opcional, sin JS las estrellas funcionan igual).
+  document.querySelectorAll(".estrellas").forEach(function (grupo) {
+    var elegido = grupo.querySelector("input:checked");
+    grupo.addEventListener("click", function (ev) {
+      if (ev.target.tagName !== "INPUT") return;
+      if (ev.target === elegido) { ev.target.checked = false; elegido = null; }
+      else { elegido = ev.target; }
+    });
+  });
+</script>
 {% endblock %}

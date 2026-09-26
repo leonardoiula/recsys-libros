@@ -88,7 +88,7 @@ def index():
 def marcar_leido(id_comic):
     rating = request.form.get("rating", type=float)
     if rating is None or not (0 <= rating <= 10):
-        flash("Elegí un rating entre 0 y 10 para puntuarlo.")
+        flash("Elegí cuántas estrellas le das para marcarlo como leído.")
         return redirect(request.referrer or url_for("dashboard.index"))
 
     conn = get_db()

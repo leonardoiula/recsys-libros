@@ -123,10 +123,15 @@ def _registrar(client):
     return client.post("/registro", data={"nombre": "Neo", "password": "unapassword"})
 
 
-def test_cuenta_nueva_arranca_el_onboarding(app):
-    respuesta = _registrar(app.test_client())
+def test_cuenta_nueva_pasa_por_la_bienvenida_que_ofrece_jugar_o_ir_al_sitio(app):
+    client = app.test_client()
 
-    assert respuesta.headers["Location"].endswith("/onboarding/")
+    respuesta = _registrar(client)
+
+    assert respuesta.headers["Location"].endswith("/onboarding/bienvenida")
+    html = client.get("/onboarding/bienvenida").get_data(as_text=True)
+    assert 'href="/onboarding/"' in html  # jugar
+    assert 'href="/"' in html  # ir directo al sitio
 
 
 def _hasta_fase_2(client, prefs):
@@ -166,7 +171,8 @@ def test_fases_de_comics_exigen_tres_interacciones_y_conservan_lo_cargado(app):
 
     html = respuesta.get_data(as_text=True)
     assert respuesta.status_code == 200 and "Señal insuficiente" in html
-    assert 'value="8"' in html  # la nota escrita no se pierde
+    # la nota elegida no se pierde: esa estrella vuelve marcada
+    assert f'name="rating-{ids[0]}" value="8" checked' in " ".join(html.split())
     conn, uid = _uid(app)
     assert conn.execute("SELECT COUNT(*) FROM interacciones WHERE id_usuario = ?", (uid,)).fetchone()[0] == 0
     assert client.get("/onboarding/3").headers["Location"].endswith("/onboarding/2")  # no avanzó

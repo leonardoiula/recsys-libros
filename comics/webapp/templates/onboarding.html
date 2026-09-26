@@ -25,11 +25,20 @@
     * { box-sizing: border-box; }
     body {
       margin: 0; min-height: 100vh; color: var(--texto); font-family: var(--mono);
+      background: #05060f;
+      padding: 2rem 1rem;
+    }
+    /* Fondo en una capa fija propia y NO con `background-attachment: fixed`:
+       iOS Safari no soporta `fixed` y calcula el `cover` contra el alto de
+       TODA la página (imagen gigante en una página larga), y en Android
+       `fixed` reescala el fondo cada vez que se esconde la barra de
+       direcciones. `100vh` = alto "grande" del viewport en móviles: no
+       cambia al scrollear. */
+    body::before {
+      content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100vh; z-index: -1;
       background:
         linear-gradient(180deg, rgba(4, 6, 18, 0.55), rgba(4, 6, 18, 0.9)),
-        url("{{ url_for('static', filename='onboarding/escena.jpg') }}") center / cover fixed,
-        #05060f;
-      padding: 2rem 1rem;
+        url("{{ url_for('static', filename='onboarding/escena.jpg') }}") center / cover no-repeat;
     }
     main {
       max-width: 980px; margin: 0 auto; padding: 1.5rem 1.75rem 1.25rem;
@@ -53,6 +62,20 @@
       97% { transform: translateX(1px) skewX(3deg); }
     }
     @media (prefers-reduced-motion: reduce) { h1 { animation: none; } }
+
+    /* Celular: menos margen alrededor del panel (el contenido usaba 285 de
+       375px), texto y logos algo más chicos. */
+    @media (max-width: 600px) {
+      body { padding: 0.75rem 0.5rem; }
+      main { padding: 1rem 0.9rem 0.9rem; }
+      .narrador p { font-size: 0.95rem; line-height: 1.45; }
+      .universos { gap: 0.6rem; }
+      .universo { padding: 0.6rem; }
+      .logo { height: 46px; }
+      .logo img { max-height: 38px; }
+      .archivo { flex-basis: 140px; }
+      button.neon { padding: 0.6rem 1rem; }
+    }
 
     .narrador p { font-size: 1.05rem; line-height: 1.55; margin: 0 0 0.8rem; max-width: 70ch; }
     .narrador p:last-child::after { content: "▌"; color: var(--cian); animation: parpadeo 1s infinite steps(2); }
@@ -85,14 +108,18 @@
     .logo.texto { background: #111a33; color: var(--texto); font-size: 1.2rem; }
     .universo .nombre { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.4rem; }
     .universo .nombre a { font-size: 0.75rem; }
-    .chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+    .chips { position: relative; display: flex; flex-wrap: wrap; gap: 0.3rem; }
     .chips input { position: absolute; opacity: 0; pointer-events: none; }
     .chips label { font-size: 0.72rem; padding: 0.2rem 0.45rem; border: 1px solid rgba(138, 163, 184, 0.5); cursor: pointer; }
     .chips input:checked + label { border-color: var(--magenta); color: #fff; background: rgba(255, 63, 180, 0.3); }
     .chips input:focus-visible + label { outline: 1px solid var(--cian); }
 
     /* Fases 2-5: carrusel de archivos */
-    .carrusel { display: flex; gap: 1rem; overflow-x: auto; scroll-snap-type: x mandatory; padding: 0.3rem 0.2rem 1rem; }
+    /* position: relative es CRÍTICO: los radios de las estrellas están
+       escondidos con position:absolute; sin un ancestro posicionado se ubican
+       relativos a la página y escapan del scroll del carrusel -- en celular
+       la página medía 2000px de ancho y el zoom saltaba al deslizar. */
+    .carrusel { position: relative; display: flex; gap: 1rem; overflow-x: auto; scroll-snap-type: x mandatory; padding: 0.3rem 0.2rem 1rem; }
     .archivo { flex: 0 0 150px; scroll-snap-align: start; }
     .archivo img {
       width: 100%; aspect-ratio: 200 / 308; object-fit: cover; display: block;
@@ -109,7 +136,7 @@
        10 a 2 y se muestran invertidas (row-reverse): así "la elegida y todas
        las de su izquierda" es `:checked ~ label`, que CSS sí puede expresar. */
     .puntaje { display: flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; margin-top: 0.3rem; }
-    .estrellas { display: inline-flex; flex-direction: row-reverse; border: 0; margin: 0; padding: 0; }
+    .estrellas { position: relative; display: inline-flex; flex-direction: row-reverse; border: 0; margin: 0; padding: 0; }
     .estrellas input { position: absolute; opacity: 0; pointer-events: none; }
     .estrellas label { font-size: 1.35rem; line-height: 1; padding: 0 0.04rem; color: rgba(138, 163, 184, 0.45); cursor: pointer; margin: 0; transition: color 0.1s, text-shadow 0.1s; }
     .estrellas input:checked ~ label,

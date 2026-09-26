@@ -60,7 +60,7 @@
     /* Puntaje con 5 estrellas (mismo mecanismo que el onboarding): en el DOM
        van de 10 a 2 y se muestran invertidas, así "la elegida y las de su
        izquierda" es `:checked ~ label`. */
-    .estrellas { display: flex; flex-direction: row-reverse; justify-content: flex-end; border: 0; margin: 0.3rem 0 0; padding: 0; }
+    .estrellas { position: relative; display: flex; flex-direction: row-reverse; justify-content: flex-end; border: 0; margin: 0.3rem 0 0; padding: 0; }
     .estrellas input { position: absolute; opacity: 0; pointer-events: none; }
     .estrellas label { font-size: 1.3rem; line-height: 1; padding: 0 0.04rem; color: var(--estrella-apagada); cursor: pointer; }
     .estrellas input:checked ~ label,

@@ -107,11 +107,14 @@
        muestra el recorte de la viñeta original (static/login/vineta.jpg,
        sacado de fondo.jpg con las mismas coordenadas de arriba). */
     @media (max-width: 760px), (max-height: 520px), (max-aspect-ratio: 1 / 1) {
-      body {
-        overflow: auto; min-height: 100%;
+      body { overflow: auto; min-height: 100%; }
+      /* Capa fija propia en vez de `background-attachment: fixed` (ver el
+         mismo comentario en onboarding.html: iOS lo ignora y agiganta el fondo). */
+      body::before {
+        content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100vh; z-index: -1;
         background:
           linear-gradient(rgba(6, 12, 11, 0.55), rgba(6, 12, 11, 0.55)),
-          url("{{ url_for('static', filename='login/fondo.jpg') }}") center / cover fixed, #0c1614;
+          url("{{ url_for('static', filename='login/fondo.jpg') }}") center / cover no-repeat, #0c1614;
       }
       .escena {
         position: static; width: auto; aspect-ratio: auto; transform: none; background: none;

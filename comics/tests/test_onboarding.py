@@ -15,6 +15,12 @@ COMICS = [
     ("image-comics/serie-d/1", "Image", [(f"v{i}", "2019-01-01", 10) for i in range(25)]),
     ("image-comics/serie-e/1", "Image", [(f"w{i}", "2024-01-01", 8) for i in range(12)]),
 ]
+# dos recientes más (1 review c/u), para que el carrusel del último año tenga
+# más comics que el mínimo de interacciones cuando se eligen 4 editoriales
+COMICS += [
+    ("image-comics/serie-g/1", "Image", [("u4", "2026-06-01", 8)]),
+    ("boom-studios/serie-h/1", "Boom!", [("u5", "2026-05-01", 7)]),
+]
 SIN_TAPA = ("marvel-comics/serie-f/1", "Marvel", [(f"z{i}", "2026-08-20", 9) for i in range(30)])
 
 
@@ -123,46 +129,99 @@ def test_cuenta_nueva_arranca_el_onboarding(app):
     assert respuesta.headers["Location"].endswith("/onboarding/")
 
 
+def _hasta_fase_2(client, prefs):
+    client.post("/onboarding/0")
+    return client.post("/onboarding/1", data={f"pref-{e}": p for e, p in prefs.items()})
+
+
+def _uid(app, nombre="Neo"):
+    conn = core_db.conectar(app.config["DB_PATH"])
+    uid = conn.execute("SELECT id_usuario FROM usuarios WHERE nombre = ?", (nombre,)).fetchone()[0]
+    return conn, uid
+
+
 def test_fase_1_exige_al_menos_tres_editoriales(app):
     client = app.test_client()
     _registrar(client)
+    client.post("/onboarding/0")
 
-    respuesta = client.post("/onboarding/1", data={"pref-Marvel": "encanta"}, follow_redirects=True)
+    respuesta = client.post("/onboarding/1", data={"pref-Marvel": "encanta"})
 
-    assert "Señal insuficiente" in respuesta.get_data(as_text=True)
+    html = respuesta.get_data(as_text=True)
+    assert "Señal insuficiente" in html
+    # la elección hecha no se pierde al volver a mostrar la pantalla
+    assert 'name="pref-Marvel" value="encanta" checked' in " ".join(html.split())
 
 
-def test_onboarding_guarda_lecturas_como_interacciones_y_curiosidad_aparte(app):
+def test_fases_de_comics_exigen_tres_interacciones_y_conservan_lo_cargado(app):
     client = app.test_client()
     _registrar(client)
-    client.post("/onboarding/1", data={"pref-Marvel": "encanta", "pref-DC": "no_atrae", "pref-Image": "curiosidad"})
+    _hasta_fase_2(client, {"Marvel": "gusta", "DC": "gusta", "Image": "gusta", "Boom!": "gusta"})
+    ids = ["marvel-comics/serie-a/1", "dc-comics/serie-b/1", "image-comics/serie-g/1", "boom-studios/serie-h/1"]
 
-    client.post(
+    respuesta = client.post(
+        "/onboarding/2",
+        data={"comic": ids, f"rating-{ids[0]}": "8", f"curiosidad-{ids[1]}": "1"},
+    )
+
+    html = respuesta.get_data(as_text=True)
+    assert respuesta.status_code == 200 and "Señal insuficiente" in html
+    assert 'value="8"' in html  # la nota escrita no se pierde
+    conn, uid = _uid(app)
+    assert conn.execute("SELECT COUNT(*) FROM interacciones WHERE id_usuario = ?", (uid,)).fetchone()[0] == 0
+    assert client.get("/onboarding/3").headers["Location"].endswith("/onboarding/2")  # no avanzó
+
+    respuesta = client.post(
+        "/onboarding/2",
+        data={"comic": ids, f"rating-{ids[0]}": "8", f"curiosidad-{ids[1]}": "1", f"curiosidad-{ids[2]}": "1"},
+    )
+
+    assert respuesta.headers["Location"].endswith("/onboarding/3")
+
+
+def test_si_el_carrusel_tiene_menos_comics_que_el_minimo_alcanza_con_responder_todos(app):
+    client = app.test_client()
+    _registrar(client)
+    # Marvel + Image -> el último año muestra solo serie-a/1 y serie-g/1
+    _hasta_fase_2(client, {"Marvel": "encanta", "DC": "no_atrae", "Image": "curiosidad"})
+
+    respuesta = client.post(
         "/onboarding/2",
         data={
-            "comic": ["marvel-comics/serie-a/1", "dc-comics/serie-b/1", "comic/inventado/1"],
+            "comic": ["marvel-comics/serie-a/1", "image-comics/serie-g/1", "comic/inventado/1"],
             "rating-marvel-comics/serie-a/1": "8.5",
-            "curiosidad-dc-comics/serie-b/1": "1",
+            "curiosidad-image-comics/serie-g/1": "1",
             "rating-comic/inventado/1": "10",
         },
     )
 
-    conn = core_db.conectar(app.config["DB_PATH"])
-    uid = conn.execute("SELECT id_usuario FROM usuarios WHERE nombre = 'Neo'").fetchone()[0]
+    assert respuesta.headers["Location"].endswith("/onboarding/3")
+    conn, uid = _uid(app)
+    # "lo leí" -> interacciones; curiosidad -> tabla aparte; el id inventado, a ningún lado
     assert conn.execute("SELECT id_comic, rating FROM interacciones WHERE id_usuario = ?", (uid,)).fetchall() == [
         ("marvel-comics/serie-a/1", 8.5)
     ]
     assert conn.execute("SELECT id_comic FROM onboarding_curiosidad WHERE id_usuario = ?", (uid,)).fetchall() == [
-        ("dc-comics/serie-b/1",)
+        ("image-comics/serie-g/1",)
     ]
+
+
+def test_no_se_puede_saltar_fases_escribiendo_la_url(app):
+    client = app.test_client()
+    _registrar(client)
+
+    assert client.get("/onboarding/6").headers["Location"].endswith("/onboarding/0")
+    assert client.post("/onboarding/6").headers["Location"].endswith("/onboarding/0")
+    conn, uid = _uid(app)
+    assert datos.progreso(conn, uid)["completado_en"] is None
 
 
 def test_una_curiosidad_mueve_las_recomendaciones_del_dashboard(app):
     client = app.test_client()
     _registrar(client)
-    client.post("/onboarding/1", data={"pref-Marvel": "gusta", "pref-DC": "gusta", "pref-Image": "gusta"})
-    client.post("/onboarding/4", data={"comic": ["image-comics/serie-d/1"], "curiosidad-image-comics/serie-d/1": "1"})
-    client.post("/onboarding/6")
+    conn, uid = _uid(app)
+    datos.guardar_curiosidad(conn, uid, ["image-comics/serie-d/1"], 4)
+    datos.avanzar(conn, uid, 6, completado=True)
 
     html = client.get("/").get_data(as_text=True)
 
@@ -189,9 +248,10 @@ def test_relleno_por_popularidad_respeta_preferidas_y_evitadas(app):
     recomendador = app.extensions["recomendador"]
 
     ids = recomendador.recomendar(
-        "nadie", k=6, perfil_coldstart={}, editoriales_preferidas={"Image"}, editoriales_evitadas={"Marvel"}
+        "nadie", k=20, perfil_coldstart={}, editoriales_preferidas={"Image"}, editoriales_evitadas={"Marvel"}
     )
 
     editoriales = [dict((c[0], c[1]) for c in COMICS + [SIN_TAPA])[i] for i in ids]
-    assert editoriales[:2] == ["Image", "Image"]
-    assert editoriales[-3:] == ["Marvel", "Marvel", "Marvel"]
+    assert len(ids) == 9
+    assert editoriales[:3] == ["Image"] * 3
+    assert editoriales[-4:] == ["Marvel"] * 4

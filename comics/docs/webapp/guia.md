@@ -563,6 +563,13 @@ runtime, por la interfaz que se dejó preparada en la sección 4
   en el dashboard una invitación a retomarlo mientras no tenga historial.
 - Los ids de comic del form se validan contra el catálogo: un id inventado
   nunca llega a la BD.
+- Cada carrusel (fases 2-5) exige al menos `MIN_INTERACCIONES_POR_FASE = 3`
+  respuestas (nota o curiosidad), o todas si mostró menos de 3. Sin esto se
+  podía atravesar el onboarding entero apretando "SINCRONIZAR" sin dar
+  ninguna señal. Si faltan, la pantalla se vuelve a mostrar (render, no
+  redirect) con lo ya cargado, para no hacer perder las notas escritas.
+- No se puede saltar hacia adelante escribiendo la URL (`/onboarding/6`):
+  solo se entra a fases ya alcanzadas.
 - Tests: `comics/tests/test_onboarding.py`.
 
 ## 8. Pantallas de entrada: login y registro como viñeta de comic

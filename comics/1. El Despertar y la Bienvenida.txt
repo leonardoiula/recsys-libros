@@ -3,7 +3,7 @@ Texto del Narrador:
 
 "Tranquilo, respira. La desorientación es normal. Despertaste justo a tiempo.
 
-La Entidad intentó borrarnos la imaginación, pero tu córtex resistió. Te necesitamos en la rebelión. Vamos a ayudarte a estabilizar tus recuerdos antes de que se degraden. Reconstruiremos el Códice juntos."
+La Entidad intentó borrarnos, pero tu córtex resistió. Te necesitamos en la rebelión. Vamos a ayudarte a estabilizar tus recuerdos antes de que se degraden. Reconstruiremos el Códice juntos."
 
 (Botón de acción: [ ESTABILIZAR RED ])
 

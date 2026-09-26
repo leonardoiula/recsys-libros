@@ -38,26 +38,49 @@ def fase(numero: int):
         abort(404)
     conn = get_db()
 
-    if request.method == "POST":
-        if numero == 1 and not _guardar_editoriales(conn):
-            return redirect(url_for("onboarding.fase", numero=1))
-        if numero in datos.FASES_COMICS:
-            _guardar_respuestas_comics(conn, numero)
-        if numero == ULTIMA_FASE:
-            datos.avanzar(conn, current_user.id, ULTIMA_FASE, completado=True)
-            return redirect(url_for("dashboard.index"))
-        datos.avanzar(conn, current_user.id, numero + 1)
-        return redirect(url_for("onboarding.fase", numero=numero + 1))
+    # No se puede saltar hacia adelante escribiendo la URL (/onboarding/6):
+    # solo se entra a fases ya alcanzadas. Volver a una anterior sí se puede.
+    estado = datos.progreso(conn, current_user.id)
+    if estado is None:
+        datos.avanzar(conn, current_user.id, 0)  # registra que empezó
+        alcanzada = 0
+    else:
+        alcanzada = estado["fase"]
+    if numero > alcanzada:
+        return redirect(url_for("onboarding.fase", numero=alcanzada))
 
-    datos.avanzar(conn, current_user.id, numero)  # registra que empezó (fase 0)
-    contexto = {"numero": numero, "ultima_fase": ULTIMA_FASE}
+    previos: dict = {}
+    if request.method == "POST":
+        if numero == 1:
+            valido = _guardar_editoriales(conn)
+        elif numero in datos.FASES_COMICS:
+            valido = _guardar_respuestas_comics(conn, numero)
+        else:
+            valido = True
+        if valido:
+            if numero == ULTIMA_FASE:
+                datos.avanzar(conn, current_user.id, ULTIMA_FASE, completado=True)
+                return redirect(url_for("dashboard.index"))
+            datos.avanzar(conn, current_user.id, numero + 1)
+            return redirect(url_for("onboarding.fase", numero=numero + 1))
+        # Faltan respuestas: se vuelve a mostrar la MISMA pantalla (no un
+        # redirect) con lo que ya había cargado, para no hacerle perder las
+        # notas que escribió. No se guardó nada, así que el carrusel sale igual.
+        previos = request.form
+
+    contexto = {"numero": numero, "ultima_fase": ULTIMA_FASE, "previos": previos}
     if numero == 1:
         contexto["editoriales"] = datos.EDITORIALES
         contexto["preferencias"] = datos.PREFERENCIAS
-        contexto["elegidas"] = datos.preferencias_editoriales(conn, current_user.id)
+        contexto["elegidas"] = (
+            {e: previos.get(f"pref-{e}") for e in datos.EDITORIALES_VALIDAS}
+            if previos
+            else datos.preferencias_editoriales(conn, current_user.id)
+        )
         contexto["minimo"] = datos.MIN_EDITORIALES_EVALUADAS
     elif numero in datos.FASES_COMICS:
         contexto["comics"] = _comics_de_fase(conn, numero)
+        contexto["minimo"] = datos.MIN_INTERACCIONES_POR_FASE
     return render_template("onboarding.html", **contexto)
 
 
@@ -93,20 +116,37 @@ def _guardar_editoriales(conn) -> bool:
     return True
 
 
-def _guardar_respuestas_comics(conn, numero: int) -> None:
+def _guardar_respuestas_comics(conn, numero: int) -> bool:
     """Cada comic del carrusel viaja en el form como hidden `comic` + sus
     campos `rating-<id>` y `curiosidad-<id>`. Se valida contra el catálogo:
-    un id inventado no llega nunca a la BD."""
+    un id inventado no llega nunca a la BD.
+
+    Exige al menos `MIN_INTERACCIONES_POR_FASE` respuestas (nota o
+    curiosidad) antes de guardar nada -- si no, se podía atravesar todo el
+    onboarding con "SINCRONIZAR" sin dar ninguna señal. Si el carrusel
+    mostró menos comics que el mínimo, alcanza con responder todos."""
     catalogo = current_app.extensions["catalogo_onboarding"]
-    recomendador = current_app.extensions["recomendador"]
-    curiosidades = []
-    for id_comic in request.form.getlist("comic"):
-        if id_comic not in catalogo.ids:
-            continue
+    ids = [i for i in request.form.getlist("comic") if i in catalogo.ids]
+    lecturas: dict[str, float] = {}
+    curiosidades: list[str] = []
+    for id_comic in ids:
         rating = request.form.get(f"rating-{id_comic}", type=float)
         if rating is not None and 0 <= rating <= 10:
-            repo.marcar_como_leido(conn, current_user.id, id_comic, rating)
-            recomendador.registrar_interaccion(current_user.id, id_comic, rating)
+            lecturas[id_comic] = rating
         elif request.form.get(f"curiosidad-{id_comic}"):
             curiosidades.append(id_comic)
+
+    minimo = min(datos.MIN_INTERACCIONES_POR_FASE, len(ids))
+    if len(lecturas) + len(curiosidades) < minimo:
+        flash(
+            f"Señal insuficiente: interactuá con al menos {minimo} archivos "
+            "(puntuá los que leíste o marcá los que te dan curiosidad)."
+        )
+        return False
+
+    recomendador = current_app.extensions["recomendador"]
+    for id_comic, rating in lecturas.items():
+        repo.marcar_como_leido(conn, current_user.id, id_comic, rating)
+        recomendador.registrar_interaccion(current_user.id, id_comic, rating)
     datos.guardar_curiosidad(conn, current_user.id, curiosidades, numero)
+    return True

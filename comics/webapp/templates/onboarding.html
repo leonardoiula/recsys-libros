@@ -121,7 +121,7 @@
     <h1>El despertar</h1>
     <div class="narrador">
       <p>Tranquilo, respira. La desorientación es normal. Despertaste justo a tiempo.</p>
-      <p>La Entidad intentó borrarnos la imaginación, pero tu córtex resistió. Te necesitamos en la rebelión. Vamos a ayudarte a estabilizar tus recuerdos antes de que se degraden. Reconstruiremos el Códice juntos.</p>
+      <p>La Entidad intentó borrarnos, pero tu córtex resistió. Te necesitamos en la rebelión. Vamos a ayudarte a estabilizar tus recuerdos antes de que se degraden. Reconstruiremos el Códice juntos.</p>
     </div>
     {% set boton = "ESTABILIZAR RED" %}
 
@@ -184,7 +184,7 @@
     {% endif %}
 
     {% if comics %}
-      <p class="saltar">Si lo leíste, dale un puntaje de 0 a 10. Si no, marcá si te da curiosidad. Lo que no reconozcas, dejalo en blanco.</p>
+      <p class="saltar">Interactuá con al menos {{ [minimo, comics|length]|min }}: si lo leíste, dale un puntaje de 0 a 10; si no, marcá si te da curiosidad. Lo que no te diga nada, dejalo en blanco.</p>
       <div class="carrusel">
         {% set sintapa = url_for('static', filename='sintapa.jpg') %}
         {% for comic in comics %}
@@ -195,9 +195,11 @@
             <p class="titulo">{{ comic.titulo }}</p>
             <p class="meta">{{ comic.editorial }} · {{ comic.primera.year }}</p>
             <label>Lo leí:
-              <input type="number" name="rating-{{ comic.id_comic }}" min="0" max="10" step="0.5" placeholder="0-10">
+              <input type="number" name="rating-{{ comic.id_comic }}" min="0" max="10" step="0.5" placeholder="0-10"
+                     value="{{ previos.get('rating-' ~ comic.id_comic, '') }}">
             </label>
-            <label><input type="checkbox" name="curiosidad-{{ comic.id_comic }}" value="1"> Me da curiosidad</label>
+            <label><input type="checkbox" name="curiosidad-{{ comic.id_comic }}" value="1"
+                          {{ "checked" if previos.get('curiosidad-' ~ comic.id_comic) else "" }}> Me da curiosidad</label>
           </div>
         {% endfor %}
       </div>

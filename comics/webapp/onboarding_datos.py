@@ -54,6 +54,8 @@ PREFERENCIAS = {
 }
 PREFERIDAS = {"encanta", "gusta", "curiosidad"}
 MIN_EDITORIALES_EVALUADAS = 3
+# Fases 2-5: respuestas mínimas (nota o curiosidad) por carrusel.
+MIN_INTERACCIONES_POR_FASE = 3
 
 # Peso de un "me da curiosidad" en el perfil, en la misma escala 0-10 que los
 # ratings (que el recomendador usa directo como peso). Sin datos para
